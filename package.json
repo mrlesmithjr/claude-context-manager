@@ -1,0 +1,43 @@
+{
+  "name": "claude-context-manager",
+  "version": "0.1.0",
+  "description": "Persistent memory for Claude Code sessions",
+  "type": "module",
+  "main": "dist/cli.js",
+  "bin": {
+    "context-manager": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "npm run build:src && npm run build:hooks && npm run build:cli",
+    "build:src": "tsc",
+    "build:hooks": "esbuild plugin/hooks/*.ts --bundle --outdir=dist/hooks --platform=node --target=node18 --format=esm --external:better-sqlite3",
+    "build:cli": "esbuild cli/index.ts --bundle --outfile=dist/cli.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --banner:js=\"#!/usr/bin/env node\"",
+    "plugin:install": "npm run build && node scripts/install.js",
+    "plugin:uninstall": "node scripts/uninstall.js",
+    "plugin:uninstall:all": "node scripts/uninstall.js --remove-data",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "cli": "node dist/cli.js"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "memory",
+    "context",
+    "plugin"
+  ],
+  "author": "Larry Smith Jr. <mrlesmithjr@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/node": "^20.10.0",
+    "esbuild": "^0.19.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
