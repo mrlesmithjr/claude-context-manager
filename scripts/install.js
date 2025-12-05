@@ -19,6 +19,7 @@ const PROJECT_ROOT = join(__dirname, '..');
 
 const PLUGIN_DIR = join(homedir(), '.claude', 'plugins', 'context-manager');
 const SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
+const COMMANDS_DIR = join(homedir(), '.claude', 'commands');
 const CONTEXT_DIR = join(homedir(), '.claude-context');
 
 // Hook definitions to add to settings.json
@@ -30,6 +31,16 @@ const CONTEXT_MANAGER_HOOKS = {
         type: 'command',
         command: 'node ~/.claude/plugins/context-manager/dist/hooks/context-inject.js',
         timeout: 5000,
+      },
+    ],
+  },
+  UserPromptSubmit: {
+    matcher: '',
+    hooks: [
+      {
+        type: 'command',
+        command: 'node ~/.claude/plugins/context-manager/dist/hooks/capture-prompt.js',
+        timeout: 1000,
       },
     ],
   },
@@ -185,6 +196,33 @@ function createContextDir() {
 }
 
 /**
+ * Install slash commands to ~/.claude/commands/
+ */
+function installSlashCommands() {
+  log('Installing slash commands...');
+
+  const commandsSrc = join(PROJECT_ROOT, '.claude', 'commands');
+  if (!existsSync(commandsSrc)) {
+    log('  No slash commands found, skipping');
+    return;
+  }
+
+  // Create commands directory if needed
+  mkdirSync(COMMANDS_DIR, { recursive: true });
+
+  // Copy each command file
+  const commands = ['ctx-stats.md', 'ctx-list.md', 'ctx-search.md', 'ctx-vacuum.md'];
+  for (const cmd of commands) {
+    const src = join(commandsSrc, cmd);
+    const dest = join(COMMANDS_DIR, cmd);
+    if (existsSync(src)) {
+      cpSync(src, dest);
+      log(`  Installed /${cmd.replace('.md', '')}`);
+    }
+  }
+}
+
+/**
  * Main install function
  */
 function install() {
@@ -195,6 +233,7 @@ function install() {
   copyPluginFiles();
   updateSettings();
   createContextDir();
+  installSlashCommands();
 
   console.log('\n========================================');
   console.log('  Installation complete!');
@@ -202,8 +241,14 @@ function install() {
   console.log('\nRestart Claude Code to activate the plugin.\n');
   console.log('Hooks installed:');
   console.log('  - SessionStart: Injects previous context at session start');
+  console.log('  - UserPromptSubmit: Captures user prompts');
   console.log('  - PostToolUse: Captures tool interactions');
   console.log('  - Stop: Saves session summary on exit');
+  console.log('\nSlash commands:');
+  console.log('  - /ctx-stats   Show statistics');
+  console.log('  - /ctx-list    List recent observations');
+  console.log('  - /ctx-search  Search observations');
+  console.log('  - /ctx-vacuum  Clean up old data');
   console.log('\nData stored in: ~/.claude-context/');
   console.log('CLI available: node ~/.claude/plugins/context-manager/dist/cli.js\n');
 }

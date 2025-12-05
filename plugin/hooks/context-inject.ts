@@ -20,6 +20,7 @@
 import { SQLiteStorage } from '../../src/storage/sqlite.js';
 import { validateSessionStartInput } from '../../src/utils/validation.js';
 import { buildContext, buildVisibilityMessage } from '../../src/inject/builder.js';
+import { getPreviouslyContext } from '../../src/utils/transcript.js';
 
 const TOKEN_BUDGET = parseInt(
   process.env.CONTEXT_MANAGER_TOKEN_BUDGET || '4000',
@@ -72,8 +73,15 @@ async function main() {
     const sessions = await storage.getRecentSessions(input.cwd, 1);
     const lastSummary = sessions[0]?.summary;
 
+    // Get "Previously" context from prior session transcript
+    const previouslyContext = await getPreviouslyContext(
+      input.cwd,
+      input.session_id,
+      async (project, limit) => storage.getRecentSessions(project, limit)
+    );
+
     // Build context for injection
-    const context = buildContext(observations, lastSummary);
+    const context = buildContext(observations, lastSummary, previouslyContext);
 
     // Build visibility message
     const visibilityMessage = buildVisibilityMessage(observations);

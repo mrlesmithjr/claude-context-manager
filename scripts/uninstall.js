@@ -15,7 +15,11 @@ import { createInterface } from 'readline';
 
 const PLUGIN_DIR = join(homedir(), '.claude', 'plugins', 'context-manager');
 const SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
+const COMMANDS_DIR = join(homedir(), '.claude', 'commands');
 const CONTEXT_DIR = join(homedir(), '.claude-context');
+
+// Slash commands to remove
+const SLASH_COMMANDS = ['ctx-stats.md', 'ctx-list.md', 'ctx-search.md', 'ctx-vacuum.md'];
 
 // Marker to identify our hooks in settings.json
 const HOOK_MARKER = 'context-manager';
@@ -81,7 +85,7 @@ function removeFromSettings() {
   }
 
   let updated = false;
-  const hookTypes = ['SessionStart', 'PostToolUse', 'Stop'];
+  const hookTypes = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'];
 
   for (const hookType of hookTypes) {
     if (settings.hooks[hookType]) {
@@ -124,6 +128,27 @@ function removePluginDir() {
 }
 
 /**
+ * Remove slash commands from ~/.claude/commands/
+ */
+function removeSlashCommands() {
+  log('Removing slash commands...');
+
+  let removed = 0;
+  for (const cmd of SLASH_COMMANDS) {
+    const cmdPath = join(COMMANDS_DIR, cmd);
+    if (existsSync(cmdPath)) {
+      rmSync(cmdPath);
+      log(`  Removed /${cmd.replace('.md', '')}`);
+      removed++;
+    }
+  }
+
+  if (removed === 0) {
+    log('  No slash commands found');
+  }
+}
+
+/**
  * Remove data directory (with confirmation)
  */
 async function removeDataDir() {
@@ -160,6 +185,7 @@ async function uninstall() {
 
   removeFromSettings();
   removePluginDir();
+  removeSlashCommands();
 
   if (removeData) {
     if (existsSync(CONTEXT_DIR)) {

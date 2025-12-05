@@ -17,6 +17,7 @@ import type {
   Observation,
   Session,
   Stats,
+  UserPrompt,
 } from './interface.js';
 
 const DEFAULT_DB_PATH = path.join(homedir(), '.claude-context', 'context.db');
@@ -61,6 +62,61 @@ export class SQLiteStorage implements ContextStorage {
 
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+    `);
+
+    // Create user_prompts table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS user_prompts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        prompt_number INTEGER NOT NULL,
+        prompt_text TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_user_prompts_project_created
+      ON user_prompts(project, created_at DESC);
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_id);
+    `);
+
+    // Create FTS5 virtual table for user_prompts
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS user_prompts_fts USING fts5(
+        prompt_text,
+        content=user_prompts,
+        content_rowid=id
+      );
+    `);
+
+    // FTS triggers for user_prompts
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+        INSERT INTO user_prompts_fts(rowid, prompt_text)
+        VALUES (new.id, COALESCE(new.prompt_text, ''));
+      END;
+    `);
+
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+        INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+        VALUES('delete', old.id, old.prompt_text);
+      END;
+    `);
+
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS user_prompts_au AFTER UPDATE ON user_prompts BEGIN
+        INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+        VALUES('delete', old.id, old.prompt_text);
+        INSERT INTO user_prompts_fts(rowid, prompt_text)
+        VALUES (new.id, COALESCE(new.prompt_text, ''));
+      END;
     `);
 
     // Create observations table
@@ -414,6 +470,93 @@ export class SQLiteStorage implements ContextStorage {
     // If no days specified, just run VACUUM to reclaim space
     this.db.exec('VACUUM');
     return 0;
+  }
+
+  async saveUserPrompt(prompt: Omit<UserPrompt, 'id'>): Promise<void> {
+    const stmt = this.db.prepare(`
+      INSERT INTO user_prompts (
+        session_id, project, prompt_number, prompt_text, created_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `);
+
+    stmt.run(
+      prompt.session_id,
+      prompt.project,
+      prompt.prompt_number,
+      prompt.prompt_text,
+      prompt.created_at
+    );
+  }
+
+  async getRecentPrompts(project: string, limit: number): Promise<UserPrompt[]> {
+    const stmt = this.db.prepare(`
+      SELECT * FROM user_prompts
+      WHERE project = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `);
+
+    const rows = stmt.all(project, limit) as Array<{
+      id: number;
+      session_id: string;
+      project: string;
+      prompt_number: number;
+      prompt_text: string;
+      created_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      prompt_number: row.prompt_number,
+      prompt_text: row.prompt_text,
+      created_at: row.created_at,
+    }));
+  }
+
+  async searchPrompts(query: string, project?: string): Promise<UserPrompt[]> {
+    let sql: string;
+    let params: unknown[];
+
+    if (project) {
+      sql = `
+        SELECT p.* FROM user_prompts p
+        INNER JOIN user_prompts_fts fts ON p.id = fts.rowid
+        WHERE fts MATCH ? AND p.project = ?
+        ORDER BY p.created_at DESC
+        LIMIT 50
+      `;
+      params = [query, project];
+    } else {
+      sql = `
+        SELECT p.* FROM user_prompts p
+        INNER JOIN user_prompts_fts fts ON p.id = fts.rowid
+        WHERE fts MATCH ?
+        ORDER BY p.created_at DESC
+        LIMIT 50
+      `;
+      params = [query];
+    }
+
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all(...params) as Array<{
+      id: number;
+      session_id: string;
+      project: string;
+      prompt_number: number;
+      prompt_text: string;
+      created_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      prompt_number: row.prompt_number,
+      prompt_text: row.prompt_text,
+      created_at: row.created_at,
+    }));
   }
 
   close(): void {

@@ -88,6 +88,16 @@ export interface StopInput {
 }
 
 /**
+ * UserPromptSubmit hook input schema
+ */
+export interface UserPromptSubmitInput {
+  session_id: string;
+  cwd: string;
+  prompt_number: number;
+  prompt: string;
+}
+
+/**
  * Validate SessionStart input
  */
 export function validateSessionStartInput(input: unknown): SessionStartInput {
@@ -175,6 +185,43 @@ export function validateStopInput(input: unknown): StopInput {
     cwd: validatedCwd,
     transcript_summary:
       typeof obj.transcript_summary === 'string' ? obj.transcript_summary : undefined,
+  };
+}
+
+/**
+ * Validate UserPromptSubmit input
+ */
+export function validateUserPromptSubmitInput(input: unknown): UserPromptSubmitInput {
+  if (typeof input !== 'object' || input === null) {
+    throw new Error('Invalid input: expected object');
+  }
+
+  const obj = input as Record<string, unknown>;
+
+  if (typeof obj.session_id !== 'string' || obj.session_id.length === 0) {
+    throw new Error('Invalid input: session_id must be non-empty string');
+  }
+
+  if (typeof obj.cwd !== 'string' || obj.cwd.length === 0) {
+    throw new Error('Invalid input: cwd must be non-empty string');
+  }
+
+  if (typeof obj.prompt_number !== 'number' || obj.prompt_number < 0) {
+    throw new Error('Invalid input: prompt_number must be non-negative number');
+  }
+
+  if (typeof obj.prompt !== 'string' || obj.prompt.length === 0) {
+    throw new Error('Invalid input: prompt must be non-empty string');
+  }
+
+  // Validate project path
+  const validatedCwd = validateProjectPath(obj.cwd);
+
+  return {
+    session_id: obj.session_id,
+    cwd: validatedCwd,
+    prompt_number: obj.prompt_number,
+    prompt: obj.prompt,
   };
 }
 

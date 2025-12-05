@@ -41,9 +41,10 @@ function formatObservation(obs: Observation, index: number): string {
  */
 export function buildContext(
   observations: Observation[],
-  summary?: string
+  summary?: string,
+  previouslyContext?: string | null
 ): string {
-  if (observations.length === 0 && !summary) {
+  if (observations.length === 0 && !summary && !previouslyContext) {
     return '';
   }
 
@@ -57,6 +58,12 @@ export function buildContext(
   lines.push('<claude-context>');
   lines.push('## Previous Context for This Project');
   lines.push('');
+
+  if (previouslyContext) {
+    lines.push('### Previously');
+    lines.push(previouslyContext);
+    lines.push('');
+  }
 
   if (summary) {
     lines.push('### Recent Session Summary');

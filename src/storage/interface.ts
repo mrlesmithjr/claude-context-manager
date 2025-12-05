@@ -27,6 +27,15 @@ export interface Session {
   status: 'active' | 'complete';
 }
 
+export interface UserPrompt {
+  id?: number;
+  session_id: string;
+  project: string;
+  prompt_number: number;
+  prompt_text: string;
+  created_at: string;
+}
+
 export interface Stats {
   total_observations: number;
   total_sessions: number;
@@ -97,6 +106,25 @@ export interface ContextStorage {
    * @returns Number of observations deleted
    */
   vacuum(olderThanDays?: number): Promise<number>;
+
+  /**
+   * Save a user prompt
+   */
+  saveUserPrompt(prompt: Omit<UserPrompt, 'id'>): Promise<void>;
+
+  /**
+   * Get recent user prompts for a project
+   * @param project - Project path
+   * @param limit - Maximum number of prompts to return
+   */
+  getRecentPrompts(project: string, limit: number): Promise<UserPrompt[]>;
+
+  /**
+   * Full-text search user prompts
+   * @param query - Search query
+   * @param project - Project path (optional, for project-scoped search)
+   */
+  searchPrompts(query: string, project?: string): Promise<UserPrompt[]>;
 
   /**
    * Close storage connection

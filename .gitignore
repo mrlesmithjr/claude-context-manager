@@ -1,6 +1,11 @@
 # Include CLAUDE.md (override global ignore for this project)
 !CLAUDE.md
 
+# Include .claude/commands (override global ignore for slash commands)
+!.claude/
+!.claude/commands/
+!.claude/commands/*.md
+
 # Dependencies
 node_modules/
 
