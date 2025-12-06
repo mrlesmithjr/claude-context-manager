@@ -6,7 +6,7 @@
  * It verifies the build and provides instructions for marketplace installation.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -18,6 +18,7 @@ const PROJECT_ROOT = join(__dirname, '..');
 const COMMANDS_DIR = join(homedir(), '.claude', 'commands');
 const CONTEXT_DIR = join(homedir(), '.claude-context');
 const PLUGIN_SCRIPTS_DIR = join(PROJECT_ROOT, 'plugin', 'scripts');
+const PLUGIN_JSON_PATH = join(PROJECT_ROOT, 'plugin', '.claude-plugin', 'plugin.json');
 
 function log(message) {
   console.log(`[context-manager] ${message}`);
@@ -62,6 +63,32 @@ function createContextDir() {
   } else {
     log(`Context directory exists: ${CONTEXT_DIR}`);
   }
+}
+
+/**
+ * Sync version from package.json to plugin.json
+ */
+function syncPluginVersion() {
+  log('Syncing version to plugin.json...');
+
+  // Read version from package.json
+  const packageJson = JSON.parse(
+    readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf-8')
+  );
+  const version = packageJson.version;
+
+  // Read plugin.json
+  const pluginJson = JSON.parse(
+    readFileSync(PLUGIN_JSON_PATH, 'utf-8')
+  );
+
+  // Update version
+  pluginJson.version = version;
+
+  // Write back
+  writeFileSync(PLUGIN_JSON_PATH, JSON.stringify(pluginJson, null, 2) + '\n');
+
+  log(`  Version synced: ${version}`);
 }
 
 /**
@@ -142,22 +169,25 @@ Report how many observations were deleted.
  */
 function install() {
   console.log('\n========================================');
-  console.log('  claude-context-manager installer');
-  console.log('  (Claude Code Marketplace Plugin)');
+  console.log('  claude-context-manager');
+  console.log('  Build & Preparation Script');
   console.log('========================================\n');
 
   verifyBuild();
   createContextDir();
+  syncPluginVersion();
   installSlashCommands();
 
   console.log('\n========================================');
-  console.log('  Build verification complete!');
+  console.log('  Build preparation complete!');
   console.log('========================================');
-  console.log('\nTo install the plugin, run these commands in Claude Code:\n');
+  console.log('\nNOTE: This script only builds and prepares the plugin.');
+  console.log('To actually install, run these commands in Claude Code:\n');
   console.log(`  /plugin marketplace add ${PROJECT_ROOT}`);
-  console.log('  /plugin install context-manager\n');
+  console.log('  /plugin install context-manager');
+  console.log('  (then restart Claude Code)\n');
   console.log('Data will be stored in: ~/.claude-context/');
-  console.log('\nSlash commands available:');
+  console.log('\nSlash commands available after install:');
   console.log('  - /ctx-stats   Show statistics');
   console.log('  - /ctx-list    List recent observations');
   console.log('  - /ctx-search  Search observations');

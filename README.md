@@ -148,14 +148,15 @@ cd claude-context-manager
 npm install
 
 # Build the plugin and prepare for installation
-npm run plugin:install
+npm run build:plugin
 ```
 
-The install script will:
+The build script will:
 1. Build the TypeScript source
-2. Install slash commands to `~/.claude/commands/`
-3. Create data directory at `~/.claude-context/`
-4. Show installation commands
+2. Sync version to plugin.json
+3. Install slash commands to `~/.claude/commands/`
+4. Create data directory at `~/.claude-context/`
+5. Show installation commands
 
 **Then in Claude Code**, run these commands:
 
@@ -360,7 +361,7 @@ npm rebuild better-sqlite3
 ```bash
 # Remove all data and reinstall
 npm run plugin:uninstall:all
-npm run plugin:install
+npm run build:plugin
 ```
 
 ---
@@ -393,8 +394,8 @@ npm run typecheck
 # Clean build artifacts
 npm run clean
 
-# Install plugin (builds first)
-npm run plugin:install
+# Build and prepare plugin for installation
+npm run build:plugin
 
 # Uninstall plugin
 npm run plugin:uninstall

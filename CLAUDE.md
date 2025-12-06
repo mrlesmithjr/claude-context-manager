@@ -21,7 +21,7 @@ This file provides guidance to Claude Code when working in this repository.
 
 ```bash
 # Build and prepare for installation
-npm run plugin:install
+npm run build:plugin
 
 # In Claude Code, install the plugin:
 #   /plugin marketplace add ~/Projects/Personal/claude-context-manager
@@ -236,8 +236,8 @@ npm run typecheck
 # Clean build artifacts
 npm run clean
 
-# Install plugin (builds first)
-npm run plugin:install
+# Build and prepare plugin for installation
+npm run build:plugin
 
 # Uninstall plugin (keep data)
 npm run plugin:uninstall

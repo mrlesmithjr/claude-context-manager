@@ -21,6 +21,13 @@ import { SQLiteStorage } from '../../src/storage/sqlite.js';
 import { validateSessionStartInput } from '../../src/utils/validation.js';
 import { buildContext, buildVisibilityMessage } from '../../src/inject/builder.js';
 import { getPreviouslyContext } from '../../src/utils/transcript.js';
+import { existsSync, readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { homedir } from 'os';
+import { fileURLToPath } from 'url';
+
+// This will be injected by esbuild --define during build
+declare const PLUGIN_VERSION: string;
 
 const TOKEN_BUDGET = parseInt(
   process.env.CONTEXT_MANAGER_TOKEN_BUDGET || '4000',
@@ -34,6 +41,47 @@ async function readStdin(): Promise<string> {
     process.stdin.on('data', (chunk) => (data += chunk));
     process.stdin.on('end', () => resolve(data));
   });
+}
+
+/**
+ * Check for version mismatch between source and installed plugin
+ * Returns a warning message if versions differ, empty string otherwise
+ */
+function checkVersionMismatch(): string {
+  try {
+    const installedPluginPath = join(
+      homedir(),
+      '.claude',
+      'plugins',
+      'context-manager',
+      'package.json'
+    );
+
+    // If plugin not installed yet, skip check
+    if (!existsSync(installedPluginPath)) {
+      return '';
+    }
+
+    // Read installed version
+    const installedPackageJson = JSON.parse(
+      readFileSync(installedPluginPath, 'utf-8')
+    );
+    const installedVersion = installedPackageJson.version;
+
+    // Compare versions
+    if (installedVersion !== PLUGIN_VERSION) {
+      return `\n⚠️  **context-manager version mismatch detected**\n` +
+             `   Installed: v${installedVersion}\n` +
+             `   Source:    v${PLUGIN_VERSION}\n` +
+             `   Run: \`npm run build:plugin && /plugin install context-manager\`\n`;
+    }
+
+    return '';
+  } catch (error) {
+    // Fail silently - version check is not critical
+    console.error('[context-manager] Version check failed:', error);
+    return '';
+  }
 }
 
 async function main() {
@@ -78,8 +126,16 @@ async function main() {
       async (project, limit) => storage.getRecentSessions(project, limit)
     );
 
+    // Check for version mismatch
+    const versionWarning = checkVersionMismatch();
+
     // Build context for injection (pass cwd for project grouping)
-    const context = buildContext(observations, input.cwd, lastSummary, previouslyContext);
+    let context = buildContext(observations, input.cwd, lastSummary, previouslyContext);
+
+    // Prepend version warning if present
+    if (versionWarning) {
+      context = versionWarning + '\n' + context;
+    }
 
     // Build visibility message (pass cwd for project grouping)
     const visibilityMessage = buildVisibilityMessage(observations, input.cwd);
