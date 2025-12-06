@@ -178,6 +178,16 @@ npm run import -- \
 - [ ] Web viewer for browsing observation history
 
 ### Low Priority
+
+#### Display Enhancements (inspired by claude-mem)
+- [ ] **Day Headers** - Add `### Dec 5` section headers for long observation lists
+  - Groups observations by day for easier scanning
+  - Low effort
+- [ ] **File Grouping** - Group consecutive observations touching the same file
+  - Shows related work together
+  - Medium effort
+
+#### Other
 - [ ] Integration with external vector stores (ChromaDB, etc.)
 - [ ] AI-powered summarization of observations
 - [ ] Metrics dashboard (observations over time, token usage trends)
