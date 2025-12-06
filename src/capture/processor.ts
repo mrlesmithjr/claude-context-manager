@@ -8,6 +8,16 @@ import { sanitizeContent, estimateTokens } from '../utils/sanitize.js';
 import type { Observation } from '../storage/interface.js';
 
 /**
+ * Output storage thresholds
+ */
+const OUTPUT_THRESHOLDS = {
+  FULL_STORAGE_LIMIT: 1500,      // chars - store full if under this
+  HEAD_SIZE: 800,                 // chars - first N for long outputs
+  TAIL_SIZE: 400,                 // chars - last N for long outputs
+  MAX_STORAGE: 1600,              // chars - absolute max stored
+} as const;
+
+/**
  * Tool capture input
  */
 export interface ToolCapture {
@@ -16,6 +26,24 @@ export interface ToolCapture {
   tool_name: string;
   tool_input?: unknown;
   tool_response?: string;
+}
+
+/**
+ * Extracted output statistics
+ */
+export interface OutputStats {
+  original_length: number;
+  line_count: number;
+  truncated: boolean;
+  tool_specific?: Record<string, unknown>;
+}
+
+/**
+ * Extracted output result
+ */
+export interface ExtractedOutput {
+  stored_output: string;
+  output_stats: OutputStats;
 }
 
 /**
@@ -50,6 +78,107 @@ function extractFilesTouched(
   // For Grep/Glob, we don't store individual matched files (too many)
 
   return [...new Set(files)]; // Deduplicate
+}
+
+/**
+ * Extract tool-specific statistics from Bash output
+ */
+function extractBashStats(output: string): Record<string, unknown> | undefined {
+  const stats: Record<string, unknown> = {};
+
+  // Try to extract exit code from output (if present)
+  // Common pattern: "exit code: 0" or "Exit code: 1"
+  const exitCodeMatch = output.match(/exit\s+code:\s*(\d+)/i);
+  if (exitCodeMatch && exitCodeMatch[1]) {
+    stats.exit_code = parseInt(exitCodeMatch[1], 10);
+  }
+
+  return Object.keys(stats).length > 0 ? stats : undefined;
+}
+
+/**
+ * Extract tool-specific statistics from Grep output
+ */
+function extractGrepStats(output: string, toolInput: unknown): Record<string, unknown> | undefined {
+  const stats: Record<string, unknown> = {};
+
+  // Count match lines (files or content lines depending on output_mode)
+  const lines = output.split('\n').filter(line => line.trim().length > 0);
+  stats.match_count = lines.length;
+
+  return stats;
+}
+
+/**
+ * Extract tool-specific statistics from Glob output
+ */
+function extractGlobStats(output: string): Record<string, unknown> | undefined {
+  const stats: Record<string, unknown> = {};
+
+  // Count file lines
+  const lines = output.split('\n').filter(line => line.trim().length > 0);
+  stats.file_count = lines.length;
+
+  return stats;
+}
+
+/**
+ * Extract output with hybrid storage strategy
+ *
+ * Short outputs (<= 1500 chars): store full, truncated: false
+ * Long outputs: head (800) + "[... N chars omitted ...]" + tail (400), truncated: true
+ */
+function extractOutput(
+  output: string,
+  toolName: string,
+  toolInput?: unknown
+): ExtractedOutput {
+  const originalLength = output.length;
+  const lineCount = output.split('\n').length;
+
+  // Extract tool-specific stats for all outputs
+  let toolSpecific: Record<string, unknown> | undefined;
+  switch (toolName) {
+    case 'Bash':
+      toolSpecific = extractBashStats(output);
+      break;
+    case 'Grep':
+      toolSpecific = extractGrepStats(output, toolInput);
+      break;
+    case 'Glob':
+      toolSpecific = extractGlobStats(output);
+      break;
+  }
+
+  // Short output: store full
+  if (originalLength <= OUTPUT_THRESHOLDS.FULL_STORAGE_LIMIT) {
+    return {
+      stored_output: output,
+      output_stats: {
+        original_length: originalLength,
+        line_count: lineCount,
+        truncated: false,
+        tool_specific: toolSpecific,
+      },
+    };
+  }
+
+  // Long output: head + marker + tail
+  const head = output.substring(0, OUTPUT_THRESHOLDS.HEAD_SIZE);
+  const tail = output.substring(output.length - OUTPUT_THRESHOLDS.TAIL_SIZE);
+  const omittedChars = originalLength - OUTPUT_THRESHOLDS.HEAD_SIZE - OUTPUT_THRESHOLDS.TAIL_SIZE;
+
+  const storedOutput = `${head}\n[... ${omittedChars} chars omitted ...]\n${tail}`;
+
+  return {
+    stored_output: storedOutput,
+    output_stats: {
+      original_length: originalLength,
+      line_count: lineCount,
+      truncated: true,
+      tool_specific: toolSpecific,
+    },
+  };
 }
 
 /**
@@ -229,6 +358,13 @@ export function processToolCapture(capture: ToolCapture): Omit<Observation, 'id'
     ? sanitizeContent(capture.tool_response)
     : '';
 
+  // Extract output with hybrid storage strategy
+  const extracted = extractOutput(
+    sanitizedResponse,
+    capture.tool_name,
+    capture.tool_input
+  );
+
   // Generate summary
   const summary = summarizeTool(
     capture.tool_name,
@@ -243,14 +379,15 @@ export function processToolCapture(capture: ToolCapture): Omit<Observation, 'id'
     sanitizedResponse
   );
 
-  // Estimate tokens for summary + sanitized response preview
-  const contentToEstimate = `${summary}\n${sanitizedResponse.substring(0, 500)}`;
+  // Estimate tokens for summary + stored output
+  const contentToEstimate = `${summary}\n${extracted.stored_output}`;
   const tokenEstimate = estimateTokens(contentToEstimate);
 
-  // Build metadata
+  // Build metadata with enhanced output storage
   const metadata: Record<string, unknown> = {
     tool_input: capture.tool_input,
-    response_preview: sanitizedResponse.substring(0, 200),
+    stored_output: extracted.stored_output,
+    output_stats: extracted.output_stats,
   };
 
   return {
