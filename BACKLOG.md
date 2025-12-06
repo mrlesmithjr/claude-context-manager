@@ -37,10 +37,51 @@
 ## Backlog
 
 ### High Priority
+- [ ] **Transcript Import Feature** - Import historical transcripts from backups
 - [ ] Add configuration file support (~/.claude-context/config.json)
 - [ ] Implement observation summarization/compression for older entries
 - [ ] Add "importance" scoring to prioritize which observations to inject
 - [ ] Support for cross-project context (opt-in)
+
+#### Transcript Import Feature Details
+
+**Problem**: The "Previously" context feature only works for sessions recorded in the SQLite database. Old transcripts from before the plugin was installed (or from backups) are not discoverable.
+
+**Solution**: Add `/ctx-import` command and CLI support to:
+1. Scan transcript `.jsonl` files in `~/.claude/projects/{dashed-path}/`
+2. Create session records in SQLite database for each transcript
+3. Parse transcripts for the last assistant message (for "Previously" context)
+4. Optionally extract tool interactions as observations
+
+**Implementation approach** (reference: claude-mem's `import-xml-observations.ts`):
+- Scan filesystem directly (don't require pre-existing DB records)
+- Parse JSONL format (each line is a transcript entry)
+- Extract session ID from filename (format: `{session_id}.jsonl`)
+- Extract project path from directory structure
+- Create `sessions` table entries with `status: 'complete'`
+- Support both current project and cross-project imports
+
+**Available test data** (backups in `~`):
+```
+~/.claude-backup-20251205-202920/  # Recent backup (Dec 5, 2025)
+~/.claude.backup/                   # Older backup
+```
+
+Both contain `projects/` subdirectories with historical transcripts.
+
+**CLI interface**:
+```bash
+# Import transcripts for current project
+node dist/cli.js import --project "$PWD"
+
+# Import all transcripts from a backup
+node dist/cli.js import --source ~/.claude-backup-20251205-202920/projects
+
+# Dry run (show what would be imported)
+node dist/cli.js import --project "$PWD" --dry-run
+```
+
+**Slash command**: `/ctx-import [--all] [--dry-run]`
 
 ### Medium Priority
 - [ ] Add `/ctx-clear` command to reset project context
