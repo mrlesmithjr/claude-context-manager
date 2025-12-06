@@ -176,13 +176,24 @@ export function validatePostToolUseInput(input: unknown): PostToolUseInput {
   // Validate project path
   const validatedCwd = validateProjectPath(obj.cwd);
 
+  // Extract tool_response - can be string or object with stdout/stderr
+  let toolResponse: string | undefined;
+  if (typeof obj.tool_response === 'string') {
+    toolResponse = obj.tool_response;
+  } else if (typeof obj.tool_response === 'object' && obj.tool_response !== null) {
+    const resp = obj.tool_response as Record<string, unknown>;
+    // Combine stdout and stderr for full output
+    const stdout = typeof resp.stdout === 'string' ? resp.stdout : '';
+    const stderr = typeof resp.stderr === 'string' ? resp.stderr : '';
+    toolResponse = stderr ? `${stdout}\n[stderr]\n${stderr}` : stdout;
+  }
+
   return {
     session_id: obj.session_id,
     cwd: validatedCwd,
     tool_name: obj.tool_name,
     tool_input: obj.tool_input,
-    tool_response:
-      typeof obj.tool_response === 'string' ? obj.tool_response : undefined,
+    tool_response: toolResponse,
   };
 }
 
