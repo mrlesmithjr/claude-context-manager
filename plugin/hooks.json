@@ -1,22 +1,50 @@
 {
-  "name": "context-manager",
-  "version": "0.1.0",
-  "description": "Persistent memory for Claude Code sessions",
+  "description": "Context manager hooks for persistent memory across Claude Code sessions",
   "hooks": {
-    "SessionStart": {
-      "command": "node",
-      "args": ["~/.claude/plugins/context-manager/dist/hooks/context-inject.js"],
-      "timeout": 5000
-    },
-    "PostToolUse": {
-      "command": "node",
-      "args": ["~/.claude/plugins/context-manager/dist/hooks/capture-tool.js"],
-      "timeout": 1000
-    },
-    "Stop": {
-      "command": "node",
-      "args": ["~/.claude/plugins/context-manager/dist/hooks/session-end.js"],
-      "timeout": 5000
-    }
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hooks/context-inject.js",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hooks/capture-prompt.js",
+            "timeout": 1000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hooks/capture-tool.js",
+            "timeout": 1000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hooks/session-end.js",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
   }
 }

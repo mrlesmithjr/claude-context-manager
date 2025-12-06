@@ -4,7 +4,7 @@
  *
  * This script:
  * 1. Removes hooks from ~/.claude/settings.json
- * 2. Removes plugin directory ~/.claude/plugins/context-manager/
+ * 2. Removes slash commands from ~/.claude/commands/
  * 3. Optionally removes data directory ~/.claude-context/
  */
 
@@ -13,7 +13,6 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { createInterface } from 'readline';
 
-const PLUGIN_DIR = join(homedir(), '.claude', 'plugins', 'context-manager');
 const SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
 const COMMANDS_DIR = join(homedir(), '.claude', 'commands');
 const CONTEXT_DIR = join(homedir(), '.claude-context');
@@ -105,25 +104,16 @@ function removeFromSettings() {
     }
   }
 
+  // Clean up empty hooks object
+  if (Object.keys(settings.hooks).length === 0) {
+    delete settings.hooks;
+  }
+
   if (updated) {
     writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
     log('  Settings saved');
   } else {
     log('  No context-manager hooks found');
-  }
-}
-
-/**
- * Remove plugin directory
- */
-function removePluginDir() {
-  log('Removing plugin directory...');
-
-  if (existsSync(PLUGIN_DIR)) {
-    rmSync(PLUGIN_DIR, { recursive: true, force: true });
-    log(`  Removed ${PLUGIN_DIR}`);
-  } else {
-    log('  Plugin directory not found, skipping');
   }
 }
 
@@ -184,7 +174,6 @@ async function uninstall() {
   const removeData = process.argv.includes('--remove-data');
 
   removeFromSettings();
-  removePluginDir();
   removeSlashCommands();
 
   if (removeData) {

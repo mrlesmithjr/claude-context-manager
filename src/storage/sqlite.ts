@@ -214,14 +214,15 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async getRecent(project: string, limit: number): Promise<Observation[]> {
+    // Use LIKE for prefix matching (parent directory sees children)
     const stmt = this.db.prepare(`
       SELECT * FROM observations
-      WHERE project = ?
+      WHERE project LIKE ?
       ORDER BY created_at DESC
       LIMIT ?
     `);
 
-    const rows = stmt.all(project, limit) as Array<{
+    const rows = stmt.all(project + '%', limit) as Array<{
       id: number;
       session_id: string;
       project: string;
@@ -255,13 +256,14 @@ export class SQLiteStorage implements ContextStorage {
     // Apply 80% safety margin
     const effectiveBudget = Math.floor(tokenBudget * 0.8);
 
+    // Use LIKE for prefix matching (parent directory sees children)
     const stmt = this.db.prepare(`
       SELECT * FROM observations
-      WHERE project = ?
+      WHERE project LIKE ?
       ORDER BY created_at DESC
     `);
 
-    const rows = stmt.all(project) as Array<{
+    const rows = stmt.all(project + '%') as Array<{
       id: number;
       session_id: string;
       project: string;
@@ -307,14 +309,15 @@ export class SQLiteStorage implements ContextStorage {
     let params: unknown[];
 
     if (project) {
+      // Use LIKE for prefix matching (parent directory sees children)
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts fts ON o.id = fts.rowid
-        WHERE fts MATCH ? AND o.project = ?
+        WHERE fts MATCH ? AND o.project LIKE ?
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
-      params = [query, project];
+      params = [query, project + '%'];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -407,8 +410,10 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async createSession(sessionId: string, project: string): Promise<void> {
+    // Use INSERT OR IGNORE to handle case where session already exists
+    // (e.g., Claude Code reconnect/restart with same session ID)
     const stmt = this.db.prepare(`
-      INSERT INTO sessions (id, project, started_at, status)
+      INSERT OR IGNORE INTO sessions (id, project, started_at, status)
       VALUES (?, ?, ?, 'active')
     `);
 
@@ -426,10 +431,12 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async getRecentSessions(project: string, limit: number): Promise<Session[]> {
+    // Prioritize complete sessions over active sessions, then sort by recency
+    // This ensures getPreviouslyContext finds completed sessions even if there are many active ones
     const stmt = this.db.prepare(`
       SELECT * FROM sessions
       WHERE project = ?
-      ORDER BY started_at DESC
+      ORDER BY CASE WHEN status = 'complete' THEN 0 ELSE 1 END, started_at DESC
       LIMIT ?
     `);
 

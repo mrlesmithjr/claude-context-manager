@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: December 5, 2025
+**Last Updated**: December 6, 2025
 
 ---
 
@@ -28,16 +28,13 @@ npm run plugin:uninstall
 
 # Uninstall (remove all data)
 npm run plugin:uninstall:all
-
-# Check stats
-node ~/.claude/plugins/context-manager/dist/cli.js stats
-
-# List observations
-node ~/.claude/plugins/context-manager/dist/cli.js list
-
-# Search
-node ~/.claude/plugins/context-manager/dist/cli.js search "query"
 ```
+
+### Slash Commands (in Claude Code)
+- `/ctx-stats` - Show statistics
+- `/ctx-list` - List recent observations
+- `/ctx-search <query>` - Search observations
+- `/ctx-vacuum [days]` - Clean up old data
 
 ---
 
@@ -252,13 +249,16 @@ Content within `<private>` tags is replaced with `[REDACTED]` before storage.
 
 ## Hooks Registered
 
-The install script adds these hooks to `~/.claude/settings.json`:
+The install script adds these hooks directly to `~/.claude/settings.json`:
 
 | Hook | Purpose | Timeout |
 |------|---------|---------|
-| `SessionStart` | Inject context (matcher: `startup\|clear\|compact`) | 5000ms |
+| `SessionStart` | Inject context at session start | 5000ms |
+| `UserPromptSubmit` | Capture user prompts | 1000ms |
 | `PostToolUse` | Capture tool interactions | 1000ms |
 | `Stop` | Save session summary | 5000ms |
+
+NOTE: Hooks are added directly to settings.json (not via plugin marketplace) because SessionStart hooks don't fire reliably through the marketplace plugin system.
 
 ---
 
@@ -273,8 +273,8 @@ The install script adds these hooks to `~/.claude/settings.json`:
 
 ### Native module errors
 ```bash
-# Reinstall to recreate symlinks
-npm run plugin:install
+# Rebuild native modules
+npm rebuild better-sqlite3
 ```
 
 ### Check if hooks are registered
@@ -284,11 +284,8 @@ cat ~/.claude/settings.json | grep context-manager
 
 ### Test hooks manually
 ```bash
-echo '{"session_id":"test","cwd":"'$(pwd)'"}' | \
-  node ~/.claude/plugins/context-manager/dist/hooks/context-inject.js
+echo '{"cwd":"'$(pwd)'"}' | node dist/hooks/context-inject.js
 ```
 
 ### Check database stats
-```bash
-node ~/.claude/plugins/context-manager/dist/cli.js stats
-```
+Use `/ctx-stats` in Claude Code or run the CLI directly from the project directory.

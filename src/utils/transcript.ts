@@ -9,15 +9,17 @@ import { join } from 'path';
 import { homedir } from 'os';
 
 /**
- * Convert a project path to dashed format (like claude-mem does)
+ * Convert a project path to dashed format (Claude Code format)
+ *
+ * Claude Code uses a leading dash before the path:
  *
  * Example:
  *   /Users/username/Projects/Personal/my-project
- *   -> Users-username-Projects-Personal-my-project
+ *   -> -Users-username-Projects-Personal-my-project
  */
 export function convertPathToDashed(projectPath: string): string {
-  // Remove leading slash and replace remaining slashes with dashes
-  return projectPath.replace(/^\//, '').replace(/\//g, '-');
+  // Replace all slashes with dashes (keeps leading dash from leading slash)
+  return projectPath.replace(/\//g, '-');
 }
 
 /**
@@ -39,27 +41,57 @@ export function getTranscriptPath(project: string, sessionId: string): string {
 }
 
 /**
- * JSONL entry for assistant message
+ * Content block in Claude Code transcript
  */
-interface TranscriptEntry {
-  role?: string;
-  content?: string | Array<{ type: string; text?: string }>;
+interface ContentBlock {
+  type: string;
+  text?: string;
 }
 
 /**
- * Extract text content from a transcript entry
+ * Message structure in Claude Code transcript
  */
-function extractTextContent(entry: TranscriptEntry): string | null {
-  if (!entry.content) return null;
+interface TranscriptMessage {
+  role?: string;
+  content?: string | ContentBlock[];
+}
+
+/**
+ * JSONL entry in Claude Code transcript
+ *
+ * Claude Code uses this format:
+ * {
+ *   "type": "assistant",
+ *   "message": {
+ *     "role": "assistant",
+ *     "content": [{ "type": "text", "text": "..." }]
+ *   }
+ * }
+ */
+interface TranscriptEntry {
+  type?: string;
+  message?: TranscriptMessage;
+  // Legacy format (direct role/content)
+  role?: string;
+  content?: string | ContentBlock[];
+}
+
+/**
+ * Extract text content from message content
+ */
+function extractTextFromContent(
+  content: string | ContentBlock[] | undefined
+): string | null {
+  if (!content) return null;
 
   // String content
-  if (typeof entry.content === 'string') {
-    return entry.content;
+  if (typeof content === 'string') {
+    return content;
   }
 
   // Array content (content blocks)
-  if (Array.isArray(entry.content)) {
-    const textBlocks = entry.content
+  if (Array.isArray(content)) {
+    const textBlocks = content
       .filter((block) => block.type === 'text' && block.text)
       .map((block) => block.text || '')
       .filter((text) => text.length > 0);
@@ -68,6 +100,38 @@ function extractTextContent(entry: TranscriptEntry): string | null {
   }
 
   return null;
+}
+
+/**
+ * Extract text content from a transcript entry
+ */
+function extractTextContent(entry: TranscriptEntry): string | null {
+  // Claude Code format: type="assistant" with nested message
+  if (entry.type === 'assistant' && entry.message) {
+    return extractTextFromContent(entry.message.content);
+  }
+
+  // Legacy format: direct role/content
+  if (entry.role === 'assistant') {
+    return extractTextFromContent(entry.content);
+  }
+
+  return null;
+}
+
+/**
+ * Check if entry is an assistant message
+ */
+function isAssistantEntry(entry: TranscriptEntry): boolean {
+  // Claude Code format
+  if (entry.type === 'assistant') {
+    return true;
+  }
+  // Legacy format
+  if (entry.role === 'assistant') {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -132,8 +196,8 @@ export function parseTranscriptForLastMessage(
       try {
         const entry = JSON.parse(line) as TranscriptEntry;
 
-        // Look for assistant messages
-        if (entry.role === 'assistant') {
+        // Look for assistant messages (handles both Claude Code and legacy formats)
+        if (isAssistantEntry(entry)) {
           const text = extractTextContent(entry);
           if (text && text.length > 0) {
             // Strip system-reminder tags before returning
@@ -170,6 +234,7 @@ export async function getPreviouslyContext(
 ): Promise<string | null> {
   // Get the most recent completed session (excluding current session)
   const sessions = await getRecentSessions(project, 10);
+
   const priorSession = sessions.find(
     (s) => s.id !== currentSessionId && s.status === 'complete'
   );

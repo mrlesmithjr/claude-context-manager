@@ -3,7 +3,7 @@
 Persistent memory for Claude Code sessions. Automatically captures context and injects it into future sessions.
 
 **Status**: ACTIVE
-**Last Updated**: December 5, 2025
+**Last Updated**: December 6, 2025
 
 ---
 
@@ -121,8 +121,8 @@ npm run plugin:install
 
 The install script will:
 1. Build the TypeScript source
-2. Copy plugin files to `~/.claude/plugins/context-manager/`
-3. Add hooks to `~/.claude/settings.json`
+2. Add hooks directly to `~/.claude/settings.json`
+3. Install slash commands to `~/.claude/commands/`
 4. Create data directory at `~/.claude-context/`
 
 **Restart Claude Code** to activate the plugin.
@@ -149,23 +149,34 @@ Once installed, the plugin works automatically:
 2. **During Session**: Tool interactions are captured in the background
 3. **Session End**: Session summary is saved
 
+### Slash Commands
+
+Once installed, use these commands in Claude Code:
+
+| Command | Description |
+|---------|-------------|
+| `/ctx-stats` | Show statistics for current project |
+| `/ctx-list` | List recent observations |
+| `/ctx-search <query>` | Search observations |
+| `/ctx-vacuum [days]` | Clean up old data |
+
 ### CLI Commands
 
 ```bash
-# Check statistics
-node ~/.claude/plugins/context-manager/dist/cli.js stats
+# Check statistics (use path where you cloned the repo)
+node /path/to/claude-context-manager/dist/cli.js stats
 
 # List recent observations
-node ~/.claude/plugins/context-manager/dist/cli.js list --limit 20
+node /path/to/claude-context-manager/dist/cli.js list --limit 20
 
 # Search observations
-node ~/.claude/plugins/context-manager/dist/cli.js search "authentication"
+node /path/to/claude-context-manager/dist/cli.js search "authentication"
 
 # Search in specific project
-node ~/.claude/plugins/context-manager/dist/cli.js search "API" --project ~/Projects/my-app
+node /path/to/claude-context-manager/dist/cli.js search "API" --project ~/Projects/my-app
 
 # Clean up old data
-node ~/.claude/plugins/context-manager/dist/cli.js vacuum --days 30
+node /path/to/claude-context-manager/dist/cli.js vacuum --days 30
 ```
 
 ### CLI Alias (Optional)
@@ -173,7 +184,7 @@ node ~/.claude/plugins/context-manager/dist/cli.js vacuum --days 30
 Add to your shell profile (`~/.zshrc` or `~/.bashrc`):
 
 ```bash
-alias ctx="node ~/.claude/plugins/context-manager/dist/cli.js"
+alias ctx="node /path/to/claude-context-manager/dist/cli.js"
 ```
 
 Then use: `ctx stats`, `ctx list`, `ctx search "query"`
@@ -223,11 +234,12 @@ All data is stored locally in `~/.claude-context/`:
 
 ## Hooks Registered
 
-The plugin registers three hooks in `~/.claude/settings.json`:
+The plugin registers four hooks in `~/.claude/settings.json`:
 
 | Hook | Purpose | Timeout |
 |------|---------|---------|
 | `SessionStart` | Inject context at session start | 5s |
+| `UserPromptSubmit` | Capture user prompts | 1s |
 | `PostToolUse` | Capture tool interactions | 1s |
 | `Stop` | Save session summary | 5s |
 
@@ -244,22 +256,20 @@ The plugin registers three hooks in `~/.claude/settings.json`:
 
 2. Test hooks manually:
    ```bash
-   echo '{"session_id":"test","cwd":"'$(pwd)'"}' | \
-     node ~/.claude/plugins/context-manager/dist/hooks/context-inject.js
+   echo '{"cwd":"'$(pwd)'"}' | \
+     node /path/to/claude-context-manager/dist/hooks/context-inject.js
    ```
 
-3. Check stats:
-   ```bash
-   node ~/.claude/plugins/context-manager/dist/cli.js stats
-   ```
+3. Use `/ctx-stats` in Claude Code to check statistics
 
 ### Native module errors?
 
 If you see `ERR_MODULE_NOT_FOUND` for `better-sqlite3`:
 
 ```bash
-# Reinstall the plugin (recreates symlinks)
-npm run plugin:install
+# Rebuild native modules
+cd /path/to/claude-context-manager
+npm rebuild better-sqlite3
 ```
 
 ### Need to reset?

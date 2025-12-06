@@ -37,24 +37,22 @@ async function readStdin(): Promise<string> {
 }
 
 async function main() {
+  // Debug: log that hook was invoked
+  console.error('[context-manager] SessionStart hook invoked');
+
   const storage = new SQLiteStorage();
 
   try {
     const inputStr = await readStdin();
 
+    // Handle empty input gracefully (like claude-mem does)
+    // Treat empty/whitespace input as empty object
     let rawInput;
     try {
-      rawInput = JSON.parse(inputStr);
+      rawInput = inputStr.trim() ? JSON.parse(inputStr) : {};
     } catch (parseError) {
-      console.error('[context-manager] Invalid JSON input');
-      // Return empty hookSpecificOutput response (compatible with thinking mode)
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'SessionStart',
-          additionalContext: ''
-        }
-      }));
-      return;
+      console.error('[context-manager] Invalid JSON input, using defaults');
+      rawInput = {};
     }
 
     // Validate and sanitize input

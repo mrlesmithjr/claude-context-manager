@@ -10,6 +10,9 @@ import path from 'path';
 
 /**
  * Allowed project root directories
+ *
+ * Add common project directories here. The validation will allow
+ * any path that starts with one of these roots.
  */
 const ALLOWED_PROJECT_ROOTS = [
   path.join(homedir(), 'Projects'),
@@ -20,6 +23,9 @@ const ALLOWED_PROJECT_ROOTS = [
   path.join(homedir(), 'code'),
   path.join(homedir(), 'Workspace'),
   path.join(homedir(), 'workspace'),
+  path.join(homedir(), 'Obsidian'),  // Obsidian vaults
+  path.join(homedir(), 'Documents'),  // Common location
+  homedir(),  // Allow home directory as fallback
 ];
 
 /**
@@ -61,6 +67,9 @@ export function validateProjectPath(projectPath: string): string {
 
 /**
  * SessionStart hook input schema
+ *
+ * All fields are optional - Claude Code may not provide all of them.
+ * We fall back to sensible defaults.
  */
 export interface SessionStartInput {
   session_id: string;
@@ -98,28 +107,46 @@ export interface UserPromptSubmitInput {
 }
 
 /**
+ * Generate a simple unique ID for sessions when not provided
+ */
+function generateSessionId(): string {
+  return `session-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
+/**
  * Validate SessionStart input
+ *
+ * All input fields are OPTIONAL - Claude Code may send minimal or empty input.
+ * We fall back to defaults like claude-mem does.
  */
 export function validateSessionStartInput(input: unknown): SessionStartInput {
-  if (typeof input !== 'object' || input === null) {
-    throw new Error('Invalid input: expected object');
+  const obj = (typeof input === 'object' && input !== null)
+    ? input as Record<string, unknown>
+    : {};
+
+  // session_id is optional - generate one if not provided
+  const session_id = (typeof obj.session_id === 'string' && obj.session_id.length > 0)
+    ? obj.session_id
+    : generateSessionId();
+
+  // cwd is optional - use process.cwd() if not provided
+  const rawCwd = (typeof obj.cwd === 'string' && obj.cwd.length > 0)
+    ? obj.cwd
+    : process.cwd();
+
+  // Try to validate project path, but don't fail if outside allowed roots
+  // (just use the raw cwd - we'll skip storage for non-project directories)
+  let validatedCwd: string;
+  try {
+    validatedCwd = validateProjectPath(rawCwd);
+  } catch {
+    // Path outside allowed roots - use raw path anyway
+    // The storage layer can handle this gracefully
+    validatedCwd = rawCwd;
   }
-
-  const obj = input as Record<string, unknown>;
-
-  if (typeof obj.session_id !== 'string' || obj.session_id.length === 0) {
-    throw new Error('Invalid input: session_id must be non-empty string');
-  }
-
-  if (typeof obj.cwd !== 'string' || obj.cwd.length === 0) {
-    throw new Error('Invalid input: cwd must be non-empty string');
-  }
-
-  // Validate project path
-  const validatedCwd = validateProjectPath(obj.cwd);
 
   return {
-    session_id: obj.session_id,
+    session_id,
     cwd: validatedCwd,
   };
 }
