@@ -17,7 +17,8 @@
     "plugin:uninstall:all": "node scripts/uninstall.js --remove-data",
     "clean": "rm -rf dist plugin/scripts",
     "typecheck": "tsc --noEmit",
-    "cli": "node dist/cli.js"
+    "cli": "node dist/cli.js",
+    "import": "npx tsx scripts/import-transcripts.ts"
   },
   "keywords": [
     "claude",
@@ -35,6 +36,8 @@
     "@types/better-sqlite3": "^7.6.8",
     "@types/node": "^20.10.0",
     "esbuild": "^0.19.0",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.3.0"
   },
   "engines": {

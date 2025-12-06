@@ -2,9 +2,33 @@
  * Context Builder
  *
  * Build context for injection with token budgeting.
+ * Supports hierarchical project grouping for parent directories.
  */
 
 import type { Observation } from '../storage/interface.js';
+
+/**
+ * Calculate relative time string from a date
+ */
+function calculateTimeAgo(dateStr: string): string {
+  const createdDate = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - createdDate.getTime();
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffHours < 1) {
+    const diffMinutes = Math.floor(diffMs / (1000 * 60));
+    return diffMinutes <= 1 ? 'just now' : `${diffMinutes}m ago`;
+  } else if (diffHours < 24) {
+    return `${diffHours}h ago`;
+  } else if (diffDays < 7) {
+    return `${diffDays}d ago`;
+  } else {
+    const diffWeeks = Math.floor(diffDays / 7);
+    return `${diffWeeks}w ago`;
+  }
+}
 
 /**
  * Format a single observation for display
@@ -13,34 +37,71 @@ function formatObservation(obs: Observation, index: number): string {
   const fileInfo =
     obs.files_touched.length > 0 ? ` (${obs.files_touched.join(', ')})` : '';
 
-  // Calculate relative time
-  const createdDate = new Date(obs.created_at);
-  const now = new Date();
-  const diffMs = now.getTime() - createdDate.getTime();
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffHours / 24);
-
-  let timeAgo: string;
-  if (diffHours < 1) {
-    const diffMinutes = Math.floor(diffMs / (1000 * 60));
-    timeAgo = diffMinutes <= 1 ? 'just now' : `${diffMinutes}m ago`;
-  } else if (diffHours < 24) {
-    timeAgo = `${diffHours}h ago`;
-  } else if (diffDays < 7) {
-    timeAgo = `${diffDays}d ago`;
-  } else {
-    const diffWeeks = Math.floor(diffDays / 7);
-    timeAgo = `${diffWeeks}w ago`;
-  }
+  const timeAgo = calculateTimeAgo(obs.created_at);
 
   return `${index + 1}. [${timeAgo}] ${obs.summary}${fileInfo}`;
 }
 
 /**
+ * Group observations by immediate child project
+ *
+ * Example: basePath = /Projects/Work
+ *   /Projects/Work/ProjectB/... -> "ProjectB"
+ *   /Projects/Work/ProjectA/... -> "ProjectA"
+ *   /Projects/Work -> "_root"
+ */
+function groupBySubProject(
+  observations: Observation[],
+  basePath: string
+): Map<string, Observation[]> {
+  // Normalize: remove trailing slash if present
+  const normalizedBase = basePath.endsWith('/')
+    ? basePath.slice(0, -1)
+    : basePath;
+
+  const groups = new Map<string, Observation[]>();
+
+  for (const obs of observations) {
+    let groupKey: string;
+
+    if (obs.project === normalizedBase) {
+      // Observation from parent directory itself
+      groupKey = '_root';
+    } else if (obs.project.startsWith(normalizedBase + '/')) {
+      // Extract immediate child project name
+      const relativePath = obs.project.substring(normalizedBase.length + 1);
+      const parts = relativePath.split('/');
+      groupKey = parts[0] || '_root';
+    } else {
+      // Defensive: handle observations outside the base path hierarchy.
+      // Should not occur with correct prefix-matching queries from storage layer,
+      // but protects against storage inconsistencies or edge cases.
+      groupKey = '_other';
+    }
+
+    // Efficiently add to group
+    let existing = groups.get(groupKey);
+    if (!existing) {
+      existing = [];
+      groups.set(groupKey, existing);
+    }
+    existing.push(obs);
+  }
+
+  return groups;
+}
+
+/**
  * Build context block for injection
+ *
+ * @param observations - Observations to include
+ * @param basePath - The current working directory (used for grouping)
+ * @param summary - Optional session summary
+ * @param previouslyContext - Optional "Previously" context from prior sessions
  */
 export function buildContext(
   observations: Observation[],
+  basePath: string,
   summary?: string,
   previouslyContext?: string | null
 ): string {
@@ -72,19 +133,61 @@ export function buildContext(
   }
 
   if (observations.length > 0) {
-    lines.push(
-      `### Recent Activity (${observations.length} observations, ~${totalTokens} tokens)`
-    );
-    lines.push('');
+    // Check if we have multiple sub-projects
+    const groups = groupBySubProject(observations, basePath);
+    const hasMultipleProjects =
+      groups.size > 1 || (groups.size === 1 && !groups.has('_root'));
 
-    for (let i = 0; i < observations.length; i++) {
-      const obs = observations[i];
-      if (obs) {
-        lines.push(formatObservation(obs, i));
+    if (hasMultipleProjects) {
+      // Grouped format - organize by sub-project
+      lines.push(
+        `### Recent Activity by Project (${observations.length} observations, ~${totalTokens} tokens)`
+      );
+      lines.push('');
+
+      // Sort groups by most recent activity (newest first)
+      const sortedGroups = Array.from(groups.entries()).sort((a, b) => {
+        const aNewest = a[1][0]?.created_at || '';
+        const bNewest = b[1][0]?.created_at || '';
+        return bNewest.localeCompare(aNewest);
+      });
+
+      for (const [groupKey, groupObservations] of sortedGroups) {
+        if (groupKey === '_root') {
+          lines.push(
+            `#### Root Directory (${groupObservations.length} observations)`
+          );
+        } else if (groupKey === '_other') {
+          lines.push(`#### Other (${groupObservations.length} observations)`);
+        } else {
+          lines.push(`#### ${groupKey} (${groupObservations.length} observations)`);
+        }
+        lines.push('');
+
+        for (let i = 0; i < groupObservations.length; i++) {
+          const obs = groupObservations[i];
+          if (obs) {
+            lines.push(formatObservation(obs, i));
+          }
+        }
+        lines.push('');
       }
-    }
+    } else {
+      // Flat format (single project or leaf directory)
+      lines.push(
+        `### Recent Activity (${observations.length} observations, ~${totalTokens} tokens)`
+      );
+      lines.push('');
 
-    lines.push('');
+      for (let i = 0; i < observations.length; i++) {
+        const obs = observations[i];
+        if (obs) {
+          lines.push(formatObservation(obs, i));
+        }
+      }
+
+      lines.push('');
+    }
   }
 
   lines.push('</claude-context>');
@@ -97,7 +200,10 @@ export function buildContext(
  *
  * This is displayed to the user to show what context was loaded.
  */
-export function buildVisibilityMessage(observations: Observation[]): string {
+export function buildVisibilityMessage(
+  observations: Observation[],
+  basePath?: string
+): string {
   if (observations.length === 0) {
     return '[context-manager] No previous context found for this project';
   }
@@ -108,6 +214,37 @@ export function buildVisibilityMessage(observations: Observation[]): string {
   );
 
   const lines: string[] = [];
+
+  // Check for multiple sub-projects
+  if (basePath) {
+    const groups = groupBySubProject(observations, basePath);
+    const hasMultipleProjects =
+      groups.size > 1 || (groups.size === 1 && !groups.has('_root'));
+
+    if (hasMultipleProjects) {
+      // Show project breakdown
+      // P2 fix: Count only actual projects (exclude _root and _other)
+      const projectCount = Array.from(groups.keys()).filter(
+        key => key !== '_root' && key !== '_other'
+      ).length;
+
+      // P3 fix: Include Root/Other in breakdown for consistency with context
+      const projectCounts = Array.from(groups.entries())
+        .map(([key, obs]) => {
+          const label = key === '_root' ? 'Root' : key === '_other' ? 'Other' : key;
+          return `${label}: ${obs.length}`;
+        })
+        .join(', ');
+
+      lines.push(
+        `[context-manager] Injected ${observations.length} observations (${totalTokens} tokens) from ${projectCount} projects:`
+      );
+      lines.push(`  Projects: ${projectCounts}`);
+      return lines.join('\n');
+    }
+  }
+
+  // Single project - show preview
   lines.push(
     `[context-manager] Injected ${observations.length} observations (${totalTokens} tokens):`
   );
@@ -115,25 +252,7 @@ export function buildVisibilityMessage(observations: Observation[]): string {
   // Show first 3 observations as preview
   const preview = observations.slice(0, 3);
   for (const obs of preview) {
-    const createdDate = new Date(obs.created_at);
-    const now = new Date();
-    const diffMs = now.getTime() - createdDate.getTime();
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    const diffDays = Math.floor(diffHours / 24);
-
-    let timeAgo: string;
-    if (diffHours < 1) {
-      const diffMinutes = Math.floor(diffMs / (1000 * 60));
-      timeAgo = diffMinutes <= 1 ? 'just now' : `${diffMinutes}m ago`;
-    } else if (diffHours < 24) {
-      timeAgo = `${diffHours}h ago`;
-    } else if (diffDays < 7) {
-      timeAgo = `${diffDays}d ago`;
-    } else {
-      const dateStr = createdDate.toISOString().split('T')[0];
-      timeAgo = dateStr || 'unknown'; // Show date
-    }
-
+    const timeAgo = calculateTimeAgo(obs.created_at);
     const firstFile = obs.files_touched[0];
     const fileInfo = firstFile ? ` (${firstFile})` : '';
     lines.push(`  - ${timeAgo}: ${obs.summary}${fileInfo}`);

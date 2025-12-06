@@ -25,12 +25,20 @@
 - [x] Claude Code marketplace plugin system integration
 - [x] Dynamic slash command generation during install
 
+### Phase 2: Transcript Import (Minimal - Dec 2025)
+- [x] Import script: `scripts/import-transcripts.ts`
+- [x] Support for `--source`, `--project`, `--filter`, `--dry-run` flags
+- [x] JSONL parsing with session summary extraction
+- [x] Path remapping (import from old path, store under new project path)
+- [x] Successfully imported 46 ProjectA sessions from my-product backup
+
 ---
 
 ## In Progress
 
 - [ ] Testing across multiple projects to validate per-project isolation
 - [ ] Monitoring token usage and context injection quality
+- [ ] Polishing Phase 2 import into full CLI command (currently standalone script)
 
 ---
 
@@ -40,164 +48,129 @@
 
 **Phased approach** - each phase is independently useful:
 
-| Phase | Focus | LOE | Unlocks |
-|-------|-------|-----|---------|
-| 1 | Config file support | ~4 hrs | Foundation for phases 2-4 |
-| 2 | Transcript import with path remapping | ~10 hrs | Historical context from backups |
-| 3 | Hierarchical context sharing | ~8 hrs | Parent/child context visibility |
-| 4 | Custom groups | ~8 hrs | Cross-boundary sharing |
+| Phase | Focus | LOE | Status | Notes |
+|-------|-------|-----|--------|-------|
+| 1 | Config file support | ~4 hrs | Pending | Foundation for boundary config |
+| 2 | Transcript import with path remapping | ~4 hrs | ✅ Done | Minimal impl complete, polish remaining |
+| 3 | Configurable boundaries | ~8 hrs | Lower Priority | Prefix matching already provides hierarchical visibility |
+| 4 | Custom groups | ~8 hrs | Future | Cross-boundary sharing |
 
-**Total estimated LOE**: ~30 hrs for full implementation
+**Total remaining LOE**: ~20 hrs (reduced from ~30 hrs)
 
 ### High Priority
 - [ ] **Phase 1: Config File Support** (~4 hrs) - `~/.claude-context/config.json`
-- [ ] **Phase 2: Transcript Import Feature** (~10 hrs) - Import historical transcripts from backups
-- [ ] **Phase 3: Hierarchical Context Sharing** (~8 hrs) - Parent sees children, respects boundaries
-- [ ] **Phase 4: Custom Groups** (~8 hrs) - Cross-boundary sharing via explicit groups
+- [x] **Phase 2: Transcript Import Feature** - ✅ Minimal implementation complete (see Completed section)
+  - [ ] Polish into full CLI command with better error handling (~4 hrs remaining)
+  - [ ] Add `/ctx-import` slash command
 - [ ] Implement observation summarization/compression for older entries
 - [ ] Add "importance" scoring to prioritize which observations to inject
 
-#### Cross-Project Context Sharing Details
+### Medium Priority (Future)
+- [ ] **Phase 3: Configurable Boundaries** (~8 hrs) - Block parent visibility for compliance (see details below)
+- [ ] **Phase 4: Custom Groups** (~8 hrs) - Cross-boundary sharing via explicit groups
 
-**Problem**: Context is currently isolated by exact directory path. This creates issues:
-- Working in `~/Projects` → can't see context from `~/Projects/Work/ProjectB`
-- Starting a new subdirectory → no historical context available
-- Related projects don't share learnings
+#### How Context Visibility Actually Works (Dec 2025 Discovery)
 
-**But strict isolation is sometimes needed**:
-- `~/Projects/Work/ProjectB` should NOT see `~/Projects/MyCompany` (client separation)
-- `~/Projects/Work/ProjectA` should NOT see `~/Projects/Work/ProjectB` (client separation)
+**IMPORTANT**: The original backlog incorrectly stated context was "isolated by exact directory path."
 
-**Solution**: Hierarchical context with configurable boundaries
+**Actual behavior**: The system uses **prefix matching** via SQL `LIKE`:
+```sql
+WHERE project LIKE '/Users/user/Projects/Work%'
+```
 
-**Key Principle**: Parent directories see child context, but siblings don't cross-pollinate unless explicitly allowed.
+This means **hierarchical visibility is already implemented**:
 
-**Example Scenarios**:
+| Working Directory | Query Matches | Result |
+|-------------------|---------------|--------|
+| `~/Projects/Work` | `~/Projects/Work%` | Sees Work + ProjectA + ProjectB + all children |
+| `~/Projects/Work/ProjectA` | `~/Projects/Work/ProjectA%` | Sees only ProjectA and its children |
+| `~/Projects/MyCompany` | `~/Projects/MyCompany%` | Sees only MyCompany tree |
+| `~/Projects` | `~/Projects%` | Sees **everything** |
 
-| Working Directory | Can See Context From | Cannot See |
-|-------------------|---------------------|------------|
-| `~/Projects` | All subdirectories (full context) | - |
-| `~/Projects/Work` | `~/Projects/Work/*` (all work) | `~/Projects/Personal`, `~/Projects/MyCompany` |
-| `~/Projects/Work/ProjectB` | `~/Projects/Work/ProjectB` only | `~/Projects/Work/ProjectA`, other siblings |
-| `~/Projects/Personal` | `~/Projects/Personal/*` | `~/Projects/Work/*` |
+**Natural sibling isolation**: Because prefix matching is used:
+- `~/Projects/Work` does NOT match `~/Projects/MyCompany` (different prefix)
+- `~/Projects/Work/ProjectA` does NOT match `~/Projects/Work/ProjectB` (different prefix)
+
+**This is the desired behavior for most use cases**:
+- Work from a specific project → focused context
+- Work from parent directory → broader context across children
+- Siblings naturally isolated without configuration
+
+**When Phase 3 boundaries would be needed**:
+Only for compliance/regulatory requirements where you need to BLOCK parent visibility:
+- Prevent `~/Projects` from seeing `~/Projects/Work/*` (client data isolation)
+- Prevent `~/Projects/Work` from seeing specific client subdirectories
+
+#### Phase 3: Configurable Boundaries (Future - Lower Priority)
+
+**Status**: Lower priority - current prefix matching works well for most use cases
+
+**Use case**: Organizations requiring strict data isolation between projects
 
 **Configuration** (`~/.claude-context/config.json`):
 ```json
 {
   "contextSharing": {
-    "mode": "hierarchical",  // "strict" | "hierarchical" | "custom"
-
-    // Boundaries that block upward inheritance
     "boundaries": [
       "~/Projects/Work",
-      "~/Projects/MyCompany",
-      "~/Projects/Personal",
-      "~/Projects/Quirkywerks"
-    ],
-
-    // Custom groups (optional, for cross-boundary sharing)
-    "groups": {
-      "all-personal": [
-        "~/Projects/Personal/*",
-        "~/Projects/MyCompany/*"
-      ]
-    }
+      "~/Projects/MyCompany"
+    ]
   }
 }
 ```
 
-**Behavior by mode**:
-
-1. **`strict`** (current default): Exact path match only
-   - `~/Projects/Work/ProjectB` → sees only ProjectB sessions
-
-2. **`hierarchical`**: Parent sees children, respects boundaries
-   - `~/Projects` → sees all (above all boundaries)
-   - `~/Projects/Work` → sees all Work/* (boundary root)
-   - `~/Projects/Work/ProjectB` → sees ProjectB + inherits from Work boundary root
-   - Does NOT cross sibling boundaries
-
-3. **`custom`**: Uses explicit group definitions
-   - Only sees context from projects in same group
-
-**Implementation notes**:
-- Query changes from `WHERE project = ?` to `WHERE project LIKE ? || '%'` for hierarchical
-- Boundary detection: find nearest boundary parent, limit to that subtree
-- Groups override hierarchy for cross-boundary sharing
-
-**Why this matters for import**:
-When importing historical transcripts, the `--project` flag remaps paths. With hierarchical sharing:
-- Import to `~/Projects/Work/ProjectB` → visible from `~/Projects/Work` and `~/Projects`
-- Boundaries prevent cross-client contamination
+**Behavior with boundaries**:
+- Working from `~/Projects` would NOT see children of boundary directories
+- Working from `~/Projects/Work` would see all Work children normally
+- Boundaries block upward inheritance, not downward visibility
 
 #### Transcript Import Feature Details
 
+**Status**: ✅ Minimal implementation complete (Dec 2025)
+
 **Problem**: The "Previously" context feature only works for sessions recorded in the SQLite database. Old transcripts from before the plugin was installed (or from backups) are not discoverable.
 
-**Solution**: Add `/ctx-import` command and CLI support to:
-1. Scan transcript `.jsonl` files in `~/.claude/projects/{dashed-path}/`
-2. Create session records in SQLite database for each transcript
-3. Parse transcripts for the last assistant message (for "Previously" context)
-4. Optionally extract tool interactions as observations
+**Solution implemented**: `scripts/import-transcripts.ts`
 
-**Implementation approach** (reference: claude-mem's `import-xml-observations.ts`):
-- Scan filesystem directly (don't require pre-existing DB records)
-- Parse JSONL format (each line is a transcript entry)
-- Extract session ID from filename (format: `{session_id}.jsonl`)
-- Extract project path from directory structure
-- Create `sessions` table entries with `status: 'complete'`
-- Support both current project and cross-project imports
-
-**Available test data** (backups in `~`):
-```
-~/.claude-backup-20251205-202920/  # Recent backup (Dec 5, 2025)
-~/.claude.backup/                   # Older backup
-```
-
-Both contain `projects/` subdirectories with historical transcripts.
-
-**Path remapping** (critical for moved/renamed projects):
-Sessions are stored with exact `project` path. If a project moved, old transcripts won't match.
-Import must support remapping source paths to current paths:
-
+**Current usage**:
 ```bash
-# Import from backup, remap to current location
-node dist/cli.js import \
-  --source ~/.claude.backup/projects/-Users-you-Projects-Personal-homelab-ansible \
-  --project ~/Projects/Personal/homelab/infrastructure
+cd ~/Projects/Personal/claude-context-manager
 
-# This stores sessions with project = "~/Projects/Personal/homelab/infrastructure"
-# even though the backup was from the old "ansible" path
+# Dry run first
+npm run import -- \
+  --source ~/Backups/.claude.backup/projects/-Users-...-my-product-io/ \
+  --project ~/Projects/Work/ProjectA \
+  --filter ProjectA \
+  --dry-run
+
+# Actual import
+npm run import -- \
+  --source <backup-path> \
+  --project <target-project> \
+  --filter <optional-text-filter>
 ```
 
-**Validation strategy**:
-- Warn if target `--project` directory doesn't exist
-- Still import (directory may be restored later)
-- Sessions only become visible when working in matching directory
+**What works**:
+- JSONL parsing with session summary extraction
+- Path remapping (import from old path, store under new project path)
+- Content filtering (`--filter` flag)
+- Dry run mode (`--dry-run` flag)
+- Timestamp extraction from messages
 
-**CLI interface**:
-```bash
-# Import transcripts for current project (looks in backup for matching path)
-node dist/cli.js import --project "$PWD"
+**Remaining polish** (~4 hrs):
+- [ ] Integrate into main CLI as `npm run cli -- import`
+- [ ] Add `/ctx-import` slash command
+- [ ] Better error handling and progress reporting
+- [ ] Support `--all` flag to import entire backup directory
 
-# Import from specific backup source
-node dist/cli.js import --source ~/.claude-backup-20251205-202920/projects
-
-# Import with path remapping (old path → new path)
-node dist/cli.js import \
-  --source ~/.claude.backup/projects/-Users-you-Projects-Personal-homelab-ansible \
-  --project ~/Projects/Personal/homelab/infrastructure
-
-# Dry run (show what would be imported)
-node dist/cli.js import --project "$PWD" --dry-run
-
-# Import all from backup, auto-detect paths
-node dist/cli.js import --source ~/.claude.backup/projects --all
+**Test data available**:
+```
+~/Backups/.claude.backup/           # Older backup with my-product ProjectA sessions
+~/.claude-backup-20251205-202920/   # Recent backup (Dec 5, 2025)
+~/.claude.backup/                   # Another backup location
 ```
 
-**Slash command**: `/ctx-import [--dry-run]`
-
-### Medium Priority
+### Other Medium Priority Items
 - [ ] Add `/ctx-clear` command to reset project context
 - [ ] Implement session continuity detection (resume vs new session)
 - [ ] Add observation categories/tags for better filtering
@@ -243,3 +216,22 @@ None currently tracked.
 - Marketplace plugin system now working reliably for SessionStart hooks
 - Hook scripts must be in `plugin/scripts/` and use `${CLAUDE_PLUGIN_ROOT}` variable
 - Slash commands are installed to `~/.claude/commands/` during `npm run plugin:install`
+
+### Dec 2025: Context Visibility Discovery
+
+**Key finding**: The system already uses prefix matching (`WHERE project LIKE path%`), NOT exact matching.
+
+This means:
+1. **Hierarchical visibility works out of the box** - parent directories see all child contexts
+2. **Sibling isolation is automatic** - `~/Projects/Work` can't see `~/Projects/MyCompany`
+3. **Phase 3 (boundaries) is only needed for compliance** - blocking parent visibility when required
+
+**Practical implications**:
+- Import sessions to specific project paths (e.g., `~/Projects/Work/ProjectA`)
+- They become visible from parent directories (e.g., `~/Projects/Work`, `~/Projects`)
+- No configuration needed for normal hierarchical use
+
+**Code reference**: `src/storage/sqlite.ts` lines 220-225, 262-266
+```typescript
+const rows = stmt.all(project + '%', limit)  // Prefix matching
+```

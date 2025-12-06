@@ -78,11 +78,11 @@ async function main() {
       async (project, limit) => storage.getRecentSessions(project, limit)
     );
 
-    // Build context for injection
-    const context = buildContext(observations, lastSummary, previouslyContext);
+    // Build context for injection (pass cwd for project grouping)
+    const context = buildContext(observations, input.cwd, lastSummary, previouslyContext);
 
-    // Build visibility message
-    const visibilityMessage = buildVisibilityMessage(observations);
+    // Build visibility message (pass cwd for project grouping)
+    const visibilityMessage = buildVisibilityMessage(observations, input.cwd);
 
     // Log visibility message to stderr (visible to user)
     if (observations.length > 0) {

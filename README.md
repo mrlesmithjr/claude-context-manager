@@ -70,12 +70,13 @@ Session 2 (days later):
 | Feature | Description |
 |---------|-------------|
 | **Automatic Capture** | PostToolUse hook captures every tool interaction |
-| **Per-Project Scoping** | Memories are isolated by project directory |
+| **Hierarchical Visibility** | Parent directories see child project contexts |
 | **Full-Text Search** | SQLite FTS5 enables fast keyword search |
 | **Token Budget** | Configurable limit on injected context size |
 | **Privacy Tags** | `<private>` tag excludes sensitive content |
 | **Local Storage** | All data stays on your machine |
 | **Session Summaries** | Stop hook captures session summaries |
+| **Transcript Import** | Import historical sessions from backups |
 
 ---
 
@@ -95,6 +96,37 @@ Stop ------------------------------->
 ```
 
 Direct SQLite access - no background service required.
+
+---
+
+## Context Visibility
+
+Context visibility uses **prefix matching** - parent directories see all child contexts:
+
+| Working Directory | Sees Context From |
+|-------------------|-------------------|
+| `~/Projects/Work/ProjectA` | Only `~/Projects/Work/ProjectA/*` |
+| `~/Projects/Work` | All of `~/Projects/Work/*` (ProjectA, ProjectB, etc.) |
+| `~/Projects` | Everything under `~/Projects/*` |
+
+**This means:**
+- Working in a specific project → focused, relevant context
+- Working in a parent directory → broader context across children
+- Sibling projects are naturally isolated (Work can't see MyCompany)
+
+**Practical example:**
+```
+# Import sessions to a specific project
+npm run import -- --source ~/.backup/... --project ~/Projects/Work/ProjectA
+
+# Context is now visible from:
+#   ~/Projects/Work/ProjectA  ✓
+#   ~/Projects/Work       ✓ (sees all Work children)
+#   ~/Projects            ✓ (sees everything)
+#
+# But NOT from:
+#   ~/Projects/Personal   ✗ (different branch)
+```
 
 ---
 
@@ -197,6 +229,32 @@ node /path/to/claude-context-manager/dist/cli.js search "API" --project ~/Projec
 # Clean up old data
 node /path/to/claude-context-manager/dist/cli.js vacuum --days 30
 ```
+
+### Import Historical Transcripts
+
+Import session context from Claude Code backups:
+
+```bash
+cd /path/to/claude-context-manager
+
+# Dry run first (see what would be imported)
+npm run import -- \
+  --source ~/.claude.backup/projects/-Users-you-Projects-OldProject \
+  --project ~/Projects/NewProject \
+  --filter "optional-keyword" \
+  --dry-run
+
+# Actual import
+npm run import -- \
+  --source ~/.claude.backup/projects/-Users-you-Projects-OldProject \
+  --project ~/Projects/NewProject \
+  --filter "optional-keyword"
+```
+
+**Use cases:**
+- Migrating context when a project moves to a new directory
+- Importing historical sessions from before the plugin was installed
+- Filtering specific topic sessions (e.g., `--filter ProjectA`)
 
 ### CLI Alias (Optional)
 

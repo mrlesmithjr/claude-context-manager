@@ -42,6 +42,16 @@ npm run plugin:uninstall:all  # Remove all data
 - `/ctx-search <query>` - Search observations
 - `/ctx-vacuum [days]` - Clean up old data
 
+### Import Historical Transcripts
+```bash
+# Import from backup with path remapping and filtering
+npm run import -- \
+  --source ~/.claude.backup/projects/-Users-...-OldProject \
+  --project ~/Projects/NewProject \
+  --filter "optional-keyword" \
+  --dry-run  # Remove to actually import
+```
+
 ---
 
 ## Architecture
@@ -102,6 +112,7 @@ claude-context-manager/
 +-- scripts/
 |   +-- install.js             # Prep script (dirs, slash commands)
 |   +-- uninstall.js           # Cleanup script
+|   +-- import-transcripts.ts  # Import historical transcripts from backups
 +-- src/
 |   +-- capture/
 |   |   +-- processor.ts       # Process tool outputs
@@ -132,10 +143,18 @@ claude-context-manager/
 - Simpler than HTTP service architecture
 - No background process to manage
 
-### 2. Per-Project Scoping
+### 2. Hierarchical Project Scoping
 - Observations are scoped by `project` (derived from `cwd`)
-- Context injection only retrieves observations from current project
-- Clean separation across projects
+- Uses **prefix matching** (`WHERE project LIKE path%`)
+- Parent directories see all child project contexts
+- Sibling projects are naturally isolated
+
+**Visibility example:**
+| Working From | Sees |
+|--------------|------|
+| `~/Projects/Work/ProjectA` | Only ProjectA contexts |
+| `~/Projects/Work` | All Work/* children (ProjectA, ProjectB, etc.) |
+| `~/Projects` | Everything |
 
 ### 3. hookSpecificOutput Format
 - SessionStart hook returns:
@@ -230,6 +249,9 @@ npm run plugin:uninstall:all
 npm run cli -- stats
 npm run cli -- list --limit 10
 npm run cli -- search "query"
+
+# Import historical transcripts
+npm run import -- --source <path> --project <target> [--filter <text>] [--dry-run]
 ```
 
 ---
