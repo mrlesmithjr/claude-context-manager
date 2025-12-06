@@ -3,11 +3,12 @@
   "hooks": {
     "SessionStart": [
       {
+        "matcher": "startup|clear|compact",
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hooks/context-inject.js",
-            "timeout": 5000
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/context-inject.js",
+            "timeout": 10
           }
         ]
       }
@@ -17,8 +18,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hooks/capture-prompt.js",
-            "timeout": 1000
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/capture-prompt.js",
+            "timeout": 5
           }
         ]
       }
@@ -29,8 +30,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hooks/capture-tool.js",
-            "timeout": 1000
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/capture-tool.js",
+            "timeout": 5
           }
         ]
       }
@@ -40,8 +41,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hooks/session-end.js",
-            "timeout": 5000
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/session-end.js",
+            "timeout": 10
           }
         ]
       }

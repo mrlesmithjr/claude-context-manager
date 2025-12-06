@@ -9,12 +9,18 @@
 # Ignore local settings (machine-specific permissions)
 .claude/settings.local.json
 
+# Include .claude-plugin directories (marketplace plugin metadata)
+!.claude-plugin/
+!.claude-plugin/*.json
+!plugin/.claude-plugin/
+!plugin/.claude-plugin/*.json
+
 # Dependencies
 node_modules/
 
 # Build output
 dist/
-plugin/hooks/*.js
+plugin/scripts/
 
 # IDE
 .idea/

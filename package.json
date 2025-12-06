@@ -10,12 +10,12 @@
   "scripts": {
     "build": "npm run build:src && npm run build:hooks && npm run build:cli",
     "build:src": "tsc",
-    "build:hooks": "esbuild plugin/hooks/*.ts --bundle --outdir=dist/hooks --platform=node --target=node18 --format=esm --external:better-sqlite3",
+    "build:hooks": "esbuild plugin/hooks/*.ts --bundle --outdir=plugin/scripts --platform=node --target=node18 --format=esm --external:better-sqlite3",
     "build:cli": "esbuild cli/index.ts --bundle --outfile=dist/cli.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --banner:js=\"#!/usr/bin/env node\"",
     "plugin:install": "npm run build && node scripts/install.js",
     "plugin:uninstall": "node scripts/uninstall.js",
     "plugin:uninstall:all": "node scripts/uninstall.js --remove-data",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist plugin/scripts",
     "typecheck": "tsc --noEmit",
     "cli": "node dist/cli.js"
   },

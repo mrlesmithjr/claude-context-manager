@@ -3,32 +3,24 @@
  * Uninstall Script for claude-context-manager
  *
  * This script:
- * 1. Removes hooks from ~/.claude/settings.json
- * 2. Removes slash commands from ~/.claude/commands/
- * 3. Optionally removes data directory ~/.claude-context/
+ * 1. Removes slash commands from ~/.claude/commands/
+ * 2. Optionally removes data directory ~/.claude-context/
+ * 3. Provides instructions for marketplace uninstallation
  */
 
-import { existsSync, rmSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { createInterface } from 'readline';
 
-const SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
 const COMMANDS_DIR = join(homedir(), '.claude', 'commands');
 const CONTEXT_DIR = join(homedir(), '.claude-context');
 
 // Slash commands to remove
 const SLASH_COMMANDS = ['ctx-stats.md', 'ctx-list.md', 'ctx-search.md', 'ctx-vacuum.md'];
 
-// Marker to identify our hooks in settings.json
-const HOOK_MARKER = 'context-manager';
-
 function log(message) {
   console.log(`[context-manager] ${message}`);
-}
-
-function error(message) {
-  console.error(`[context-manager] ERROR: ${message}`);
 }
 
 /**
@@ -46,75 +38,6 @@ async function confirm(question) {
       resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
     });
   });
-}
-
-/**
- * Remove context-manager hooks from a hook array
- */
-function removeContextManagerHooks(hookArray) {
-  if (!Array.isArray(hookArray)) return hookArray;
-  return hookArray.filter(
-    (entry) => !entry.hooks?.some((hook) => hook.command?.includes(HOOK_MARKER))
-  );
-}
-
-/**
- * Remove hooks from settings.json
- */
-function removeFromSettings() {
-  log('Removing hooks from settings.json...');
-
-  if (!existsSync(SETTINGS_PATH)) {
-    log('  settings.json not found, skipping');
-    return;
-  }
-
-  let settings;
-  try {
-    const content = readFileSync(SETTINGS_PATH, 'utf-8');
-    settings = JSON.parse(content);
-  } catch (err) {
-    error(`Failed to parse settings.json: ${err.message}`);
-    return;
-  }
-
-  if (!settings.hooks) {
-    log('  No hooks found in settings.json');
-    return;
-  }
-
-  let updated = false;
-  const hookTypes = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'];
-
-  for (const hookType of hookTypes) {
-    if (settings.hooks[hookType]) {
-      const before = settings.hooks[hookType].length;
-      settings.hooks[hookType] = removeContextManagerHooks(settings.hooks[hookType]);
-      const after = settings.hooks[hookType].length;
-
-      if (before !== after) {
-        log(`  Removed ${hookType} hook`);
-        updated = true;
-      }
-
-      // Remove empty arrays
-      if (settings.hooks[hookType].length === 0) {
-        delete settings.hooks[hookType];
-      }
-    }
-  }
-
-  // Clean up empty hooks object
-  if (Object.keys(settings.hooks).length === 0) {
-    delete settings.hooks;
-  }
-
-  if (updated) {
-    writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
-    log('  Settings saved');
-  } else {
-    log('  No context-manager hooks found');
-  }
 }
 
 /**
@@ -166,6 +89,7 @@ async function removeDataDir() {
 async function uninstall() {
   console.log('\n========================================');
   console.log('  claude-context-manager uninstaller');
+  console.log('  (Claude Code Marketplace Plugin)');
   console.log('========================================\n');
 
   // Check for --keep-data flag
@@ -173,7 +97,6 @@ async function uninstall() {
   // Check for --remove-data flag (no prompt)
   const removeData = process.argv.includes('--remove-data');
 
-  removeFromSettings();
   removeSlashCommands();
 
   if (removeData) {
@@ -188,9 +111,17 @@ async function uninstall() {
   }
 
   console.log('\n========================================');
-  console.log('  Uninstallation complete!');
+  console.log('  Cleanup complete!');
   console.log('========================================');
-  console.log('\nRestart Claude Code to apply changes.\n');
+  console.log('\nTo uninstall the plugin, run this command in Claude Code:\n');
+  console.log('  /plugin uninstall context-manager\n');
+  console.log('Note: Slash commands have been removed from ~/.claude/commands/');
+  if (!removeData) {
+    console.log('      Context data preserved in ~/.claude-context/');
+  } else {
+    console.log('      Context data removed from ~/.claude-context/');
+  }
+  console.log('');
 }
 
 // Run uninstaller

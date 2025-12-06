@@ -115,25 +115,44 @@ cd claude-context-manager
 # Install dependencies
 npm install
 
-# Build and install the plugin
+# Build the plugin and prepare for installation
 npm run plugin:install
 ```
 
 The install script will:
 1. Build the TypeScript source
-2. Add hooks directly to `~/.claude/settings.json`
-3. Install slash commands to `~/.claude/commands/`
-4. Create data directory at `~/.claude-context/`
+2. Install slash commands to `~/.claude/commands/`
+3. Create data directory at `~/.claude-context/`
+4. Show installation commands
+
+**Then in Claude Code**, run these commands:
+
+```
+/plugin marketplace add ~/Projects/Personal/claude-context-manager
+/plugin install context-manager
+```
+
+(Replace `~/Projects/Personal/claude-context-manager` with your actual path)
 
 **Restart Claude Code** to activate the plugin.
 
+The plugin will be installed to `~/.claude/plugins/` and hooks will be registered automatically.
+
 ### Uninstall
 
+**In Claude Code:**
+
+```
+/plugin uninstall context-manager
+```
+
+**Then optionally clean up:**
+
 ```bash
-# Uninstall (keep your data)
+# Clean up slash commands and data directory (keep data)
 npm run plugin:uninstall
 
-# Uninstall and remove all data
+# Clean up everything including all stored data
 npm run plugin:uninstall:all
 ```
 
@@ -234,14 +253,16 @@ All data is stored locally in `~/.claude-context/`:
 
 ## Hooks Registered
 
-The plugin registers four hooks in `~/.claude/settings.json`:
+The plugin registers hooks via the Claude Code marketplace plugin system:
 
-| Hook | Purpose | Timeout |
-|------|---------|---------|
-| `SessionStart` | Inject context at session start | 5s |
-| `UserPromptSubmit` | Capture user prompts | 1s |
-| `PostToolUse` | Capture tool interactions | 1s |
-| `Stop` | Save session summary | 5s |
+| Hook | Purpose | Timeout | Matcher |
+|------|---------|---------|---------|
+| `SessionStart` | Inject context at session start | 10s | `startup\|clear\|compact` |
+| `UserPromptSubmit` | Capture user prompts | 5s | - |
+| `PostToolUse` | Capture tool interactions | 5s | `*` |
+| `Stop` | Save session summary | 10s | - |
+
+Hook definitions are in `plugin/hooks/hooks.json`. When you install the plugin via `/plugin install`, Claude Code automatically registers these hooks and executes the corresponding scripts in `plugin/scripts/`.
 
 ---
 
@@ -249,18 +270,22 @@ The plugin registers four hooks in `~/.claude/settings.json`:
 
 ### Plugin not working?
 
-1. Check if hooks are in settings.json:
-   ```bash
-   cat ~/.claude/settings.json | grep context-manager
+1. Check if plugin is installed:
+   ```
+   # In Claude Code
+   /plugin list
+
+   # Or check the installed plugins file
+   cat ~/.claude/plugins/installed_plugins.json
    ```
 
-2. Test hooks manually:
+3. Test hooks manually:
    ```bash
    echo '{"cwd":"'$(pwd)'"}' | \
-     node /path/to/claude-context-manager/dist/hooks/context-inject.js
+     node /path/to/claude-context-manager/plugin/scripts/context-inject.js
    ```
 
-3. Use `/ctx-stats` in Claude Code to check statistics
+4. Use `/ctx-stats` in Claude Code to check statistics
 
 ### Native module errors?
 

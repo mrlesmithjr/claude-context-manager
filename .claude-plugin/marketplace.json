@@ -1,0 +1,18 @@
+{
+  "name": "mrlesmithjr",
+  "owner": {
+    "name": "Larry Smith Jr."
+  },
+  "metadata": {
+    "description": "Claude Code plugins by Larry Smith Jr.",
+    "homepage": "https://github.com/mrlesmithjr/claude-context-manager"
+  },
+  "plugins": [
+    {
+      "name": "context-manager",
+      "version": "0.1.0",
+      "source": "./plugin",
+      "description": "Persistent memory system for Claude Code - context across sessions"
+    }
+  ]
+}

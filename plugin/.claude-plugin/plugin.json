@@ -1,0 +1,17 @@
+{
+  "name": "context-manager",
+  "version": "0.1.0",
+  "description": "Persistent memory system for Claude Code - seamlessly preserve context across sessions",
+  "author": {
+    "name": "Larry Smith Jr."
+  },
+  "repository": "https://github.com/mrlesmithjr/claude-context-manager",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "context",
+    "persistence",
+    "hooks",
+    "sqlite"
+  ]
+}
