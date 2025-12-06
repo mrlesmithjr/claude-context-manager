@@ -36,12 +36,26 @@
 
 ## Backlog
 
+### Implementation Roadmap
+
+**Phased approach** - each phase is independently useful:
+
+| Phase | Focus | LOE | Unlocks |
+|-------|-------|-----|---------|
+| 1 | Config file support | ~4 hrs | Foundation for phases 2-4 |
+| 2 | Transcript import with path remapping | ~10 hrs | Historical context from backups |
+| 3 | Hierarchical context sharing | ~8 hrs | Parent/child context visibility |
+| 4 | Custom groups | ~8 hrs | Cross-boundary sharing |
+
+**Total estimated LOE**: ~30 hrs for full implementation
+
 ### High Priority
-- [ ] **Transcript Import Feature** - Import historical transcripts from backups
-- [ ] Add configuration file support (~/.claude-context/config.json)
+- [ ] **Phase 1: Config File Support** (~4 hrs) - `~/.claude-context/config.json`
+- [ ] **Phase 2: Transcript Import Feature** (~10 hrs) - Import historical transcripts from backups
+- [ ] **Phase 3: Hierarchical Context Sharing** (~8 hrs) - Parent sees children, respects boundaries
+- [ ] **Phase 4: Custom Groups** (~8 hrs) - Cross-boundary sharing via explicit groups
 - [ ] Implement observation summarization/compression for older entries
 - [ ] Add "importance" scoring to prioritize which observations to inject
-- [ ] **Cross-Project Context Sharing** - Hierarchical context inheritance with work separation
 
 #### Cross-Project Context Sharing Details
 
