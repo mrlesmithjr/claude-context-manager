@@ -171,6 +171,11 @@ npm run import -- \
 ```
 
 ### Other Medium Priority Items
+- [ ] Add `/ctx-reassign` command for bulk observation reassignment
+  - Reassign observations based on content patterns (files_touched, summary)
+  - Example: `npm run cli -- reassign --from ~/Projects/Work --pattern ProjectA --to ~/Projects/Work/ProjectA`
+  - Useful for cleanup when observations were captured from parent directory
+  - Should support `--dry-run` flag
 - [ ] Add `/ctx-clear` command to reset project context
 - [ ] Implement session continuity detection (resume vs new session)
 - [ ] Add observation categories/tags for better filtering
