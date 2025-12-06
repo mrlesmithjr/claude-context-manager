@@ -41,7 +41,80 @@
 - [ ] Add configuration file support (~/.claude-context/config.json)
 - [ ] Implement observation summarization/compression for older entries
 - [ ] Add "importance" scoring to prioritize which observations to inject
-- [ ] Support for cross-project context (opt-in)
+- [ ] **Cross-Project Context Sharing** - Hierarchical context inheritance with work separation
+
+#### Cross-Project Context Sharing Details
+
+**Problem**: Context is currently isolated by exact directory path. This creates issues:
+- Working in `~/Projects` → can't see context from `~/Projects/Work/ProjectB`
+- Starting a new subdirectory → no historical context available
+- Related projects don't share learnings
+
+**But strict isolation is sometimes needed**:
+- `~/Projects/Work/ProjectB` should NOT see `~/Projects/MyCompany` (client separation)
+- `~/Projects/Work/ProjectA` should NOT see `~/Projects/Work/ProjectB` (client separation)
+
+**Solution**: Hierarchical context with configurable boundaries
+
+**Key Principle**: Parent directories see child context, but siblings don't cross-pollinate unless explicitly allowed.
+
+**Example Scenarios**:
+
+| Working Directory | Can See Context From | Cannot See |
+|-------------------|---------------------|------------|
+| `~/Projects` | All subdirectories (full context) | - |
+| `~/Projects/Work` | `~/Projects/Work/*` (all work) | `~/Projects/Personal`, `~/Projects/MyCompany` |
+| `~/Projects/Work/ProjectB` | `~/Projects/Work/ProjectB` only | `~/Projects/Work/ProjectA`, other siblings |
+| `~/Projects/Personal` | `~/Projects/Personal/*` | `~/Projects/Work/*` |
+
+**Configuration** (`~/.claude-context/config.json`):
+```json
+{
+  "contextSharing": {
+    "mode": "hierarchical",  // "strict" | "hierarchical" | "custom"
+
+    // Boundaries that block upward inheritance
+    "boundaries": [
+      "~/Projects/Work",
+      "~/Projects/MyCompany",
+      "~/Projects/Personal",
+      "~/Projects/Quirkywerks"
+    ],
+
+    // Custom groups (optional, for cross-boundary sharing)
+    "groups": {
+      "all-personal": [
+        "~/Projects/Personal/*",
+        "~/Projects/MyCompany/*"
+      ]
+    }
+  }
+}
+```
+
+**Behavior by mode**:
+
+1. **`strict`** (current default): Exact path match only
+   - `~/Projects/Work/ProjectB` → sees only ProjectB sessions
+
+2. **`hierarchical`**: Parent sees children, respects boundaries
+   - `~/Projects` → sees all (above all boundaries)
+   - `~/Projects/Work` → sees all Work/* (boundary root)
+   - `~/Projects/Work/ProjectB` → sees ProjectB + inherits from Work boundary root
+   - Does NOT cross sibling boundaries
+
+3. **`custom`**: Uses explicit group definitions
+   - Only sees context from projects in same group
+
+**Implementation notes**:
+- Query changes from `WHERE project = ?` to `WHERE project LIKE ? || '%'` for hierarchical
+- Boundary detection: find nearest boundary parent, limit to that subtree
+- Groups override hierarchy for cross-boundary sharing
+
+**Why this matters for import**:
+When importing historical transcripts, the `--project` flag remaps paths. With hierarchical sharing:
+- Import to `~/Projects/Work/ProjectB` → visible from `~/Projects/Work` and `~/Projects`
+- Boundaries prevent cross-client contamination
 
 #### Transcript Import Feature Details
 
@@ -69,19 +142,46 @@
 
 Both contain `projects/` subdirectories with historical transcripts.
 
+**Path remapping** (critical for moved/renamed projects):
+Sessions are stored with exact `project` path. If a project moved, old transcripts won't match.
+Import must support remapping source paths to current paths:
+
+```bash
+# Import from backup, remap to current location
+node dist/cli.js import \
+  --source ~/.claude.backup/projects/-Users-you-Projects-Personal-homelab-ansible \
+  --project ~/Projects/Personal/homelab/infrastructure
+
+# This stores sessions with project = "~/Projects/Personal/homelab/infrastructure"
+# even though the backup was from the old "ansible" path
+```
+
+**Validation strategy**:
+- Warn if target `--project` directory doesn't exist
+- Still import (directory may be restored later)
+- Sessions only become visible when working in matching directory
+
 **CLI interface**:
 ```bash
-# Import transcripts for current project
+# Import transcripts for current project (looks in backup for matching path)
 node dist/cli.js import --project "$PWD"
 
-# Import all transcripts from a backup
+# Import from specific backup source
 node dist/cli.js import --source ~/.claude-backup-20251205-202920/projects
+
+# Import with path remapping (old path → new path)
+node dist/cli.js import \
+  --source ~/.claude.backup/projects/-Users-you-Projects-Personal-homelab-ansible \
+  --project ~/Projects/Personal/homelab/infrastructure
 
 # Dry run (show what would be imported)
 node dist/cli.js import --project "$PWD" --dry-run
+
+# Import all from backup, auto-detect paths
+node dist/cli.js import --source ~/.claude.backup/projects --all
 ```
 
-**Slash command**: `/ctx-import [--all] [--dry-run]`
+**Slash command**: `/ctx-import [--dry-run]`
 
 ### Medium Priority
 - [ ] Add `/ctx-clear` command to reset project context
