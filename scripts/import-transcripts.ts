@@ -70,28 +70,80 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+/**
+ * Score a message based on quality indicators for summary extraction.
+ * Higher scores indicate better summary content.
+ */
+function scoreMessage(text: string): number {
+  let score = 0;
+
+  // Positive indicators
+  if (text.includes('|---|')) score += 30; // markdown table
+  if (/^##\s+(Summary|Key Findings|Analysis|Results|Recommendations)/im.test(text)) score += 25;
+  if (/^\d+\.\s+/m.test(text)) score += 10; // numbered list
+  if (text.length > 500) score += 15;
+  if (text.length > 1000) score += 10;
+
+  // Negative indicators
+  if (text.endsWith('?')) score -= 20;
+  if (text.length < 100) score -= 20;
+  if (/would you like|let me know if/i.test(text)) score -= 15;
+
+  return score;
+}
+
+/**
+ * Extract the best summary content from transcript messages.
+ * Scores all assistant messages and selects the highest-quality one.
+ * Falls back to the last assistant message if no message scores well.
+ */
 function extractSummary(messages: TranscriptMessage[]): string {
-  // Find the last assistant message
-  for (let i = messages.length - 1; i >= 0; i--) {
+  interface ScoredMessage {
+    text: string;
+    score: number;
+    index: number;
+  }
+
+  const scoredMessages: ScoredMessage[] = [];
+
+  // Score all assistant messages
+  for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg.message?.role === 'assistant') {
       const content = msg.message.content;
+      let text: string;
 
       if (typeof content === 'string') {
-        // Truncate to 500 chars
-        return content.substring(0, 500);
+        text = content;
       } else if (Array.isArray(content)) {
         // Extract text from content blocks
-        const textBlocks = content
+        text = content
           .filter((block) => block.type === 'text' && block.text)
           .map((block) => block.text)
           .join(' ');
-        return textBlocks.substring(0, 500);
+      } else {
+        continue;
       }
+
+      const score = scoreMessage(text);
+      scoredMessages.push({ text, score, index: i });
     }
   }
 
-  return 'No summary available';
+  if (scoredMessages.length === 0) {
+    return 'No summary available';
+  }
+
+  // Sort by score (descending), then by index (descending) to prefer later messages on ties
+  scoredMessages.sort((a, b) => {
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+    return b.index - a.index;
+  });
+
+  // Return the highest-scoring message, truncated to 500 chars
+  return scoredMessages[0].text.substring(0, 500);
 }
 
 function parseJsonl(filePath: string): TranscriptMessage[] {
