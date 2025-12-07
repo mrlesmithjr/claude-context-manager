@@ -78,13 +78,23 @@ function scoreMessage(text: string): number {
   let score = 0;
 
   // Positive indicators
-  if (text.includes('|---|')) score += 30; // markdown table
-  if (/^##\s+(Summary|Key Findings|Analysis|Results|Recommendations)/im.test(text)) score += 25;
+  if (text.includes('|---|')) score += 20; // markdown table (reduced - ctx-list also has tables)
+  if (/^##\s+(Summary|Key Findings|Analysis|Results|Recommendations|Data Sources|Overview)/im.test(text)) score += 25;
   if (/^\d+\.\s+/m.test(text)) score += 10; // numbered list
   if (text.length > 500) score += 15;
   if (text.length > 1000) score += 10;
 
-  // Negative indicators
+  // Content quality indicators
+  if (/COGS|profit|margin|revenue|cost|financial/i.test(text)) score += 20;
+  if (/implementation|architecture|design|solution/i.test(text)) score += 15;
+  if (/completed|accomplished|created|implemented/i.test(text)) score += 10;
+
+  // Negative indicators - ctx-list/utility outputs
+  if (/Context Observations|Recent Activity/i.test(text)) score -= 40; // ctx-list output
+  if (/\| # \| Timestamp/i.test(text)) score -= 40; // ctx-list table header
+  if (/\| Tool \| Summary/i.test(text)) score -= 30; // observation table
+
+  // General negative indicators
   if (text.endsWith('?')) score -= 20;
   if (text.length < 100) score -= 20;
   if (/would you like|let me know if/i.test(text)) score -= 15;
