@@ -431,11 +431,12 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async getRecentSessions(project: string, limit: number): Promise<Session[]> {
-    // Prioritize complete sessions over active sessions, then sort by recency
-    // This ensures getPreviouslyContext finds completed sessions even if there are many active ones
+    // Prioritize complete sessions with summaries, then sort by recency
+    // Skip sessions without summaries (empty imports or sessions that ended without summary)
     const stmt = this.db.prepare(`
       SELECT * FROM sessions
       WHERE project = ?
+        AND (summary IS NOT NULL AND LENGTH(summary) > 0)
       ORDER BY CASE WHEN status = 'complete' THEN 0 ELSE 1 END, started_at DESC
       LIMIT ?
     `);
