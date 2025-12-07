@@ -174,15 +174,31 @@ async function statsCommand(args: string[]) {
     console.log('All Projects\n');
   }
 
+  // Basic stats
+  console.log('=== Storage ===');
   console.log(`Total Observations: ${stats.total_observations}`);
   console.log(`Total Sessions: ${stats.total_sessions}`);
-  console.log(`Total Tokens: ${stats.total_tokens}`);
-  console.log(
-    `Oldest Observation: ${stats.oldest_observation || 'N/A'}`
-  );
-  console.log(
-    `Newest Observation: ${stats.newest_observation || 'N/A'}`
-  );
+  console.log(`Date Range: ${stats.oldest_observation || 'N/A'} to ${stats.newest_observation || 'N/A'}`);
+
+  // Token Economics
+  console.log('\n=== Token Economics ===');
+  console.log(`Total Tokens Stored: ${stats.total_tokens.toLocaleString()}`);
+  console.log(`Avg per Observation: ${stats.avg_tokens_per_observation} tokens`);
+  console.log(`Avg per Session: ${stats.avg_tokens_per_session.toLocaleString()} tokens`);
+  console.log(`Injection Budget: ${stats.token_budget.toLocaleString()} tokens`);
+  console.log(`Typical Injection: ~${stats.typical_injection_tokens.toLocaleString()} tokens (${Math.round((stats.typical_injection_tokens / stats.token_budget) * 100)}% of budget)`);
+
+  // Tokens by tool
+  if (Object.keys(stats.tokens_by_tool).length > 0) {
+    console.log('\n=== Tokens by Tool ===');
+    const tools = Object.entries(stats.tokens_by_tool)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+    for (const [tool, tokens] of tools) {
+      const pct = Math.round((tokens / stats.total_tokens) * 100);
+      console.log(`  ${tool}: ${tokens.toLocaleString()} (${pct}%)`);
+    }
+  }
 }
 
 async function vacuumCommand(args: string[]) {

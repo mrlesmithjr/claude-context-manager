@@ -42,6 +42,12 @@ export interface Stats {
   oldest_observation: string | null;
   newest_observation: string | null;
   total_tokens: number;
+  // Token economics
+  avg_tokens_per_observation: number;
+  avg_tokens_per_session: number;
+  tokens_by_tool: Record<string, number>;
+  token_budget: number;
+  typical_injection_tokens: number;
 }
 
 /**

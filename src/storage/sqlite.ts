@@ -358,54 +358,125 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async getStats(project?: string): Promise<Stats> {
-    let sql: string;
-    let params: unknown[];
+    const TOKEN_BUDGET = parseInt(
+      process.env.CONTEXT_MANAGER_TOKEN_BUDGET || '4000',
+      10
+    );
 
-    if (project) {
-      sql = `
+    // Base observation stats
+    const baseSql = project
+      ? `
         SELECT
           COUNT(*) as total_observations,
           MIN(created_at) as oldest_observation,
           MAX(created_at) as newest_observation,
-          SUM(token_estimate) as total_tokens
+          SUM(token_estimate) as total_tokens,
+          AVG(token_estimate) as avg_tokens
         FROM observations
-        WHERE project = ?
-      `;
-      params = [project];
-    } else {
-      sql = `
+        WHERE project LIKE ? || '%'
+      `
+      : `
         SELECT
           COUNT(*) as total_observations,
           MIN(created_at) as oldest_observation,
           MAX(created_at) as newest_observation,
-          SUM(token_estimate) as total_tokens
+          SUM(token_estimate) as total_tokens,
+          AVG(token_estimate) as avg_tokens
         FROM observations
       `;
-      params = [];
-    }
 
-    const stmt = this.db.prepare(sql);
-    const row = stmt.get(...params) as {
+    const baseRow = this.db.prepare(baseSql).get(
+      ...(project ? [project] : [])
+    ) as {
       total_observations: number;
       oldest_observation: string | null;
       newest_observation: string | null;
       total_tokens: number | null;
+      avg_tokens: number | null;
     };
 
-    const sessionStmt = project
-      ? this.db.prepare('SELECT COUNT(*) as count FROM sessions WHERE project = ?')
-      : this.db.prepare('SELECT COUNT(*) as count FROM sessions');
+    // Session count
+    const sessionSql = project
+      ? 'SELECT COUNT(*) as count FROM sessions WHERE project LIKE ? || \'%\''
+      : 'SELECT COUNT(*) as count FROM sessions';
 
-    const sessionRow = sessionStmt.get(
+    const sessionRow = this.db.prepare(sessionSql).get(
       ...(project ? [project] : [])
     ) as { count: number };
 
+    // Tokens by tool type
+    const toolSql = project
+      ? `
+        SELECT tool_name, SUM(token_estimate) as tokens
+        FROM observations
+        WHERE project LIKE ? || '%'
+        GROUP BY tool_name
+        ORDER BY tokens DESC
+      `
+      : `
+        SELECT tool_name, SUM(token_estimate) as tokens
+        FROM observations
+        GROUP BY tool_name
+        ORDER BY tokens DESC
+      `;
+
+    const toolRows = this.db.prepare(toolSql).all(
+      ...(project ? [project] : [])
+    ) as Array<{ tool_name: string; tokens: number }>;
+
+    const tokensByTool: Record<string, number> = {};
+    for (const row of toolRows) {
+      tokensByTool[row.tool_name] = row.tokens;
+    }
+
+    // Average tokens per session (sum tokens / session count)
+    const avgTokensPerSession =
+      sessionRow.count > 0 ? Math.round((baseRow.total_tokens || 0) / sessionRow.count) : 0;
+
+    // Typical injection: get median of recent injection sizes
+    // Approximated by looking at what would be injected for recent sessions
+    const recentSql = project
+      ? `
+        SELECT SUM(token_estimate) as session_tokens
+        FROM observations
+        WHERE project LIKE ? || '%'
+        GROUP BY session_id
+        ORDER BY MAX(created_at) DESC
+        LIMIT 10
+      `
+      : `
+        SELECT SUM(token_estimate) as session_tokens
+        FROM observations
+        GROUP BY session_id
+        ORDER BY MAX(created_at) DESC
+        LIMIT 10
+      `;
+
+    const recentRows = this.db.prepare(recentSql).all(
+      ...(project ? [project] : [])
+    ) as Array<{ session_tokens: number }>;
+
+    // Typical injection is roughly min(avg recent session tokens, budget)
+    const avgRecentTokens =
+      recentRows.length > 0
+        ? Math.round(
+            recentRows.reduce((sum, r) => sum + r.session_tokens, 0) /
+              recentRows.length
+          )
+        : 0;
+    const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET);
+
     return {
-      total_observations: row.total_observations,
+      total_observations: baseRow.total_observations,
       total_sessions: sessionRow.count,
-      oldest_observation: row.oldest_observation,
-      newest_observation: row.newest_observation,
-      total_tokens: row.total_tokens || 0,
+      oldest_observation: baseRow.oldest_observation,
+      newest_observation: baseRow.newest_observation,
+      total_tokens: baseRow.total_tokens || 0,
+      avg_tokens_per_observation: Math.round(baseRow.avg_tokens || 0),
+      avg_tokens_per_session: avgTokensPerSession,
+      tokens_by_tool: tokensByTool,
+      token_budget: TOKEN_BUDGET,
+      typical_injection_tokens: typicalInjection,
     };
   }
 
