@@ -93,7 +93,7 @@ export interface PostToolUseInput {
 export interface StopInput {
   session_id: string;
   cwd: string;
-  transcript_summary?: string;
+  transcript_path?: string;
 }
 
 /**
@@ -221,8 +221,8 @@ export function validateStopInput(input: unknown): StopInput {
   return {
     session_id: obj.session_id,
     cwd: validatedCwd,
-    transcript_summary:
-      typeof obj.transcript_summary === 'string' ? obj.transcript_summary : undefined,
+    transcript_path:
+      typeof obj.transcript_path === 'string' ? obj.transcript_path : undefined,
   };
 }
 
