@@ -431,12 +431,18 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async getRecentSessions(project: string, limit: number): Promise<Session[]> {
-    // Prioritize complete sessions with summaries, then sort by recency
-    // Skip sessions without summaries (empty imports or sessions that ended without summary)
+    // Prioritize complete sessions with substantive summaries
+    // Skip: empty summaries, agent sessions, generic messages, meta-discussions about context
     const stmt = this.db.prepare(`
       SELECT * FROM sessions
       WHERE project = ?
         AND (summary IS NOT NULL AND LENGTH(summary) > 0)
+        AND id NOT LIKE 'agent-%'
+        AND summary NOT LIKE '%I''ll wait for your request%'
+        AND summary NOT LIKE '%I''m ready to help%'
+        AND summary NOT LIKE '%No data from yesterday%'
+        AND summary NOT LIKE '%context-manager%'
+        AND summary NOT LIKE '%no context%'
       ORDER BY CASE WHEN status = 'complete' THEN 0 ELSE 1 END, started_at DESC
       LIMIT ?
     `);
