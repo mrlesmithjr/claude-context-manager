@@ -22,6 +22,40 @@ const OUTPUT_THRESHOLDS = {
 } as const;
 
 /**
+ * Special output limits for high-volume, low-value-per-byte commands
+ * Based on data analysis:
+ * - psql: 36% of all tokens, 99% duplication, only 5 sessions use it
+ * - ssh: 15K tokens, only 5 sessions, output often verbose logs
+ */
+const REDUCED_OUTPUT_THRESHOLDS = {
+  FULL_STORAGE_LIMIT: 300,        // chars - aggressive truncation
+  HEAD_SIZE: 150,                 // chars - keep query/command visible
+  TAIL_SIZE: 100,                 // chars - minimal tail
+} as const;
+
+/**
+ * Check if command should use reduced output limits
+ */
+function shouldUseReducedLimits(toolName: string, toolInput?: unknown): boolean {
+  if (toolName !== 'Bash') return false;
+
+  const input = toolInput as Record<string, unknown> | undefined;
+  const command = typeof input?.command === 'string' ? input.command : '';
+
+  // psql queries - high volume, output is usually table data
+  if (command.includes('psql') && command.includes('docker exec')) {
+    return true;
+  }
+
+  // ssh commands with log/cat output - verbose, low cross-session value
+  if (command.startsWith('ssh ') && (command.includes(' cat ') || command.includes(' logs '))) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Tool capture input
  */
 export interface ToolCapture {
@@ -129,8 +163,9 @@ function extractGlobStats(output: string): Record<string, unknown> | undefined {
 /**
  * Extract output with hybrid storage strategy
  *
- * Short outputs (<= 1500 chars): store full, truncated: false
- * Long outputs: head (800) + "[... N chars omitted ...]" + tail (400), truncated: true
+ * Uses reduced limits for high-volume commands (psql, ssh logs)
+ * Short outputs: store full, truncated: false
+ * Long outputs: head + "[... N chars omitted ...]" + tail, truncated: true
  */
 function extractOutput(
   output: string,
@@ -139,6 +174,10 @@ function extractOutput(
 ): ExtractedOutput {
   const originalLength = output.length;
   const lineCount = output.split('\n').length;
+
+  // Select thresholds based on command type
+  const useReduced = shouldUseReducedLimits(toolName, toolInput);
+  const thresholds = useReduced ? REDUCED_OUTPUT_THRESHOLDS : OUTPUT_THRESHOLDS;
 
   // Extract tool-specific stats for all outputs
   let toolSpecific: Record<string, unknown> | undefined;
@@ -155,7 +194,7 @@ function extractOutput(
   }
 
   // Short output: store full
-  if (originalLength <= OUTPUT_THRESHOLDS.FULL_STORAGE_LIMIT) {
+  if (originalLength <= thresholds.FULL_STORAGE_LIMIT) {
     return {
       stored_output: output,
       output_stats: {
@@ -168,9 +207,9 @@ function extractOutput(
   }
 
   // Long output: head + marker + tail
-  const head = output.substring(0, OUTPUT_THRESHOLDS.HEAD_SIZE);
-  const tail = output.substring(output.length - OUTPUT_THRESHOLDS.TAIL_SIZE);
-  const omittedChars = originalLength - OUTPUT_THRESHOLDS.HEAD_SIZE - OUTPUT_THRESHOLDS.TAIL_SIZE;
+  const head = output.substring(0, thresholds.HEAD_SIZE);
+  const tail = output.substring(output.length - thresholds.TAIL_SIZE);
+  const omittedChars = originalLength - thresholds.HEAD_SIZE - thresholds.TAIL_SIZE;
 
   const storedOutput = `${head}\n[... ${omittedChars} chars omitted ...]\n${tail}`;
 

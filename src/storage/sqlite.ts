@@ -193,10 +193,21 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async save(observation: Omit<Observation, 'id'>): Promise<void> {
-    // Deduplication: skip if very similar observation exists in last 60 seconds
-    // This prevents storing 100s of identical psql queries or repeated commands
+    // Deduplication: skip if very similar observation exists recently
+    // Window varies by command type based on data analysis:
+    // - psql queries: 99% duplication rate, use 5 minute window
+    // - ssh commands: often repeated, use 3 minute window
+    // - default: 60 seconds
     const summaryPrefix = observation.summary.substring(0, 60);
-    const oneMinuteAgo = new Date(Date.now() - 60000).toISOString();
+
+    let dedupeWindowMs = 60000; // default 60 seconds
+    if (observation.summary.includes('docker exec') && observation.summary.includes('psql')) {
+      dedupeWindowMs = 300000; // 5 minutes for psql
+    } else if (observation.summary.startsWith('Bash: ssh ')) {
+      dedupeWindowMs = 180000; // 3 minutes for ssh
+    }
+
+    const windowStart = new Date(Date.now() - dedupeWindowMs).toISOString();
 
     const duplicateCheck = this.db.prepare(`
       SELECT COUNT(*) as count FROM observations
@@ -208,7 +219,7 @@ export class SQLiteStorage implements ContextStorage {
     const result = duplicateCheck.get(
       observation.session_id,
       summaryPrefix,
-      oneMinuteAgo
+      windowStart
     ) as { count: number };
 
     if (result.count > 0) {

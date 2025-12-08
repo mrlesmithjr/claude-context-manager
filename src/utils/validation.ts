@@ -288,12 +288,15 @@ export function shouldCaptureTool(toolName: string, toolInput?: unknown): boolea
     const command = typeof input.command === 'string' ? input.command : '';
 
     // Skip patterns for repetitive/low-value commands
+    // Based on data analysis: cd commands were 25K tokens across 20 sessions
     const SKIP_BASH_PATTERNS = [
-      /^cd\s+/,                          // Directory navigation
+      /^cd\s+[^&|;]+$/,                   // Simple cd (no chaining)
+      /^cd\s+.*&&\s*(echo|ls\s+-la?\s*$)/, // cd && echo or cd && ls (low value)
       /^pwd$/,                            // Current directory
       /^ls\s+-la?\s*$/,                   // Basic ls without path
       /^echo\s+['"]?DISPATCHER/i,         // Dispatcher protocol messages
       /^echo\s+['"]?<user-prompt/i,       // User prompt hook messages
+      /^echo\s+['"]?(Success|===)/i,      // Status echo messages
       /^clear$/,                          // Clear screen
       /^history/,                         // History commands
       /^which\s+/,                        // Which commands
