@@ -228,6 +228,9 @@ export function validateStopInput(input: unknown): StopInput {
 
 /**
  * Validate UserPromptSubmit input
+ *
+ * Claude Code sends: session_id, transcript_path, cwd, permission_mode, hook_event_name, prompt
+ * Note: prompt_number is NOT sent by Claude Code, so we make it optional
  */
 export function validateUserPromptSubmitInput(input: unknown): UserPromptSubmitInput {
   if (typeof input !== 'object' || input === null) {
@@ -244,9 +247,8 @@ export function validateUserPromptSubmitInput(input: unknown): UserPromptSubmitI
     throw new Error('Invalid input: cwd must be non-empty string');
   }
 
-  if (typeof obj.prompt_number !== 'number' || obj.prompt_number < 0) {
-    throw new Error('Invalid input: prompt_number must be non-negative number');
-  }
+  // prompt_number is optional - Claude Code doesn't send it
+  const promptNumber = typeof obj.prompt_number === 'number' ? obj.prompt_number : 0;
 
   if (typeof obj.prompt !== 'string' || obj.prompt.length === 0) {
     throw new Error('Invalid input: prompt must be non-empty string');
@@ -258,7 +260,7 @@ export function validateUserPromptSubmitInput(input: unknown): UserPromptSubmitI
   return {
     session_id: obj.session_id,
     cwd: validatedCwd,
-    prompt_number: obj.prompt_number,
+    prompt_number: promptNumber,
     prompt: obj.prompt,
   };
 }

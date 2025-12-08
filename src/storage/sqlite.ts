@@ -310,10 +310,11 @@ export class SQLiteStorage implements ContextStorage {
 
     if (project) {
       // Use LIKE for prefix matching (parent directory sees children)
+      // FTS5 requires full table name in MATCH clause (aliases don't work)
       sql = `
         SELECT o.* FROM observations o
-        INNER JOIN observations_fts fts ON o.id = fts.rowid
-        WHERE fts MATCH ? AND o.project LIKE ?
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ? AND o.project LIKE ?
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
@@ -321,8 +322,8 @@ export class SQLiteStorage implements ContextStorage {
     } else {
       sql = `
         SELECT o.* FROM observations o
-        INNER JOIN observations_fts fts ON o.id = fts.rowid
-        WHERE fts MATCH ?
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ?
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
@@ -605,10 +606,11 @@ export class SQLiteStorage implements ContextStorage {
     let params: unknown[];
 
     if (project) {
+      // FTS5 requires full table name in MATCH clause (aliases don't work)
       sql = `
         SELECT p.* FROM user_prompts p
-        INNER JOIN user_prompts_fts fts ON p.id = fts.rowid
-        WHERE fts MATCH ? AND p.project = ?
+        INNER JOIN user_prompts_fts ON p.id = user_prompts_fts.rowid
+        WHERE user_prompts_fts MATCH ? AND p.project = ?
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
@@ -616,8 +618,8 @@ export class SQLiteStorage implements ContextStorage {
     } else {
       sql = `
         SELECT p.* FROM user_prompts p
-        INNER JOIN user_prompts_fts fts ON p.id = fts.rowid
-        WHERE fts MATCH ?
+        INNER JOIN user_prompts_fts ON p.id = user_prompts_fts.rowid
+        WHERE user_prompts_fts MATCH ?
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
