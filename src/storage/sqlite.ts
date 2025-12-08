@@ -193,6 +193,29 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async save(observation: Omit<Observation, 'id'>): Promise<void> {
+    // Deduplication: skip if very similar observation exists in last 60 seconds
+    // This prevents storing 100s of identical psql queries or repeated commands
+    const summaryPrefix = observation.summary.substring(0, 60);
+    const oneMinuteAgo = new Date(Date.now() - 60000).toISOString();
+
+    const duplicateCheck = this.db.prepare(`
+      SELECT COUNT(*) as count FROM observations
+      WHERE session_id = ?
+        AND substr(summary, 1, 60) = ?
+        AND created_at > ?
+    `);
+
+    const result = duplicateCheck.get(
+      observation.session_id,
+      summaryPrefix,
+      oneMinuteAgo
+    ) as { count: number };
+
+    if (result.count > 0) {
+      // Skip duplicate - already have a similar observation recently
+      return;
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,

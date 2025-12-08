@@ -54,8 +54,8 @@ async function main() {
     // Validate and sanitize input
     const input = validatePostToolUseInput(rawInput);
 
-    // Skip low-value tools
-    if (!shouldCaptureTool(input.tool_name)) {
+    // Skip low-value tools (now also checks command patterns for Bash)
+    if (!shouldCaptureTool(input.tool_name, input.tool_input)) {
       process.stdout.write(JSON.stringify({ status: 'skipped' }));
       return;
     }

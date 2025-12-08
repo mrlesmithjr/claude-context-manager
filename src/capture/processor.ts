@@ -9,12 +9,16 @@ import type { Observation } from '../storage/interface.js';
 
 /**
  * Output storage thresholds
+ *
+ * Optimized based on data analysis:
+ * - 864 "huge" observations (200+ tokens) were consuming 67% of tokens
+ * - Reduced limits to prioritize summaries over raw output
  */
 const OUTPUT_THRESHOLDS = {
-  FULL_STORAGE_LIMIT: 1500,      // chars - store full if under this
-  HEAD_SIZE: 800,                 // chars - first N for long outputs
-  TAIL_SIZE: 400,                 // chars - last N for long outputs
-  MAX_STORAGE: 1600,              // chars - absolute max stored
+  FULL_STORAGE_LIMIT: 800,        // chars - store full if under this (was 1500)
+  HEAD_SIZE: 400,                 // chars - first N for long outputs (was 800)
+  TAIL_SIZE: 200,                 // chars - last N for long outputs (was 400)
+  MAX_STORAGE: 700,               // chars - absolute max stored (was 1600)
 } as const;
 
 /**

@@ -270,7 +270,7 @@ export function validateUserPromptSubmitInput(input: unknown): UserPromptSubmitI
  *
  * Some tools are too noisy or low-value to capture.
  */
-export function shouldCaptureTool(toolName: string): boolean {
+export function shouldCaptureTool(toolName: string, toolInput?: unknown): boolean {
   const SKIP_TOOLS = [
     'TodoWrite',
     'AskUserQuestion',
@@ -278,5 +278,34 @@ export function shouldCaptureTool(toolName: string): boolean {
     // Add more low-value tools as needed
   ];
 
-  return !SKIP_TOOLS.includes(toolName);
+  if (SKIP_TOOLS.includes(toolName)) {
+    return false;
+  }
+
+  // Check for low-value Bash commands
+  if (toolName === 'Bash' && toolInput && typeof toolInput === 'object') {
+    const input = toolInput as Record<string, unknown>;
+    const command = typeof input.command === 'string' ? input.command : '';
+
+    // Skip patterns for repetitive/low-value commands
+    const SKIP_BASH_PATTERNS = [
+      /^cd\s+/,                          // Directory navigation
+      /^pwd$/,                            // Current directory
+      /^ls\s+-la?\s*$/,                   // Basic ls without path
+      /^echo\s+['"]?DISPATCHER/i,         // Dispatcher protocol messages
+      /^echo\s+['"]?<user-prompt/i,       // User prompt hook messages
+      /^clear$/,                          // Clear screen
+      /^history/,                         // History commands
+      /^which\s+/,                        // Which commands
+      /^type\s+/,                         // Type commands
+    ];
+
+    for (const pattern of SKIP_BASH_PATTERNS) {
+      if (pattern.test(command)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
