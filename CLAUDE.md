@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: December 6, 2025
+**Last Updated**: December 9, 2025
 
 ---
 
@@ -20,14 +20,23 @@ This file provides guidance to Claude Code when working in this repository.
 ## Quick Reference
 
 ```bash
-# Build and prepare for installation
-npm run build:plugin
+# Install from GitHub (recommended):
+#   In Claude Code:
+#   /plugin marketplace add https://github.com/mrlesmithjr/claude-context-manager
+#   /plugin install context-manager
+#   Then restart Claude Code
 
-# In Claude Code, install the plugin:
+# For local development:
+npm run build:plugin
+#   In Claude Code:
 #   /plugin marketplace add ~/Projects/Personal/claude-context-manager
 #   /plugin install context-manager
-#
-# Then restart Claude Code to activate
+#   Then restart Claude Code
+
+# Update plugin:
+#   /plugin update context-manager
+#   Then restart Claude Code
+#   NOTE: If update doesn't apply, bump version first (npm version patch)
 
 # Uninstall:
 #   In Claude Code: /plugin uninstall context-manager
@@ -327,13 +336,32 @@ npm rebuild better-sqlite3
 /plugin list
 
 # Or check the installed plugins
-cat ~/.claude/plugins/installed_plugins.json
+cat ~/.claude/plugins/installed_plugins.json | jq '.plugins["context-manager@mrlesmithjr"]'
 ```
 
 ### Test hooks manually
 ```bash
-echo '{"cwd":"'$(pwd)'"}' | node plugin/scripts/context-inject.js
+echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/context-inject.js
 ```
 
 ### Check database stats
 Use `/ctx-stats` in Claude Code or run the CLI directly from the project directory.
+
+### Updates not applying (IMPORTANT)
+
+The plugin system caches by version number. If you modify code but don't bump the version, updates won't apply.
+
+**For local development:**
+1. Bump version: `npm version patch --no-git-tag-version`
+2. Rebuild: `npm run build:plugin`
+3. Update in Claude Code: `/plugin update context-manager`
+4. Restart Claude Code
+
+**If update still doesn't apply:**
+```
+/plugin uninstall context-manager
+/plugin install context-manager
+```
+Then restart Claude Code.
+
+**From GitHub:** Updates should work automatically since each push has a new commit SHA.

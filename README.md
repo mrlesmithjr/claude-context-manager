@@ -3,7 +3,7 @@
 Persistent memory for Claude Code sessions. Automatically captures context and injects it into future sessions.
 
 **Status**: ACTIVE
-**Last Updated**: December 6, 2025
+**Last Updated**: December 9, 2025
 
 ---
 
@@ -137,7 +137,22 @@ npm run import -- --source ~/.backup/... --project ~/Projects/Work/ProjectA
 - Node.js 18+
 - Claude Code
 
-### Install
+### Install from GitHub (Recommended)
+
+The easiest way to install is directly from GitHub:
+
+**In Claude Code:**
+
+```
+/plugin marketplace add https://github.com/mrlesmithjr/claude-context-manager
+/plugin install context-manager
+```
+
+**Restart Claude Code** to activate the plugin.
+
+### Install from Local Source
+
+If you want to develop or modify the plugin:
 
 ```bash
 # Clone the repository
@@ -151,25 +166,28 @@ npm install
 npm run build:plugin
 ```
 
-The build script will:
-1. Build the TypeScript source
-2. Sync version to plugin.json
-3. Install slash commands to `~/.claude/commands/`
-4. Create data directory at `~/.claude-context/`
-5. Show installation commands
-
-**Then in Claude Code**, run these commands:
+**Then in Claude Code:**
 
 ```
-/plugin marketplace add ~/Projects/Personal/claude-context-manager
+/plugin marketplace add ~/path/to/claude-context-manager
 /plugin install context-manager
 ```
 
-(Replace `~/Projects/Personal/claude-context-manager` with your actual path)
-
 **Restart Claude Code** to activate the plugin.
 
-The plugin will be installed to `~/.claude/plugins/` and hooks will be registered automatically.
+### Updating
+
+```
+/plugin update context-manager
+```
+
+Then restart Claude Code.
+
+**Note:** If update doesn't work, try uninstall/reinstall:
+```
+/plugin uninstall context-manager
+/plugin install context-manager
+```
 
 ### Uninstall
 
@@ -338,13 +356,34 @@ Hook definitions are in `plugin/hooks/hooks.json`. When you install the plugin v
    cat ~/.claude/plugins/installed_plugins.json
    ```
 
+2. Verify version is current:
+   ```bash
+   cat ~/.claude/plugins/installed_plugins.json | jq '.plugins["context-manager@mrlesmithjr"].version'
+   ```
+
 3. Test hooks manually:
    ```bash
    echo '{"cwd":"'$(pwd)'"}' | \
-     node /path/to/claude-context-manager/plugin/scripts/context-inject.js
+     node ~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/context-inject.js
    ```
 
 4. Use `/ctx-stats` in Claude Code to check statistics
+
+### Updates not applying?
+
+The plugin system caches by version. If you're developing locally:
+
+1. **Bump the version** in `package.json` before rebuilding
+2. Run `npm run build:plugin`
+3. In Claude Code: `/plugin update context-manager`
+4. Restart Claude Code
+
+If that still doesn't work:
+```
+/plugin uninstall context-manager
+/plugin install context-manager
+```
+Then restart Claude Code.
 
 ### Native module errors?
 
