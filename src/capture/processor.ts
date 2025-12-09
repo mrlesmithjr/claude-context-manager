@@ -43,12 +43,22 @@ function shouldUseReducedLimits(toolName: string, toolInput?: unknown): boolean 
   const command = typeof input?.command === 'string' ? input.command : '';
 
   // psql queries - high volume, output is usually table data
-  if (command.includes('psql') && command.includes('docker exec')) {
+  if (command.includes('psql')) {
     return true;
   }
 
   // ssh commands with log/cat output - verbose, low cross-session value
   if (command.startsWith('ssh ') && (command.includes(' cat ') || command.includes(' logs '))) {
+    return true;
+  }
+
+  // pytest output - verbose test results, keep just pass/fail summary
+  if (command.includes('pytest') || command.includes('python -m pytest')) {
+    return true;
+  }
+
+  // npm/node commands with verbose output
+  if (command.includes('npm run') && (command.includes('test') || command.includes('build'))) {
     return true;
   }
 

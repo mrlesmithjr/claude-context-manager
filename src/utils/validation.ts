@@ -291,16 +291,20 @@ export function shouldCaptureTool(toolName: string, toolInput?: unknown): boolea
     // Based on data analysis: cd commands were 25K tokens across 20 sessions
     const SKIP_BASH_PATTERNS = [
       /^cd\s+[^&|;]+$/,                   // Simple cd (no chaining)
-      /^cd\s+.*&&\s*(echo|ls\s+-la?\s*$)/, // cd && echo or cd && ls (low value)
+      /^cd\s+.+&&/,                       // Any cd && chain (usually just navigation)
       /^pwd$/,                            // Current directory
       /^ls\s+-la?\s*$/,                   // Basic ls without path
+      /^ls\s+-la?\s+[^\|]+$/,             // Basic ls with path (no piping)
       /^echo\s+['"]?DISPATCHER/i,         // Dispatcher protocol messages
       /^echo\s+['"]?<user-prompt/i,       // User prompt hook messages
-      /^echo\s+['"]?(Success|===)/i,      // Status echo messages
+      /^echo\s+['"]?(Success|===|═)/i,    // Status echo messages and banners
+      /^echo\s+['"]?\n?═/,                // Banner lines starting with box chars
+      /^cat\s*<<\s*['"]?EOF/i,            // Here-docs (usually banner output)
       /^clear$/,                          // Clear screen
       /^history/,                         // History commands
       /^which\s+/,                        // Which commands
       /^type\s+/,                         // Type commands
+      /^find\s+/,                         // Find commands (verbose output)
     ];
 
     for (const pattern of SKIP_BASH_PATTERNS) {

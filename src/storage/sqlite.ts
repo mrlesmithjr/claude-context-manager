@@ -194,33 +194,47 @@ export class SQLiteStorage implements ContextStorage {
 
   async save(observation: Omit<Observation, 'id'>): Promise<void> {
     // Deduplication: skip if very similar observation exists recently
+    // CROSS-SESSION deduplication within same project (not just same session)
     // Window varies by command type based on data analysis:
-    // - psql queries: 99% duplication rate, use 5 minute window
-    // - ssh commands: often repeated, use 3 minute window
-    // - default: 60 seconds
+    // - psql queries: 99% duplication rate, use 30 minute window
+    // - ssh commands: often repeated, use 10 minute window
+    // - gh commands: repeated issue/PR lists, use 5 minute window
+    // - default: 60 seconds (same session behavior)
     const summaryPrefix = observation.summary.substring(0, 60);
 
     let dedupeWindowMs = 60000; // default 60 seconds
-    if (observation.summary.includes('docker exec') && observation.summary.includes('psql')) {
-      dedupeWindowMs = 300000; // 5 minutes for psql
+    let crossSession = false;   // whether to dedupe across sessions
+
+    if (observation.summary.includes('psql')) {
+      dedupeWindowMs = 1800000; // 30 minutes for psql (cross-session)
+      crossSession = true;
     } else if (observation.summary.startsWith('Bash: ssh ')) {
-      dedupeWindowMs = 180000; // 3 minutes for ssh
+      dedupeWindowMs = 600000; // 10 minutes for ssh (cross-session)
+      crossSession = true;
+    } else if (observation.summary.includes('gh issue') || observation.summary.includes('gh pr')) {
+      dedupeWindowMs = 300000; // 5 minutes for gh commands (cross-session)
+      crossSession = true;
     }
 
     const windowStart = new Date(Date.now() - dedupeWindowMs).toISOString();
 
-    const duplicateCheck = this.db.prepare(`
-      SELECT COUNT(*) as count FROM observations
-      WHERE session_id = ?
-        AND substr(summary, 1, 60) = ?
-        AND created_at > ?
-    `);
+    // Cross-session: check by project, same-session: check by session_id
+    const duplicateCheck = crossSession
+      ? this.db.prepare(`
+          SELECT COUNT(*) as count FROM observations
+          WHERE project = ?
+            AND substr(summary, 1, 60) = ?
+            AND created_at > ?
+        `)
+      : this.db.prepare(`
+          SELECT COUNT(*) as count FROM observations
+          WHERE session_id = ?
+            AND substr(summary, 1, 60) = ?
+            AND created_at > ?
+        `);
 
-    const result = duplicateCheck.get(
-      observation.session_id,
-      summaryPrefix,
-      windowStart
-    ) as { count: number };
+    const checkKey = crossSession ? observation.project : observation.session_id;
+    const result = duplicateCheck.get(checkKey, summaryPrefix, windowStart) as { count: number };
 
     if (result.count > 0) {
       // Skip duplicate - already have a similar observation recently
