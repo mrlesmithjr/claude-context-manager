@@ -206,7 +206,7 @@ export class SQLiteStorage implements ContextStorage {
     let crossSession = false;   // whether to dedupe across sessions
 
     if (observation.summary.includes('psql')) {
-      dedupeWindowMs = 1800000; // 30 minutes for psql (cross-session)
+      dedupeWindowMs = 3600000; // 60 minutes for psql (cross-session) - 99% dup rate
       crossSession = true;
     } else if (observation.summary.startsWith('Bash: ssh ')) {
       dedupeWindowMs = 600000; // 10 minutes for ssh (cross-session)
@@ -214,6 +214,10 @@ export class SQLiteStorage implements ContextStorage {
     } else if (observation.summary.includes('gh issue') || observation.summary.includes('gh pr')) {
       dedupeWindowMs = 300000; // 5 minutes for gh commands (cross-session)
       crossSession = true;
+    } else if (observation.tool_name === 'Edit') {
+      // Edit operations on same file within 2 minutes are likely related edits
+      dedupeWindowMs = 120000; // 2 minutes for Edit deduplication
+      crossSession = false;
     }
 
     const windowStart = new Date(Date.now() - dedupeWindowMs).toISOString();

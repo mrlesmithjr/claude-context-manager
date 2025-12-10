@@ -314,5 +314,25 @@ export function shouldCaptureTool(toolName: string, toolInput?: unknown): boolea
     }
   }
 
+  // Check for low-value Edit operations (agent worklog files)
+  if (toolName === 'Edit' && toolInput && typeof toolInput === 'object') {
+    const input = toolInput as Record<string, unknown>;
+    const filePath = typeof input.file_path === 'string' ? input.file_path : '';
+
+    // Skip agent worklog/summary files - these are transient artifacts
+    // Data analysis: 155+ duplicate summary.md edits in single day
+    const SKIP_EDIT_PATTERNS = [
+      /\/summary\.md$/,                   // Agent summary files
+      /\/worklog\.md$/,                   // Agent worklog files
+      /\/\.agent-.*\.md$/,                // Agent temp files
+    ];
+
+    for (const pattern of SKIP_EDIT_PATTERNS) {
+      if (pattern.test(filePath)) {
+        return false;
+      }
+    }
+  }
+
   return true;
 }
