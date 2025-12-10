@@ -1,0 +1,674 @@
+#!/usr/bin/env node
+import { createRequire as __createRequire } from 'module';
+const __require = __createRequire(import.meta.url);
+const __betterSqlite3 = __require('__homedir__/Projects/Personal/claude-context-manager/node_modules/better-sqlite3');
+
+// shim:better-sqlite3
+var better_sqlite3_default = __betterSqlite3;
+
+// src/storage/sqlite.ts
+import { homedir } from "os";
+import path from "path";
+import { mkdirSync } from "fs";
+var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
+var SQLiteStorage = class {
+  db;
+  constructor(dbPath = DEFAULT_DB_PATH) {
+    const dir = path.dirname(dbPath);
+    mkdirSync(dir, { recursive: true });
+    this.db = new better_sqlite3_default(dbPath);
+    this.db.pragma("journal_mode = WAL");
+    this.db.pragma("foreign_keys = ON");
+  }
+  async initialize() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        summary TEXT,
+        status TEXT DEFAULT 'active'
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at);
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS user_prompts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        prompt_number INTEGER NOT NULL,
+        prompt_text TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_user_prompts_project_created
+      ON user_prompts(project, created_at DESC);
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_id);
+    `);
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS user_prompts_fts USING fts5(
+        prompt_text,
+        content=user_prompts,
+        content_rowid=id
+      );
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+        INSERT INTO user_prompts_fts(rowid, prompt_text)
+        VALUES (new.id, COALESCE(new.prompt_text, ''));
+      END;
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+        INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+        VALUES('delete', old.id, old.prompt_text);
+      END;
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS user_prompts_au AFTER UPDATE ON user_prompts BEGIN
+        INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+        VALUES('delete', old.id, old.prompt_text);
+        INSERT INTO user_prompts_fts(rowid, prompt_text)
+        VALUES (new.id, COALESCE(new.prompt_text, ''));
+      END;
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        package TEXT,
+        tool_name TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        files_touched TEXT,
+        metadata TEXT,
+        token_estimate INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_project_created
+      ON observations(project, created_at DESC);
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_session ON observations(session_id);
+    `);
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
+        summary,
+        files_touched,
+        metadata,
+        content=observations,
+        content_rowid=id
+      );
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+        INSERT INTO observations_fts(rowid, summary, files_touched, metadata)
+        VALUES (
+          new.id,
+          COALESCE(new.summary, ''),
+          COALESCE(new.files_touched, ''),
+          COALESCE(new.metadata, '')
+        );
+      END;
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, summary, files_touched, metadata)
+        VALUES('delete', old.id, old.summary, old.files_touched, old.metadata);
+      END;
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, summary, files_touched, metadata)
+        VALUES('delete', old.id, old.summary, old.files_touched, old.metadata);
+        INSERT INTO observations_fts(rowid, summary, files_touched, metadata)
+        VALUES (
+          new.id,
+          COALESCE(new.summary, ''),
+          COALESCE(new.files_touched, ''),
+          COALESCE(new.metadata, '')
+        );
+      END;
+    `);
+  }
+  async save(observation) {
+    const summaryPrefix = observation.summary.substring(0, 60);
+    let dedupeWindowMs = 6e4;
+    let crossSession = false;
+    if (observation.summary.includes("psql")) {
+      dedupeWindowMs = 36e5;
+      crossSession = true;
+    } else if (observation.summary.startsWith("Bash: ssh ")) {
+      dedupeWindowMs = 6e5;
+      crossSession = true;
+    } else if (observation.summary.includes("gh issue") || observation.summary.includes("gh pr")) {
+      dedupeWindowMs = 3e5;
+      crossSession = true;
+    } else if (observation.tool_name === "Edit") {
+      dedupeWindowMs = 12e4;
+      crossSession = false;
+    }
+    const windowStart = new Date(Date.now() - dedupeWindowMs).toISOString();
+    const duplicateCheck = crossSession ? this.db.prepare(`
+          SELECT COUNT(*) as count FROM observations
+          WHERE project = ?
+            AND substr(summary, 1, 60) = ?
+            AND created_at > ?
+        `) : this.db.prepare(`
+          SELECT COUNT(*) as count FROM observations
+          WHERE session_id = ?
+            AND substr(summary, 1, 60) = ?
+            AND created_at > ?
+        `);
+    const checkKey = crossSession ? observation.project : observation.session_id;
+    const result = duplicateCheck.get(checkKey, summaryPrefix, windowStart);
+    if (result.count > 0) {
+      return;
+    }
+    const stmt = this.db.prepare(`
+      INSERT INTO observations (
+        session_id, project, package, tool_name, summary,
+        files_touched, metadata, token_estimate, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      observation.session_id,
+      observation.project,
+      observation.package || null,
+      observation.tool_name,
+      observation.summary,
+      JSON.stringify(observation.files_touched),
+      JSON.stringify(observation.metadata),
+      observation.token_estimate,
+      observation.created_at
+    );
+  }
+  async getRecent(project, limit) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(project + "%", limit);
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      package: row.package || void 0,
+      tool_name: row.tool_name,
+      summary: row.summary,
+      files_touched: JSON.parse(row.files_touched || "[]"),
+      metadata: JSON.parse(row.metadata || "{}"),
+      token_estimate: row.token_estimate,
+      created_at: row.created_at
+    }));
+  }
+  async getWithinBudget(project, tokenBudget) {
+    const effectiveBudget = Math.floor(tokenBudget * 0.8);
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ?
+      ORDER BY created_at DESC
+    `);
+    const rows = stmt.all(project + "%");
+    const results = [];
+    let totalTokens = 0;
+    for (const row of rows) {
+      if (totalTokens + row.token_estimate > effectiveBudget) {
+        break;
+      }
+      results.push({
+        id: row.id,
+        session_id: row.session_id,
+        project: row.project,
+        package: row.package || void 0,
+        tool_name: row.tool_name,
+        summary: row.summary,
+        files_touched: JSON.parse(row.files_touched || "[]"),
+        metadata: JSON.parse(row.metadata || "{}"),
+        token_estimate: row.token_estimate,
+        created_at: row.created_at
+      });
+      totalTokens += row.token_estimate;
+    }
+    return results;
+  }
+  async search(query, project) {
+    let sql;
+    let params;
+    if (project) {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ? AND o.project LIKE ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [query, project + "%"];
+    } else {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [query];
+    }
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all(...params);
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      package: row.package || void 0,
+      tool_name: row.tool_name,
+      summary: row.summary,
+      files_touched: JSON.parse(row.files_touched || "[]"),
+      metadata: JSON.parse(row.metadata || "{}"),
+      token_estimate: row.token_estimate,
+      created_at: row.created_at
+    }));
+  }
+  async getStats(project) {
+    const TOKEN_BUDGET = parseInt(
+      process.env.CONTEXT_MANAGER_TOKEN_BUDGET || "4000",
+      10
+    );
+    const baseSql = project ? `
+        SELECT
+          COUNT(*) as total_observations,
+          MIN(created_at) as oldest_observation,
+          MAX(created_at) as newest_observation,
+          SUM(token_estimate) as total_tokens,
+          AVG(token_estimate) as avg_tokens
+        FROM observations
+        WHERE project LIKE ? || '%'
+      ` : `
+        SELECT
+          COUNT(*) as total_observations,
+          MIN(created_at) as oldest_observation,
+          MAX(created_at) as newest_observation,
+          SUM(token_estimate) as total_tokens,
+          AVG(token_estimate) as avg_tokens
+        FROM observations
+      `;
+    const baseRow = this.db.prepare(baseSql).get(
+      ...project ? [project] : []
+    );
+    const sessionSql = project ? "SELECT COUNT(*) as count FROM sessions WHERE project LIKE ? || '%'" : "SELECT COUNT(*) as count FROM sessions";
+    const sessionRow = this.db.prepare(sessionSql).get(
+      ...project ? [project] : []
+    );
+    const toolSql = project ? `
+        SELECT tool_name, SUM(token_estimate) as tokens
+        FROM observations
+        WHERE project LIKE ? || '%'
+        GROUP BY tool_name
+        ORDER BY tokens DESC
+      ` : `
+        SELECT tool_name, SUM(token_estimate) as tokens
+        FROM observations
+        GROUP BY tool_name
+        ORDER BY tokens DESC
+      `;
+    const toolRows = this.db.prepare(toolSql).all(
+      ...project ? [project] : []
+    );
+    const tokensByTool = {};
+    for (const row of toolRows) {
+      tokensByTool[row.tool_name] = row.tokens;
+    }
+    const avgTokensPerSession = sessionRow.count > 0 ? Math.round((baseRow.total_tokens || 0) / sessionRow.count) : 0;
+    const recentSql = project ? `
+        SELECT SUM(token_estimate) as session_tokens
+        FROM observations
+        WHERE project LIKE ? || '%'
+        GROUP BY session_id
+        ORDER BY MAX(created_at) DESC
+        LIMIT 10
+      ` : `
+        SELECT SUM(token_estimate) as session_tokens
+        FROM observations
+        GROUP BY session_id
+        ORDER BY MAX(created_at) DESC
+        LIMIT 10
+      `;
+    const recentRows = this.db.prepare(recentSql).all(
+      ...project ? [project] : []
+    );
+    const avgRecentTokens = recentRows.length > 0 ? Math.round(
+      recentRows.reduce((sum, r) => sum + r.session_tokens, 0) / recentRows.length
+    ) : 0;
+    const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET);
+    return {
+      total_observations: baseRow.total_observations,
+      total_sessions: sessionRow.count,
+      oldest_observation: baseRow.oldest_observation,
+      newest_observation: baseRow.newest_observation,
+      total_tokens: baseRow.total_tokens || 0,
+      avg_tokens_per_observation: Math.round(baseRow.avg_tokens || 0),
+      avg_tokens_per_session: avgTokensPerSession,
+      tokens_by_tool: tokensByTool,
+      token_budget: TOKEN_BUDGET,
+      typical_injection_tokens: typicalInjection
+    };
+  }
+  async createSession(sessionId, project) {
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO sessions (id, project, started_at, status)
+      VALUES (?, ?, ?, 'active')
+    `);
+    stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
+  }
+  async endSession(sessionId, summary) {
+    const stmt = this.db.prepare(`
+      UPDATE sessions
+      SET ended_at = ?, summary = ?, status = 'complete'
+      WHERE id = ?
+    `);
+    stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, sessionId);
+  }
+  async getRecentSessions(project, limit) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM sessions
+      WHERE project = ?
+        AND (summary IS NOT NULL AND LENGTH(summary) > 0)
+        AND id NOT LIKE 'agent-%'
+        AND summary NOT LIKE '%I''ll wait for your request%'
+        AND summary NOT LIKE '%I''m ready to help%'
+        AND summary NOT LIKE '%No data from yesterday%'
+        AND summary NOT LIKE '%context-manager%'
+        AND summary NOT LIKE '%no context%'
+      ORDER BY CASE WHEN status = 'complete' THEN 0 ELSE 1 END, started_at DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(project, limit);
+    return rows.map((row) => ({
+      id: row.id,
+      project: row.project,
+      started_at: row.started_at,
+      ended_at: row.ended_at || void 0,
+      summary: row.summary || void 0,
+      status: row.status
+    }));
+  }
+  async vacuum(olderThanDays) {
+    if (olderThanDays) {
+      const cutoffDate = /* @__PURE__ */ new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
+      const cutoffISO = cutoffDate.toISOString();
+      const stmt = this.db.prepare(`
+        DELETE FROM observations
+        WHERE created_at < ?
+      `);
+      const result = stmt.run(cutoffISO);
+      return result.changes;
+    }
+    this.db.exec("VACUUM");
+    return 0;
+  }
+  async saveUserPrompt(prompt) {
+    const stmt = this.db.prepare(`
+      INSERT INTO user_prompts (
+        session_id, project, prompt_number, prompt_text, created_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      prompt.session_id,
+      prompt.project,
+      prompt.prompt_number,
+      prompt.prompt_text,
+      prompt.created_at
+    );
+  }
+  async getRecentPrompts(project, limit) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM user_prompts
+      WHERE project = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(project, limit);
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      prompt_number: row.prompt_number,
+      prompt_text: row.prompt_text,
+      created_at: row.created_at
+    }));
+  }
+  async searchPrompts(query, project) {
+    let sql;
+    let params;
+    if (project) {
+      sql = `
+        SELECT p.* FROM user_prompts p
+        INNER JOIN user_prompts_fts ON p.id = user_prompts_fts.rowid
+        WHERE user_prompts_fts MATCH ? AND p.project = ?
+        ORDER BY p.created_at DESC
+        LIMIT 50
+      `;
+      params = [query, project];
+    } else {
+      sql = `
+        SELECT p.* FROM user_prompts p
+        INNER JOIN user_prompts_fts ON p.id = user_prompts_fts.rowid
+        WHERE user_prompts_fts MATCH ?
+        ORDER BY p.created_at DESC
+        LIMIT 50
+      `;
+      params = [query];
+    }
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all(...params);
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      prompt_number: row.prompt_number,
+      prompt_text: row.prompt_text,
+      created_at: row.created_at
+    }));
+  }
+  close() {
+    this.db.close();
+  }
+};
+
+// src/utils/validation.ts
+import { realpathSync } from "fs";
+import { homedir as homedir2 } from "os";
+import path2 from "path";
+var ALLOWED_PROJECT_ROOTS = [
+  path2.join(homedir2(), "Projects"),
+  path2.join(homedir2(), "projects"),
+  path2.join(homedir2(), "Dev"),
+  path2.join(homedir2(), "dev"),
+  path2.join(homedir2(), "Code"),
+  path2.join(homedir2(), "code"),
+  path2.join(homedir2(), "Workspace"),
+  path2.join(homedir2(), "workspace"),
+  path2.join(homedir2(), "Obsidian"),
+  // Obsidian vaults
+  path2.join(homedir2(), "Documents"),
+  // Common location
+  homedir2()
+  // Allow home directory as fallback
+];
+function validateProjectPath(projectPath) {
+  let normalizedPath;
+  try {
+    normalizedPath = realpathSync(projectPath);
+  } catch (error) {
+    normalizedPath = path2.resolve(projectPath);
+  }
+  const isAllowed = ALLOWED_PROJECT_ROOTS.some((root) => {
+    try {
+      const normalizedRoot = realpathSync(root);
+      return normalizedPath.startsWith(normalizedRoot);
+    } catch {
+      return false;
+    }
+  });
+  if (!isAllowed) {
+    throw new Error(
+      `Project path outside allowed roots: ${normalizedPath}. Allowed roots: ${ALLOWED_PROJECT_ROOTS.join(", ")}`
+    );
+  }
+  return normalizedPath;
+}
+function validateStopInput(input) {
+  if (typeof input !== "object" || input === null) {
+    throw new Error("Invalid input: expected object");
+  }
+  const obj = input;
+  if (typeof obj.session_id !== "string" || obj.session_id.length === 0) {
+    throw new Error("Invalid input: session_id must be non-empty string");
+  }
+  if (typeof obj.cwd !== "string" || obj.cwd.length === 0) {
+    throw new Error("Invalid input: cwd must be non-empty string");
+  }
+  const validatedCwd = validateProjectPath(obj.cwd);
+  return {
+    session_id: obj.session_id,
+    cwd: validatedCwd,
+    transcript_path: typeof obj.transcript_path === "string" ? obj.transcript_path : void 0
+  };
+}
+
+// plugin/hooks/session-end.ts
+import * as fs from "fs";
+import * as path3 from "path";
+import * as os from "os";
+function debugLog(label, data) {
+  const logDir = path3.join(os.homedir(), ".claude-context", "logs");
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+  }
+  const logFile = path3.join(logDir, "stop-hook-debug.log");
+  const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+  const entry = `[${timestamp}] ${label}: ${JSON.stringify(data, null, 2)}
+`;
+  fs.appendFileSync(logFile, entry);
+}
+function extractSummaryFromTranscript(transcriptPath) {
+  try {
+    if (!fs.existsSync(transcriptPath)) {
+      debugLog("TRANSCRIPT_NOT_FOUND", transcriptPath);
+      return void 0;
+    }
+    const content = fs.readFileSync(transcriptPath, "utf8");
+    const lines = content.trim().split("\n").filter((line) => line.trim());
+    if (lines.length === 0) {
+      debugLog("TRANSCRIPT_EMPTY", transcriptPath);
+      return void 0;
+    }
+    try {
+      const firstLine = JSON.parse(lines[0]);
+      if (firstLine.summary && typeof firstLine.summary === "string") {
+        debugLog("FOUND_SUMMARY_IN_FIRST_LINE", firstLine.summary.substring(0, 200));
+        return firstLine.summary;
+      }
+    } catch {
+    }
+    let lastAssistantContent;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const line = JSON.parse(lines[i]);
+        if (line.type === "assistant" && line.message?.role === "assistant") {
+          const msgContent = line.message.content;
+          if (typeof msgContent === "string") {
+            lastAssistantContent = msgContent;
+            break;
+          } else if (Array.isArray(msgContent)) {
+            const textBlocks = msgContent.filter((block) => block.type === "text" && block.text).map((block) => block.text).join("\n");
+            if (textBlocks) {
+              lastAssistantContent = textBlocks;
+              break;
+            }
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+    if (lastAssistantContent) {
+      const summary = lastAssistantContent.length > 1500 ? lastAssistantContent.substring(0, 1500) + "..." : lastAssistantContent;
+      debugLog("EXTRACTED_LAST_ASSISTANT", summary.substring(0, 200));
+      return summary;
+    }
+    debugLog("NO_ASSISTANT_MESSAGE_FOUND", { lineCount: lines.length });
+    return void 0;
+  } catch (error) {
+    debugLog("TRANSCRIPT_READ_ERROR", { error: String(error), path: transcriptPath });
+    return void 0;
+  }
+}
+async function readStdin() {
+  return new Promise((resolve) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => data += chunk);
+    process.stdin.on("end", () => resolve(data));
+  });
+}
+async function main() {
+  const storage = new SQLiteStorage();
+  try {
+    const inputStr = await readStdin();
+    debugLog("RAW_INPUT_STRING", inputStr);
+    let rawInput;
+    try {
+      rawInput = JSON.parse(inputStr);
+    } catch (parseError) {
+      debugLog("JSON_PARSE_ERROR", { error: String(parseError), input: inputStr });
+      console.error("[context-manager] Invalid JSON input");
+      process.stdout.write(JSON.stringify({ status: "error" }));
+      return;
+    }
+    debugLog("PARSED_INPUT", rawInput);
+    debugLog("HAS_TRANSCRIPT_PATH", {
+      has: "transcript_path" in rawInput,
+      path: rawInput.transcript_path
+    });
+    const input = validateStopInput(rawInput);
+    let summary;
+    if (input.transcript_path) {
+      summary = extractSummaryFromTranscript(input.transcript_path);
+    }
+    debugLog("SUMMARY_RESULT", {
+      hasTranscriptPath: !!input.transcript_path,
+      hasSummary: !!summary,
+      summaryLength: summary?.length
+    });
+    await storage.initialize();
+    await storage.endSession(input.session_id, summary);
+    process.stdout.write(JSON.stringify({ status: "complete" }));
+  } catch (error) {
+    debugLog("SESSION_END_ERROR", { error: String(error) });
+    console.error("[context-manager] Session end error:", error);
+    process.stdout.write(JSON.stringify({ status: "error" }));
+  } finally {
+    storage.close();
+  }
+}
+main();

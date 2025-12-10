@@ -1,0 +1,1017 @@
+#!/usr/bin/env node
+import { createRequire as __createRequire } from 'module';
+const __require = __createRequire(import.meta.url);
+const __betterSqlite3 = __require('__homedir__/Projects/Personal/claude-context-manager/node_modules/better-sqlite3');
+
+// shim:better-sqlite3
+var better_sqlite3_default = __betterSqlite3;
+
+// src/storage/sqlite.ts
+import { homedir } from "os";
+import path from "path";
+import { mkdirSync } from "fs";
+var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
+var SQLiteStorage = class {
+  db;
+  constructor(dbPath = DEFAULT_DB_PATH) {
+    const dir = path.dirname(dbPath);
+    mkdirSync(dir, { recursive: true });
+    this.db = new better_sqlite3_default(dbPath);
+    this.db.pragma("journal_mode = WAL");
+    this.db.pragma("foreign_keys = ON");
+  }
+  async initialize() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        summary TEXT,
+        status TEXT DEFAULT 'active'
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at);
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS user_prompts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        prompt_number INTEGER NOT NULL,
+        prompt_text TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_user_prompts_project_created
+      ON user_prompts(project, created_at DESC);
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_id);
+    `);
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS user_prompts_fts USING fts5(
+        prompt_text,
+        content=user_prompts,
+        content_rowid=id
+      );
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+        INSERT INTO user_prompts_fts(rowid, prompt_text)
+        VALUES (new.id, COALESCE(new.prompt_text, ''));
+      END;
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+        INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+        VALUES('delete', old.id, old.prompt_text);
+      END;
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS user_prompts_au AFTER UPDATE ON user_prompts BEGIN
+        INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+        VALUES('delete', old.id, old.prompt_text);
+        INSERT INTO user_prompts_fts(rowid, prompt_text)
+        VALUES (new.id, COALESCE(new.prompt_text, ''));
+      END;
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        package TEXT,
+        tool_name TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        files_touched TEXT,
+        metadata TEXT,
+        token_estimate INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_project_created
+      ON observations(project, created_at DESC);
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_session ON observations(session_id);
+    `);
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
+        summary,
+        files_touched,
+        metadata,
+        content=observations,
+        content_rowid=id
+      );
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+        INSERT INTO observations_fts(rowid, summary, files_touched, metadata)
+        VALUES (
+          new.id,
+          COALESCE(new.summary, ''),
+          COALESCE(new.files_touched, ''),
+          COALESCE(new.metadata, '')
+        );
+      END;
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, summary, files_touched, metadata)
+        VALUES('delete', old.id, old.summary, old.files_touched, old.metadata);
+      END;
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, summary, files_touched, metadata)
+        VALUES('delete', old.id, old.summary, old.files_touched, old.metadata);
+        INSERT INTO observations_fts(rowid, summary, files_touched, metadata)
+        VALUES (
+          new.id,
+          COALESCE(new.summary, ''),
+          COALESCE(new.files_touched, ''),
+          COALESCE(new.metadata, '')
+        );
+      END;
+    `);
+  }
+  async save(observation) {
+    const summaryPrefix = observation.summary.substring(0, 60);
+    let dedupeWindowMs = 6e4;
+    let crossSession = false;
+    if (observation.summary.includes("psql")) {
+      dedupeWindowMs = 36e5;
+      crossSession = true;
+    } else if (observation.summary.startsWith("Bash: ssh ")) {
+      dedupeWindowMs = 6e5;
+      crossSession = true;
+    } else if (observation.summary.includes("gh issue") || observation.summary.includes("gh pr")) {
+      dedupeWindowMs = 3e5;
+      crossSession = true;
+    } else if (observation.tool_name === "Edit") {
+      dedupeWindowMs = 12e4;
+      crossSession = false;
+    }
+    const windowStart = new Date(Date.now() - dedupeWindowMs).toISOString();
+    const duplicateCheck = crossSession ? this.db.prepare(`
+          SELECT COUNT(*) as count FROM observations
+          WHERE project = ?
+            AND substr(summary, 1, 60) = ?
+            AND created_at > ?
+        `) : this.db.prepare(`
+          SELECT COUNT(*) as count FROM observations
+          WHERE session_id = ?
+            AND substr(summary, 1, 60) = ?
+            AND created_at > ?
+        `);
+    const checkKey = crossSession ? observation.project : observation.session_id;
+    const result = duplicateCheck.get(checkKey, summaryPrefix, windowStart);
+    if (result.count > 0) {
+      return;
+    }
+    const stmt = this.db.prepare(`
+      INSERT INTO observations (
+        session_id, project, package, tool_name, summary,
+        files_touched, metadata, token_estimate, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      observation.session_id,
+      observation.project,
+      observation.package || null,
+      observation.tool_name,
+      observation.summary,
+      JSON.stringify(observation.files_touched),
+      JSON.stringify(observation.metadata),
+      observation.token_estimate,
+      observation.created_at
+    );
+  }
+  async getRecent(project, limit) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(project + "%", limit);
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      package: row.package || void 0,
+      tool_name: row.tool_name,
+      summary: row.summary,
+      files_touched: JSON.parse(row.files_touched || "[]"),
+      metadata: JSON.parse(row.metadata || "{}"),
+      token_estimate: row.token_estimate,
+      created_at: row.created_at
+    }));
+  }
+  async getWithinBudget(project, tokenBudget) {
+    const effectiveBudget = Math.floor(tokenBudget * 0.8);
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ?
+      ORDER BY created_at DESC
+    `);
+    const rows = stmt.all(project + "%");
+    const results = [];
+    let totalTokens = 0;
+    for (const row of rows) {
+      if (totalTokens + row.token_estimate > effectiveBudget) {
+        break;
+      }
+      results.push({
+        id: row.id,
+        session_id: row.session_id,
+        project: row.project,
+        package: row.package || void 0,
+        tool_name: row.tool_name,
+        summary: row.summary,
+        files_touched: JSON.parse(row.files_touched || "[]"),
+        metadata: JSON.parse(row.metadata || "{}"),
+        token_estimate: row.token_estimate,
+        created_at: row.created_at
+      });
+      totalTokens += row.token_estimate;
+    }
+    return results;
+  }
+  async search(query, project) {
+    let sql;
+    let params;
+    if (project) {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ? AND o.project LIKE ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [query, project + "%"];
+    } else {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [query];
+    }
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all(...params);
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      package: row.package || void 0,
+      tool_name: row.tool_name,
+      summary: row.summary,
+      files_touched: JSON.parse(row.files_touched || "[]"),
+      metadata: JSON.parse(row.metadata || "{}"),
+      token_estimate: row.token_estimate,
+      created_at: row.created_at
+    }));
+  }
+  async getStats(project) {
+    const TOKEN_BUDGET = parseInt(
+      process.env.CONTEXT_MANAGER_TOKEN_BUDGET || "4000",
+      10
+    );
+    const baseSql = project ? `
+        SELECT
+          COUNT(*) as total_observations,
+          MIN(created_at) as oldest_observation,
+          MAX(created_at) as newest_observation,
+          SUM(token_estimate) as total_tokens,
+          AVG(token_estimate) as avg_tokens
+        FROM observations
+        WHERE project LIKE ? || '%'
+      ` : `
+        SELECT
+          COUNT(*) as total_observations,
+          MIN(created_at) as oldest_observation,
+          MAX(created_at) as newest_observation,
+          SUM(token_estimate) as total_tokens,
+          AVG(token_estimate) as avg_tokens
+        FROM observations
+      `;
+    const baseRow = this.db.prepare(baseSql).get(
+      ...project ? [project] : []
+    );
+    const sessionSql = project ? "SELECT COUNT(*) as count FROM sessions WHERE project LIKE ? || '%'" : "SELECT COUNT(*) as count FROM sessions";
+    const sessionRow = this.db.prepare(sessionSql).get(
+      ...project ? [project] : []
+    );
+    const toolSql = project ? `
+        SELECT tool_name, SUM(token_estimate) as tokens
+        FROM observations
+        WHERE project LIKE ? || '%'
+        GROUP BY tool_name
+        ORDER BY tokens DESC
+      ` : `
+        SELECT tool_name, SUM(token_estimate) as tokens
+        FROM observations
+        GROUP BY tool_name
+        ORDER BY tokens DESC
+      `;
+    const toolRows = this.db.prepare(toolSql).all(
+      ...project ? [project] : []
+    );
+    const tokensByTool = {};
+    for (const row of toolRows) {
+      tokensByTool[row.tool_name] = row.tokens;
+    }
+    const avgTokensPerSession = sessionRow.count > 0 ? Math.round((baseRow.total_tokens || 0) / sessionRow.count) : 0;
+    const recentSql = project ? `
+        SELECT SUM(token_estimate) as session_tokens
+        FROM observations
+        WHERE project LIKE ? || '%'
+        GROUP BY session_id
+        ORDER BY MAX(created_at) DESC
+        LIMIT 10
+      ` : `
+        SELECT SUM(token_estimate) as session_tokens
+        FROM observations
+        GROUP BY session_id
+        ORDER BY MAX(created_at) DESC
+        LIMIT 10
+      `;
+    const recentRows = this.db.prepare(recentSql).all(
+      ...project ? [project] : []
+    );
+    const avgRecentTokens = recentRows.length > 0 ? Math.round(
+      recentRows.reduce((sum, r) => sum + r.session_tokens, 0) / recentRows.length
+    ) : 0;
+    const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET);
+    return {
+      total_observations: baseRow.total_observations,
+      total_sessions: sessionRow.count,
+      oldest_observation: baseRow.oldest_observation,
+      newest_observation: baseRow.newest_observation,
+      total_tokens: baseRow.total_tokens || 0,
+      avg_tokens_per_observation: Math.round(baseRow.avg_tokens || 0),
+      avg_tokens_per_session: avgTokensPerSession,
+      tokens_by_tool: tokensByTool,
+      token_budget: TOKEN_BUDGET,
+      typical_injection_tokens: typicalInjection
+    };
+  }
+  async createSession(sessionId, project) {
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO sessions (id, project, started_at, status)
+      VALUES (?, ?, ?, 'active')
+    `);
+    stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
+  }
+  async endSession(sessionId, summary) {
+    const stmt = this.db.prepare(`
+      UPDATE sessions
+      SET ended_at = ?, summary = ?, status = 'complete'
+      WHERE id = ?
+    `);
+    stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, sessionId);
+  }
+  async getRecentSessions(project, limit) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM sessions
+      WHERE project = ?
+        AND (summary IS NOT NULL AND LENGTH(summary) > 0)
+        AND id NOT LIKE 'agent-%'
+        AND summary NOT LIKE '%I''ll wait for your request%'
+        AND summary NOT LIKE '%I''m ready to help%'
+        AND summary NOT LIKE '%No data from yesterday%'
+        AND summary NOT LIKE '%context-manager%'
+        AND summary NOT LIKE '%no context%'
+      ORDER BY CASE WHEN status = 'complete' THEN 0 ELSE 1 END, started_at DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(project, limit);
+    return rows.map((row) => ({
+      id: row.id,
+      project: row.project,
+      started_at: row.started_at,
+      ended_at: row.ended_at || void 0,
+      summary: row.summary || void 0,
+      status: row.status
+    }));
+  }
+  async vacuum(olderThanDays) {
+    if (olderThanDays) {
+      const cutoffDate = /* @__PURE__ */ new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
+      const cutoffISO = cutoffDate.toISOString();
+      const stmt = this.db.prepare(`
+        DELETE FROM observations
+        WHERE created_at < ?
+      `);
+      const result = stmt.run(cutoffISO);
+      return result.changes;
+    }
+    this.db.exec("VACUUM");
+    return 0;
+  }
+  async saveUserPrompt(prompt) {
+    const stmt = this.db.prepare(`
+      INSERT INTO user_prompts (
+        session_id, project, prompt_number, prompt_text, created_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      prompt.session_id,
+      prompt.project,
+      prompt.prompt_number,
+      prompt.prompt_text,
+      prompt.created_at
+    );
+  }
+  async getRecentPrompts(project, limit) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM user_prompts
+      WHERE project = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(project, limit);
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      prompt_number: row.prompt_number,
+      prompt_text: row.prompt_text,
+      created_at: row.created_at
+    }));
+  }
+  async searchPrompts(query, project) {
+    let sql;
+    let params;
+    if (project) {
+      sql = `
+        SELECT p.* FROM user_prompts p
+        INNER JOIN user_prompts_fts ON p.id = user_prompts_fts.rowid
+        WHERE user_prompts_fts MATCH ? AND p.project = ?
+        ORDER BY p.created_at DESC
+        LIMIT 50
+      `;
+      params = [query, project];
+    } else {
+      sql = `
+        SELECT p.* FROM user_prompts p
+        INNER JOIN user_prompts_fts ON p.id = user_prompts_fts.rowid
+        WHERE user_prompts_fts MATCH ?
+        ORDER BY p.created_at DESC
+        LIMIT 50
+      `;
+      params = [query];
+    }
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all(...params);
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      prompt_number: row.prompt_number,
+      prompt_text: row.prompt_text,
+      created_at: row.created_at
+    }));
+  }
+  close() {
+    this.db.close();
+  }
+};
+
+// src/utils/validation.ts
+import { realpathSync } from "fs";
+import { homedir as homedir2 } from "os";
+import path2 from "path";
+var ALLOWED_PROJECT_ROOTS = [
+  path2.join(homedir2(), "Projects"),
+  path2.join(homedir2(), "projects"),
+  path2.join(homedir2(), "Dev"),
+  path2.join(homedir2(), "dev"),
+  path2.join(homedir2(), "Code"),
+  path2.join(homedir2(), "code"),
+  path2.join(homedir2(), "Workspace"),
+  path2.join(homedir2(), "workspace"),
+  path2.join(homedir2(), "Obsidian"),
+  // Obsidian vaults
+  path2.join(homedir2(), "Documents"),
+  // Common location
+  homedir2()
+  // Allow home directory as fallback
+];
+function validateProjectPath(projectPath) {
+  let normalizedPath;
+  try {
+    normalizedPath = realpathSync(projectPath);
+  } catch (error) {
+    normalizedPath = path2.resolve(projectPath);
+  }
+  const isAllowed = ALLOWED_PROJECT_ROOTS.some((root) => {
+    try {
+      const normalizedRoot = realpathSync(root);
+      return normalizedPath.startsWith(normalizedRoot);
+    } catch {
+      return false;
+    }
+  });
+  if (!isAllowed) {
+    throw new Error(
+      `Project path outside allowed roots: ${normalizedPath}. Allowed roots: ${ALLOWED_PROJECT_ROOTS.join(", ")}`
+    );
+  }
+  return normalizedPath;
+}
+function validatePostToolUseInput(input) {
+  if (typeof input !== "object" || input === null) {
+    throw new Error("Invalid input: expected object");
+  }
+  const obj = input;
+  if (typeof obj.session_id !== "string" || obj.session_id.length === 0) {
+    throw new Error("Invalid input: session_id must be non-empty string");
+  }
+  if (typeof obj.cwd !== "string" || obj.cwd.length === 0) {
+    throw new Error("Invalid input: cwd must be non-empty string");
+  }
+  if (typeof obj.tool_name !== "string" || obj.tool_name.length === 0) {
+    throw new Error("Invalid input: tool_name must be non-empty string");
+  }
+  const validatedCwd = validateProjectPath(obj.cwd);
+  let toolResponse;
+  if (typeof obj.tool_response === "string") {
+    toolResponse = obj.tool_response;
+  } else if (typeof obj.tool_response === "object" && obj.tool_response !== null) {
+    const resp = obj.tool_response;
+    const stdout = typeof resp.stdout === "string" ? resp.stdout : "";
+    const stderr = typeof resp.stderr === "string" ? resp.stderr : "";
+    toolResponse = stderr ? `${stdout}
+[stderr]
+${stderr}` : stdout;
+  }
+  return {
+    session_id: obj.session_id,
+    cwd: validatedCwd,
+    tool_name: obj.tool_name,
+    tool_input: obj.tool_input,
+    tool_response: toolResponse
+  };
+}
+function shouldCaptureTool(toolName, toolInput) {
+  const SKIP_TOOLS = [
+    "TodoWrite",
+    "AskUserQuestion",
+    "SlashCommand"
+    // Add more low-value tools as needed
+  ];
+  if (SKIP_TOOLS.includes(toolName)) {
+    return false;
+  }
+  if (toolName === "Bash" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const command = typeof input.command === "string" ? input.command : "";
+    const SKIP_BASH_PATTERNS = [
+      /^cd\s+[^&|;]+$/,
+      // Simple cd (no chaining)
+      /^cd\s+.+&&/,
+      // Any cd && chain (usually just navigation)
+      /^pwd$/,
+      // Current directory
+      /^ls\s+-la?\s*$/,
+      // Basic ls without path
+      /^ls\s+-la?\s+[^\|]+$/,
+      // Basic ls with path (no piping)
+      /^echo\s+['"]?DISPATCHER/i,
+      // Dispatcher protocol messages
+      /^echo\s+['"]?<user-prompt/i,
+      // User prompt hook messages
+      /^echo\s+['"]?(Success|===|═)/i,
+      // Status echo messages and banners
+      /^echo\s+['"]?\n?═/,
+      // Banner lines starting with box chars
+      /^cat\s*<<\s*['"]?EOF/i,
+      // Here-docs (usually banner output)
+      /^clear$/,
+      // Clear screen
+      /^history/,
+      // History commands
+      /^which\s+/,
+      // Which commands
+      /^type\s+/,
+      // Type commands
+      /^find\s+/
+      // Find commands (verbose output)
+    ];
+    for (const pattern of SKIP_BASH_PATTERNS) {
+      if (pattern.test(command)) {
+        return false;
+      }
+    }
+  }
+  if (toolName === "Edit" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const filePath = typeof input.file_path === "string" ? input.file_path : "";
+    const SKIP_EDIT_PATTERNS = [
+      /\/summary\.md$/,
+      // Agent summary files
+      /\/worklog\.md$/,
+      // Agent worklog files
+      /\/\.agent-.*\.md$/
+      // Agent temp files
+    ];
+    for (const pattern of SKIP_EDIT_PATTERNS) {
+      if (pattern.test(filePath)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// src/utils/sanitize.ts
+function stripPrivateTags(content) {
+  let result = "";
+  let i = 0;
+  const openTag = "<private>";
+  const closeTag = "</private>";
+  while (i < content.length) {
+    const remainingLength = content.length - i;
+    if (remainingLength >= openTag.length && content.substring(i, i + openTag.length) === openTag) {
+      const closeIndex = content.indexOf(closeTag, i + openTag.length);
+      if (closeIndex !== -1) {
+        result += "[REDACTED]";
+        i = closeIndex + closeTag.length;
+        continue;
+      }
+    }
+    result += content[i];
+    i++;
+  }
+  return result;
+}
+var SENSITIVE_PATTERNS = [
+  // API keys
+  { pattern: /\b(sk|pk|api|token)[-_]?[a-zA-Z0-9]{20,}\b/gi, replacement: "[API_KEY_REDACTED]" },
+  // AWS credentials
+  { pattern: /\bAKIA[0-9A-Z]{16}\b/g, replacement: "[AWS_KEY_REDACTED]" },
+  {
+    pattern: /aws_secret_access_key\s*=\s*[^\s]+/gi,
+    replacement: "aws_secret_access_key=[REDACTED]"
+  },
+  // JWT tokens (basic pattern - 3 base64 segments separated by dots)
+  {
+    pattern: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g,
+    replacement: "[JWT_REDACTED]"
+  },
+  // URLs with embedded credentials
+  {
+    pattern: /(\w+):\/\/[^:]+:[^@]+@[^\s]+/gi,
+    replacement: (match) => {
+      try {
+        const url = new URL(match);
+        return `${url.protocol}//${url.hostname}${url.pathname}`;
+      } catch {
+        return "[URL_WITH_CREDENTIALS_REDACTED]";
+      }
+    }
+  },
+  // Environment variables with common secret names
+  {
+    pattern: /(PASSWORD|SECRET|TOKEN|KEY|CREDENTIALS?)\s*[:=]\s*['"]?([^\s'"]+)['"]?/gi,
+    replacement: "$1=[REDACTED]"
+  },
+  // Private keys
+  {
+    pattern: /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
+    replacement: "[PRIVATE_KEY_REDACTED]"
+  }
+];
+function sanitizeSensitiveData(content) {
+  let sanitized = content;
+  for (const { pattern, replacement } of SENSITIVE_PATTERNS) {
+    if (typeof replacement === "function") {
+      sanitized = sanitized.replace(pattern, replacement);
+    } else {
+      sanitized = sanitized.replace(pattern, replacement);
+    }
+  }
+  return sanitized;
+}
+function sanitizeContent(content) {
+  let sanitized = stripPrivateTags(content);
+  sanitized = sanitizeSensitiveData(sanitized);
+  return sanitized;
+}
+function estimateTokens(text) {
+  return Math.ceil(text.length / 4);
+}
+
+// src/capture/processor.ts
+var OUTPUT_THRESHOLDS = {
+  FULL_STORAGE_LIMIT: 800,
+  // chars - store full if under this (was 1500)
+  HEAD_SIZE: 400,
+  // chars - first N for long outputs (was 800)
+  TAIL_SIZE: 200,
+  // chars - last N for long outputs (was 400)
+  MAX_STORAGE: 700
+  // chars - absolute max stored (was 1600)
+};
+var REDUCED_OUTPUT_THRESHOLDS = {
+  FULL_STORAGE_LIMIT: 300,
+  // chars - aggressive truncation
+  HEAD_SIZE: 150,
+  // chars - keep query/command visible
+  TAIL_SIZE: 100
+  // chars - minimal tail
+};
+function shouldUseReducedLimits(toolName, toolInput) {
+  if (toolName !== "Bash")
+    return false;
+  const input = toolInput;
+  const command = typeof input?.command === "string" ? input.command : "";
+  if (command.includes("psql")) {
+    return true;
+  }
+  if (command.startsWith("ssh ") && (command.includes(" cat ") || command.includes(" logs "))) {
+    return true;
+  }
+  if (command.includes("pytest") || command.includes("python -m pytest")) {
+    return true;
+  }
+  if (command.includes("npm run") && (command.includes("test") || command.includes("build"))) {
+    return true;
+  }
+  return false;
+}
+function extractFilesTouched(toolName, toolInput, toolResponse) {
+  const files = [];
+  if (toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const pathFields = ["file_path", "path", "filepath", "file"];
+    for (const field of pathFields) {
+      if (typeof input[field] === "string") {
+        files.push(input[field]);
+      }
+    }
+  }
+  return [...new Set(files)];
+}
+function extractBashStats(output) {
+  const stats = {};
+  const exitCodeMatch = output.match(/exit\s+code:\s*(\d+)/i);
+  if (exitCodeMatch && exitCodeMatch[1]) {
+    stats.exit_code = parseInt(exitCodeMatch[1], 10);
+  }
+  return Object.keys(stats).length > 0 ? stats : void 0;
+}
+function extractGrepStats(output, toolInput) {
+  const stats = {};
+  const lines = output.split("\n").filter((line) => line.trim().length > 0);
+  stats.match_count = lines.length;
+  return stats;
+}
+function extractGlobStats(output) {
+  const stats = {};
+  const lines = output.split("\n").filter((line) => line.trim().length > 0);
+  stats.file_count = lines.length;
+  return stats;
+}
+function extractOutput(output, toolName, toolInput) {
+  const originalLength = output.length;
+  const lineCount = output.split("\n").length;
+  const useReduced = shouldUseReducedLimits(toolName, toolInput);
+  const thresholds = useReduced ? REDUCED_OUTPUT_THRESHOLDS : OUTPUT_THRESHOLDS;
+  let toolSpecific;
+  switch (toolName) {
+    case "Bash":
+      toolSpecific = extractBashStats(output);
+      break;
+    case "Grep":
+      toolSpecific = extractGrepStats(output, toolInput);
+      break;
+    case "Glob":
+      toolSpecific = extractGlobStats(output);
+      break;
+  }
+  if (originalLength <= thresholds.FULL_STORAGE_LIMIT) {
+    return {
+      stored_output: output,
+      output_stats: {
+        original_length: originalLength,
+        line_count: lineCount,
+        truncated: false,
+        tool_specific: toolSpecific
+      }
+    };
+  }
+  const head = output.substring(0, thresholds.HEAD_SIZE);
+  const tail = output.substring(output.length - thresholds.TAIL_SIZE);
+  const omittedChars = originalLength - thresholds.HEAD_SIZE - thresholds.TAIL_SIZE;
+  const storedOutput = `${head}
+[... ${omittedChars} chars omitted ...]
+${tail}`;
+  return {
+    stored_output: storedOutput,
+    output_stats: {
+      original_length: originalLength,
+      line_count: lineCount,
+      truncated: true,
+      tool_specific: toolSpecific
+    }
+  };
+}
+function summarizeRead(input, response) {
+  const filePath = input.file_path;
+  const fileName = filePath.split("/").pop() || filePath;
+  const ext = fileName.split(".").pop()?.toLowerCase();
+  let typeHint = "";
+  if (ext) {
+    const typeMap = {
+      ts: "TypeScript",
+      js: "JavaScript",
+      py: "Python",
+      md: "Markdown",
+      json: "JSON",
+      yml: "YAML",
+      yaml: "YAML",
+      sql: "SQL",
+      sh: "Shell script",
+      rs: "Rust",
+      go: "Go"
+    };
+    typeHint = typeMap[ext] || ext.toUpperCase();
+  }
+  return `Read ${fileName}${typeHint ? ` (${typeHint})` : ""}`;
+}
+function summarizeWrite(input, response) {
+  const filePath = input.file_path;
+  const fileName = filePath.split("/").pop() || filePath;
+  const isNew = response?.toLowerCase().includes("created");
+  return `${isNew ? "Created" : "Updated"} ${fileName}`;
+}
+function summarizeEdit(input, response) {
+  const filePath = input.file_path;
+  const fileName = filePath.split("/").pop() || filePath;
+  const oldString = input.old_string || "";
+  const newString = input.new_string || "";
+  const oldHint = oldString.split("\n")[0]?.substring(0, 50) || "";
+  const newHint = newString.split("\n")[0]?.substring(0, 50) || "";
+  if (oldHint && newHint) {
+    return `Edited ${fileName}: "${oldHint}" \u2192 "${newHint}"`;
+  }
+  return `Edited ${fileName}`;
+}
+function summarizeBash(input, response) {
+  const command = input.command || "";
+  const commandPreview = command.length > 60 ? command.substring(0, 60) + "..." : command;
+  if (command.startsWith("git ")) {
+    return `Git: ${commandPreview.substring(4)}`;
+  }
+  if (command.startsWith("npm ") || command.startsWith("yarn ")) {
+    return `Package manager: ${commandPreview}`;
+  }
+  if (command.startsWith("make ")) {
+    return `Make: ${commandPreview.substring(5)}`;
+  }
+  return `Bash: ${commandPreview}`;
+}
+function summarizeGrep(input, response) {
+  const pattern = input.pattern || "";
+  const path3 = input.path || ".";
+  const outputMode = input.output_mode || "files_with_matches";
+  const patternPreview = pattern.length > 30 ? pattern.substring(0, 30) + "..." : pattern;
+  if (outputMode === "count") {
+    return `Grep count: "${patternPreview}" in ${path3}`;
+  }
+  return `Grep: "${patternPreview}" in ${path3}`;
+}
+function summarizeGlob(input, response) {
+  const pattern = input.pattern || "";
+  const path3 = input.path || ".";
+  return `Glob: "${pattern}" in ${path3}`;
+}
+function summarizeTool(toolName, toolInput, toolResponse) {
+  let summary = `${toolName} tool invocation`;
+  if (!toolInput || typeof toolInput !== "object") {
+    return summary;
+  }
+  const input = toolInput;
+  switch (toolName) {
+    case "Read":
+      summary = summarizeRead(input, toolResponse);
+      break;
+    case "Write":
+      summary = summarizeWrite(input, toolResponse);
+      break;
+    case "Edit":
+      summary = summarizeEdit(input, toolResponse);
+      break;
+    case "Bash":
+      summary = summarizeBash(input, toolResponse);
+      break;
+    case "Grep":
+      summary = summarizeGrep(input, toolResponse);
+      break;
+    case "Glob":
+      summary = summarizeGlob(input, toolResponse);
+      break;
+    default:
+      summary = `${toolName} invocation`;
+  }
+  return summary;
+}
+function processToolCapture(capture) {
+  const sanitizedResponse = capture.tool_response ? sanitizeContent(capture.tool_response) : "";
+  const extracted = extractOutput(
+    sanitizedResponse,
+    capture.tool_name,
+    capture.tool_input
+  );
+  const summary = summarizeTool(
+    capture.tool_name,
+    capture.tool_input,
+    sanitizedResponse
+  );
+  const filesTouched = extractFilesTouched(
+    capture.tool_name,
+    capture.tool_input,
+    sanitizedResponse
+  );
+  const contentToEstimate = `${summary}
+${extracted.stored_output}`;
+  const tokenEstimate = estimateTokens(contentToEstimate);
+  const metadata = {
+    tool_input: capture.tool_input,
+    stored_output: extracted.stored_output,
+    output_stats: extracted.output_stats
+  };
+  return {
+    session_id: capture.session_id,
+    project: capture.project,
+    tool_name: capture.tool_name,
+    summary,
+    files_touched: filesTouched,
+    metadata,
+    token_estimate: tokenEstimate,
+    created_at: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+
+// plugin/hooks/capture-tool.ts
+async function readStdin() {
+  return new Promise((resolve) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => data += chunk);
+    process.stdin.on("end", () => resolve(data));
+  });
+}
+async function main() {
+  const storage = new SQLiteStorage();
+  try {
+    const inputStr = await readStdin();
+    let rawInput;
+    try {
+      rawInput = JSON.parse(inputStr);
+    } catch (parseError) {
+      console.error("[context-manager] Invalid JSON input");
+      process.stdout.write(JSON.stringify({ status: "error", error: "Invalid JSON input" }));
+      return;
+    }
+    const input = validatePostToolUseInput(rawInput);
+    if (!shouldCaptureTool(input.tool_name, input.tool_input)) {
+      process.stdout.write(JSON.stringify({ status: "skipped" }));
+      return;
+    }
+    await storage.initialize();
+    const observation = processToolCapture({
+      session_id: input.session_id,
+      project: input.cwd,
+      tool_name: input.tool_name,
+      tool_input: input.tool_input,
+      tool_response: input.tool_response
+    });
+    await storage.save(observation);
+    process.stdout.write(JSON.stringify({ status: "captured" }));
+  } catch (error) {
+    console.error("[context-manager] Capture error:", error);
+    process.stdout.write(JSON.stringify({ status: "error" }));
+  } finally {
+    storage.close();
+  }
+}
+main();

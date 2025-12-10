@@ -20,7 +20,7 @@ node_modules/
 
 # Build output
 dist/
-plugin/scripts/
+# Note: plugin/scripts/ is NOT ignored - built hooks must be committed for GitHub install
 
 # IDE
 .idea/
