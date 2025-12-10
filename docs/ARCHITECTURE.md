@@ -425,12 +425,64 @@ The uninstall script (`scripts/uninstall.js`):
 
 ---
 
-## Future Extensions
+## Future Extensions (Backlog)
 
-Potential enhancements (not in current scope):
+Potential enhancements for future consideration. Prioritized by estimated value.
 
-1. **Semantic Search** - Add embeddings for similarity search
-2. **Cross-Project** - Optional global context across all projects
-3. **Viewer UI** - Web interface to browse/search observations
-4. **Export** - Export observations as markdown/JSON
-5. **Smart Install** - Auto-rebuild native modules on Node.js upgrade
+### High Value
+
+| Feature | Description | Inspiration |
+|---------|-------------|-------------|
+| **Pinned Context** | Manual notes that ALWAYS inject (e.g., "Using repository pattern") | claude-mem |
+| **Summary Compression** | Abbreviate verbose summaries: `Read:file.py` vs `Read file.py (Python)` | SuperClaude |
+| **Progressive Disclosure** | Inject less by default, load more via `/ctx-search` on demand | SuperClaude |
+| **AI-Powered Summarization** | Use Claude to generate better observation summaries | claude-mem |
+
+### Medium Value
+
+| Feature | Description | Inspiration |
+|---------|-------------|-------------|
+| **Semantic/Vector Search** | Embeddings for conceptually similar observations | claude-mem (ChromaDB) |
+| **Viewer UI** | Web interface to browse/search observations | claude-mem |
+| **Session Timeline** | Visual timeline of session activity | - |
+| **Token Dashboard** | Visualize token usage by tool, project, time | - |
+| **Export** | Export observations as markdown/JSON | - |
+
+### Lower Priority
+
+| Feature | Description | Notes |
+|---------|-------------|-------|
+| **Cross-Project Context** | Optional global context across all projects | Privacy concerns |
+| **Endless Mode** | Aggressive compression for very long sessions | claude-mem beta |
+| **MCP Integration** | Expose context via MCP server | Alternative to hooks |
+| **Smart Install** | Auto-rebuild native modules on Node.js upgrade | Convenience |
+
+### Token Reduction Techniques to Explore
+
+Based on [SuperClaude Issue #286](https://github.com/SuperClaude-Org/SuperClaude_Framework/issues/286):
+
+1. **Template Compression** - Abbreviated formats: `ID:architect|PRI:maintainability>perf`
+2. **Reference Consolidation** - Avoid repeating same context patterns
+3. **YAML Simplification** - Strip metadata, keep only essential fields
+4. **Symbol System** - `→, ⇒, ∴` instead of verbose connectors (mixed results)
+5. **Truncate Session Summaries** - First 200 chars instead of full text
+
+Based on [artemgetmann's gist](https://gist.github.com/artemgetmann/74f28d2958b53baf50597b669d4bce43):
+
+1. **Modular Loading** - `@filename` on-demand vs inline injection
+2. **Periodic Compaction** - Summarize to `session_summary.md` every N messages
+3. **Precise Prompting** - Guide users to specific queries
+
+### Complementary Tools
+
+These tools solve different problems and could work alongside context-manager:
+
+| Tool | Focus | Overlap |
+|------|-------|---------|
+| [SuperClaude](https://github.com/SuperClaude-Org/SuperClaude_Framework) | Personas + commands (how Claude thinks) | Token reduction techniques |
+| [Superpowers](https://github.com/obra/superpowers) | Structured workflow (TDD, planning) | None |
+| [claude-mem](https://github.com/thedotmack/claude-mem) | Full-featured memory (vector search, UI) | Direct competitor |
+
+---
+
+**Last Updated**: December 9, 2025
