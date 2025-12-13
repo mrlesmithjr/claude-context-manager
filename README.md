@@ -3,7 +3,7 @@
 Persistent memory for Claude Code sessions. Automatically captures context and injects it into future sessions.
 
 **Status**: ACTIVE
-**Last Updated**: December 9, 2025
+**Last Updated**: December 13, 2025
 
 ---
 
@@ -205,6 +205,46 @@ npm run plugin:uninstall
 
 # Clean up everything including all stored data
 npm run plugin:uninstall:all
+```
+
+---
+
+## Web UI Dashboard
+
+Browse your context observations, sessions, and analytics through a local web interface.
+
+### Starting the Dashboard
+
+```bash
+# From the project directory
+cd /path/to/claude-context-manager
+npm run web
+```
+
+The dashboard will be available at `http://localhost:3847`
+
+### Features
+
+- **Sessions View** - Browse all Claude Code sessions with summaries and timestamps
+- **Search** - Full-text search across observations and user prompts
+- **Analytics** - Token usage over time, activity timeline, tool distribution
+- **Project Stats** - Per-project observation counts and activity
+
+### Configuration
+
+Optional environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONTEXT_MANAGER_PORT` | `3847` | Web server port |
+| `CONTEXT_MANAGER_HOST` | `localhost` | Web server host |
+
+### Development Mode
+
+For live reload during development:
+
+```bash
+npm run web:dev
 ```
 
 ---

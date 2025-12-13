@@ -1,6 +1,6 @@
 {
   "name": "claude-context-manager",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Persistent memory for Claude Code sessions",
   "type": "module",
   "main": "dist/cli.js",
@@ -8,17 +8,21 @@
     "context-manager": "./dist/cli.js"
   },
   "scripts": {
-    "build": "npm run build:src && npm run build:hooks && npm run build:cli",
+    "build": "npm run build:src && npm run build:hooks && npm run build:cli && npm run build:web",
+    "build:all": "npm run build",
     "build:src": "tsc",
     "build:hooks": "node scripts/build-hooks.js",
     "build:cli": "esbuild cli/index.ts --bundle --outfile=dist/cli.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --banner:js=\"#!/usr/bin/env node\"",
+    "build:web": "esbuild web/server/index.ts --bundle --outfile=dist/web/server.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --packages=external",
     "build:plugin": "npm run build && node scripts/install.js",
     "plugin:uninstall": "node scripts/uninstall.js",
     "plugin:uninstall:all": "node scripts/uninstall.js --remove-data",
     "clean": "rm -rf dist plugin/scripts",
     "typecheck": "tsc --noEmit",
     "cli": "node dist/cli.js",
-    "import": "npx tsx scripts/import-transcripts.ts"
+    "import": "npx tsx scripts/import-transcripts.ts",
+    "web": "node dist/web/server.js",
+    "web:dev": "npx tsx watch web/server/index.ts"
   },
   "keywords": [
     "claude",
@@ -30,7 +34,10 @@
   "author": "Larry Smith Jr. <mrlesmithjr@gmail.com>",
   "license": "MIT",
   "dependencies": {
-    "better-sqlite3": "^11.0.0"
+    "@fastify/cors": "^11.2.0",
+    "@fastify/static": "^8.3.0",
+    "better-sqlite3": "^11.0.0",
+    "fastify": "^5.6.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",

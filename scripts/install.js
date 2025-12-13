@@ -154,6 +154,39 @@ node ${CLI_PATH} vacuum --days <N>
 \`\`\`
 
 Report how many observations were deleted.
+`,
+    'ctx-web.md': `Start the context-manager web dashboard.
+
+This command starts the web dashboard server and opens it in your browser.
+
+First check if the server is already running:
+\`\`\`bash
+curl -s http://localhost:3847/api/health 2>/dev/null | head -c 100
+\`\`\`
+
+If the health check returns JSON with "status":"ok", the server is already running.
+Just tell the user: "Web dashboard is already running at http://localhost:3847"
+
+If the health check fails (empty response or connection refused), start the server:
+\`\`\`bash
+cd ${PROJECT_ROOT} && npm run web > /dev/null 2>&1 &
+sleep 2
+\`\`\`
+
+Then open the browser (macOS):
+\`\`\`bash
+open http://localhost:3847
+\`\`\`
+
+Tell the user:
+- Web dashboard started at http://localhost:3847
+- The server runs in the background
+- To stop it: \`pkill -f "node dist/web/server.js"\` or close the terminal
+
+Features available:
+- Sessions: Browse all Claude Code sessions
+- Search: Full-text search across observations
+- Analytics: Token usage charts and statistics
 `
   };
 
@@ -192,6 +225,7 @@ function install() {
   console.log('  - /ctx-list    List recent observations');
   console.log('  - /ctx-search  Search observations');
   console.log('  - /ctx-vacuum  Clean up old data');
+  console.log('  - /ctx-web     Start web dashboard');
   console.log(`\nCLI available: node ${join(PROJECT_ROOT, 'dist', 'cli.js')}\n`);
 }
 

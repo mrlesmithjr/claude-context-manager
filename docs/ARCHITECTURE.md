@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: December 5, 2025
+**Last Updated**: December 13, 2025
 
 ---
 
@@ -80,18 +80,45 @@ export interface Observation {
 }
 
 export interface ContextStorage {
+  // Core operations (hooks)
   initialize(): Promise<void>;
   save(obs: Observation): Promise<void>;
   getRecent(project: string, limit: number): Promise<Observation[]>;
   getWithinBudget(project: string, tokenBudget: number): Promise<Observation[]>;
   search(query: string, project?: string): Promise<Observation[]>;
   getStats(project?: string): Promise<Stats>;
+
+  // Session management
   createSession(sessionId: string, project: string): Promise<void>;
   endSession(sessionId: string, summary?: string): Promise<void>;
+  getRecentSessions(project: string, limit: number): Promise<Session[]>;
+  getSessionObservations(sessionId: string): Promise<Observation[]>;
+  getSessionPrompts(sessionId: string): Promise<UserPrompt[]>;
+
+  // User prompts (Web UI)
+  saveUserPrompt(prompt: Omit<UserPrompt, 'id'>): Promise<void>;
+  getRecentPrompts(project: string, limit: number): Promise<UserPrompt[]>;
+  searchPrompts(query: string, project?: string): Promise<UserPrompt[]>;
+
+  // Analytics (Web UI)
+  getTimeline(project?: string, days?: number): Promise<TimelineEntry[]>;
+  getProjects(): Promise<ProjectEntry[]>;
+  countObservations(project?: string, tool?: string): Promise<number>;
+  countSessions(project?: string, status?: string): Promise<number>;
+
+  // Maintenance
   vacuum(olderThanDays?: number): Promise<number>;
   close(): void;
 }
 ```
+
+**New methods added for Web UI:**
+- `getRecentSessions()` - List sessions for browsing
+- `getSessionObservations()` / `getSessionPrompts()` - Session detail views
+- `saveUserPrompt()` / `getRecentPrompts()` / `searchPrompts()` - User prompt tracking
+- `getTimeline()` - Token usage over time for charts
+- `getProjects()` - List all projects with activity stats
+- `countObservations()` / `countSessions()` - Efficient counting for stats
 
 #### SQLite Implementation (`src/storage/sqlite.ts`)
 
@@ -425,27 +452,54 @@ The uninstall script (`scripts/uninstall.js`):
 
 ---
 
+## Web UI Dashboard (IMPLEMENTED)
+
+Local web interface for browsing context observations and analytics.
+
+**Status**: ✅ Implemented (v0.3.0)
+
+### Features
+- **Sessions View**: Browse all Claude Code sessions with summaries
+- **Search**: Full-text search across observations and prompts
+- **Analytics**: Token usage timeline, activity charts, tool distribution
+- **Project Stats**: Per-project observation counts and activity
+
+### Architecture
+- **Server**: Fastify (port 3847)
+- **Storage**: Direct SQLite access via shared storage layer
+- **Client**: Single-page HTML with vanilla JavaScript
+
+### Usage
+```bash
+npm run web       # Production mode
+npm run web:dev   # Development with live reload
+```
+
+See `web/server/index.ts` for server implementation and `web/client/index.html` for UI.
+
+---
+
 ## Future Extensions (Backlog)
 
 Potential enhancements for future consideration. Prioritized by estimated value.
 
 ### High Value
 
-| Feature | Description | Inspiration |
-|---------|-------------|-------------|
-| **Pinned Context** | Manual notes that ALWAYS inject (e.g., "Using repository pattern") | claude-mem |
-| **Summary Compression** | Abbreviate verbose summaries: `Read:file.py` vs `Read file.py (Python)` | SuperClaude |
-| **Progressive Disclosure** | Inject less by default, load more via `/ctx-search` on demand | SuperClaude |
-| **AI-Powered Summarization** | Use Claude to generate better observation summaries | claude-mem |
+| Feature | Description | Inspiration | Priority |
+|---------|-------------|-------------|----------|
+| **Pinned Context** | Manual notes that ALWAYS inject (e.g., "Using repository pattern") | claude-mem | |
+| **Summary Compression** | Abbreviate verbose summaries: `Read:file.py` vs `Read file.py (Python)` | SuperClaude | |
+| **Progressive Disclosure** | Inject less by default, load more via `/ctx-search` on demand | SuperClaude | |
+| **AI-Powered Summarization** | Use Claude to generate better observation summaries | claude-mem | |
 
 ### Medium Value
 
 | Feature | Description | Inspiration |
 |---------|-------------|-------------|
+| **Confidence Scoring** | Track pattern usefulness (0.0→1.0); promote validated patterns to "golden rules" | ELF |
+| **Outcome Tracking** | Store success/failure of actions to learn what approaches work | ELF |
+| **Pheromone Trails / Hotspots** | Track file activity to identify problem clusters ("this file is often touched during debugging") | ELF |
 | **Semantic/Vector Search** | Embeddings for conceptually similar observations | claude-mem (ChromaDB) |
-| **Viewer UI** | Web interface to browse/search observations | claude-mem |
-| **Session Timeline** | Visual timeline of session activity | - |
-| **Token Dashboard** | Visualize token usage by tool, project, time | - |
 | **Export** | Export observations as markdown/JSON | - |
 
 ### Lower Priority
@@ -482,7 +536,8 @@ These tools solve different problems and could work alongside context-manager:
 | [SuperClaude](https://github.com/SuperClaude-Org/SuperClaude_Framework) | Personas + commands (how Claude thinks) | Token reduction techniques |
 | [Superpowers](https://github.com/obra/superpowers) | Structured workflow (TDD, planning) | None |
 | [claude-mem](https://github.com/thedotmack/claude-mem) | Full-featured memory (vector search, UI) | Direct competitor |
+| [ELF](https://github.com/Spacehunterz/Emergent-Learning-Framework_ELF) | Outcome-based learning, confidence scoring | Learning patterns (potential) |
 
 ---
 
-**Last Updated**: December 9, 2025
+**Last Updated**: December 13, 2025

@@ -389,7 +389,7 @@ var SQLiteStorage = class {
   async getRecentSessions(project, limit) {
     const stmt = this.db.prepare(`
       SELECT * FROM sessions
-      WHERE project = ?
+      WHERE project LIKE ? || '%'
         AND (summary IS NOT NULL AND LENGTH(summary) > 0)
         AND id NOT LIKE 'agent-%'
         AND summary NOT LIKE '%I''ll wait for your request%'
@@ -488,6 +488,131 @@ var SQLiteStorage = class {
       prompt_text: row.prompt_text,
       created_at: row.created_at
     }));
+  }
+  async getTimeline(project, days = 30) {
+    const cutoffDate = /* @__PURE__ */ new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+    const cutoffISO = cutoffDate.toISOString();
+    let sql;
+    let params;
+    if (project) {
+      sql = `
+        SELECT
+          DATE(created_at) as date,
+          SUM(token_estimate) as tokens,
+          COUNT(*) as observations,
+          COUNT(DISTINCT session_id) as sessions
+        FROM observations
+        WHERE project LIKE ? AND created_at >= ?
+        GROUP BY DATE(created_at)
+        ORDER BY date ASC
+      `;
+      params = [project + "%", cutoffISO];
+    } else {
+      sql = `
+        SELECT
+          DATE(created_at) as date,
+          SUM(token_estimate) as tokens,
+          COUNT(*) as observations,
+          COUNT(DISTINCT session_id) as sessions
+        FROM observations
+        WHERE created_at >= ?
+        GROUP BY DATE(created_at)
+        ORDER BY date ASC
+      `;
+      params = [cutoffISO];
+    }
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all(...params);
+    return rows;
+  }
+  async getProjects() {
+    const sql = `
+      SELECT
+        project as path,
+        COUNT(*) as observation_count,
+        MAX(created_at) as last_activity
+      FROM observations
+      GROUP BY project
+      ORDER BY last_activity DESC
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all();
+    return rows;
+  }
+  async getSessionObservations(sessionId) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ?
+      ORDER BY created_at ASC
+    `);
+    const rows = stmt.all(sessionId);
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      package: row.package || void 0,
+      tool_name: row.tool_name,
+      summary: row.summary,
+      files_touched: JSON.parse(row.files_touched || "[]"),
+      metadata: JSON.parse(row.metadata || "{}"),
+      token_estimate: row.token_estimate,
+      created_at: row.created_at
+    }));
+  }
+  async getSessionPrompts(sessionId) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM user_prompts
+      WHERE session_id = ?
+      ORDER BY prompt_number ASC
+    `);
+    const rows = stmt.all(sessionId);
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      prompt_number: row.prompt_number,
+      prompt_text: row.prompt_text,
+      created_at: row.created_at
+    }));
+  }
+  async countObservations(project, tool) {
+    let sql;
+    const params = [];
+    if (project && tool) {
+      sql = "SELECT COUNT(*) as count FROM observations WHERE project LIKE ? AND tool_name = ?";
+      params.push(project + "%", tool);
+    } else if (project) {
+      sql = "SELECT COUNT(*) as count FROM observations WHERE project LIKE ?";
+      params.push(project + "%");
+    } else if (tool) {
+      sql = "SELECT COUNT(*) as count FROM observations WHERE tool_name = ?";
+      params.push(tool);
+    } else {
+      sql = "SELECT COUNT(*) as count FROM observations";
+    }
+    const stmt = this.db.prepare(sql);
+    const result = stmt.get(...params);
+    return result.count;
+  }
+  async countSessions(project, status) {
+    let sql;
+    const params = [];
+    if (project && status) {
+      sql = "SELECT COUNT(*) as count FROM sessions WHERE project LIKE ? AND status = ?";
+      params.push(project + "%", status);
+    } else if (project) {
+      sql = "SELECT COUNT(*) as count FROM sessions WHERE project LIKE ?";
+      params.push(project + "%");
+    } else if (status) {
+      sql = "SELECT COUNT(*) as count FROM sessions WHERE status = ?";
+      params.push(status);
+    } else {
+      sql = "SELECT COUNT(*) as count FROM sessions";
+    }
+    const stmt = this.db.prepare(sql);
+    const result = stmt.get(...params);
+    return result.count;
   }
   close() {
     this.db.close();

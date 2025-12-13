@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Context Manager Dashboard</title>
+
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Tailwind config for dark mode -->
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            'code-bg': '#1e1e1e',
+            'code-text': '#d4d4d4',
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Chart.js via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <!-- Custom minimal styles -->
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+  <!-- Application mount point -->
+  <div id="app"></div>
+
+  <!-- Preact + htm via CDN -->
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

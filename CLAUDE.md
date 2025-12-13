@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: December 9, 2025
+**Last Updated**: December 13, 2025
 
 ---
 
@@ -50,6 +50,12 @@ npm run plugin:uninstall:all  # Remove all data
 - `/ctx-list` - List recent observations
 - `/ctx-search <query>` - Search observations
 - `/ctx-vacuum [days]` - Clean up old data
+
+### Web Dashboard
+```bash
+npm run web        # Start web dashboard at http://localhost:3847
+npm run web:dev    # Development mode with live reload
+```
 
 ### Import Historical Transcripts
 ```bash
@@ -133,10 +139,17 @@ claude-context-manager/
 |   +-- utils/
 |       +-- sanitize.ts        # Privacy tag stripping
 |       +-- validation.ts      # Input validation
++-- web/
+|   +-- client/
+|   |   +-- index.html         # Web UI dashboard
+|   +-- server/
+|       +-- index.ts           # Fastify server
+|       +-- routes/
+|           +-- api.ts         # REST API endpoints
 +-- docs/
 |   +-- ARCHITECTURE.md        # Detailed architecture
 |   +-- IMPLEMENTATION_PLAN.md # Original implementation plan
-+-- dist/                      # Built CLI (gitignored)
++-- dist/                      # Built CLI and web server (gitignored)
 +-- package.json
 +-- tsconfig.json
 +-- CLAUDE.md                  # This file
@@ -236,7 +249,7 @@ All data stored in `~/.claude-context/`:
 # Install dependencies
 npm install
 
-# Build TypeScript
+# Build all components (src, hooks, CLI, web)
 npm run build
 
 # Type check only
@@ -261,6 +274,10 @@ npm run cli -- search "query"
 
 # Import historical transcripts
 npm run import -- --source <path> --project <target> [--filter <text>] [--dry-run]
+
+# Web dashboard
+npm run web        # Start server at http://localhost:3847
+npm run web:dev    # Development mode with live reload
 ```
 
 ---

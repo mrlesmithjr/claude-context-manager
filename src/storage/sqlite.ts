@@ -18,6 +18,8 @@ import type {
   Session,
   Stats,
   UserPrompt,
+  TimelineEntry,
+  ProjectEntry,
 } from './interface.js';
 
 const DEFAULT_DB_PATH = path.join(homedir(), '.claude-context', 'context.db');
@@ -557,9 +559,10 @@ export class SQLiteStorage implements ContextStorage {
   async getRecentSessions(project: string, limit: number): Promise<Session[]> {
     // Prioritize complete sessions with substantive summaries
     // Skip: empty summaries, agent sessions, generic messages, meta-discussions about context
+    // Uses prefix matching: '/' matches all, '/Users/foo/Projects' matches that subtree
     const stmt = this.db.prepare(`
       SELECT * FROM sessions
-      WHERE project = ?
+      WHERE project LIKE ? || '%'
         AND (summary IS NOT NULL AND LENGTH(summary) > 0)
         AND id NOT LIKE 'agent-%'
         AND summary NOT LIKE '%I''ll wait for your request%'
@@ -696,6 +699,178 @@ export class SQLiteStorage implements ContextStorage {
       prompt_text: row.prompt_text,
       created_at: row.created_at,
     }));
+  }
+
+  async getTimeline(project?: string, days: number = 30): Promise<TimelineEntry[]> {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+    const cutoffISO = cutoffDate.toISOString();
+
+    let sql: string;
+    let params: unknown[];
+
+    if (project) {
+      sql = `
+        SELECT
+          DATE(created_at) as date,
+          SUM(token_estimate) as tokens,
+          COUNT(*) as observations,
+          COUNT(DISTINCT session_id) as sessions
+        FROM observations
+        WHERE project LIKE ? AND created_at >= ?
+        GROUP BY DATE(created_at)
+        ORDER BY date ASC
+      `;
+      params = [project + '%', cutoffISO];
+    } else {
+      sql = `
+        SELECT
+          DATE(created_at) as date,
+          SUM(token_estimate) as tokens,
+          COUNT(*) as observations,
+          COUNT(DISTINCT session_id) as sessions
+        FROM observations
+        WHERE created_at >= ?
+        GROUP BY DATE(created_at)
+        ORDER BY date ASC
+      `;
+      params = [cutoffISO];
+    }
+
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all(...params) as Array<{
+      date: string;
+      tokens: number;
+      observations: number;
+      sessions: number;
+    }>;
+
+    return rows;
+  }
+
+  async getProjects(): Promise<ProjectEntry[]> {
+    const sql = `
+      SELECT
+        project as path,
+        COUNT(*) as observation_count,
+        MAX(created_at) as last_activity
+      FROM observations
+      GROUP BY project
+      ORDER BY last_activity DESC
+    `;
+
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all() as Array<{
+      path: string;
+      observation_count: number;
+      last_activity: string;
+    }>;
+
+    return rows;
+  }
+
+  async getSessionObservations(sessionId: string): Promise<Observation[]> {
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ?
+      ORDER BY created_at ASC
+    `);
+
+    const rows = stmt.all(sessionId) as Array<{
+      id: number;
+      session_id: string;
+      project: string;
+      package: string | null;
+      tool_name: string;
+      summary: string;
+      files_touched: string;
+      metadata: string;
+      token_estimate: number;
+      created_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      package: row.package || undefined,
+      tool_name: row.tool_name,
+      summary: row.summary,
+      files_touched: JSON.parse(row.files_touched || '[]'),
+      metadata: JSON.parse(row.metadata || '{}'),
+      token_estimate: row.token_estimate,
+      created_at: row.created_at,
+    }));
+  }
+
+  async getSessionPrompts(sessionId: string): Promise<UserPrompt[]> {
+    const stmt = this.db.prepare(`
+      SELECT * FROM user_prompts
+      WHERE session_id = ?
+      ORDER BY prompt_number ASC
+    `);
+
+    const rows = stmt.all(sessionId) as Array<{
+      id: number;
+      session_id: string;
+      project: string;
+      prompt_number: number;
+      prompt_text: string;
+      created_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      prompt_number: row.prompt_number,
+      prompt_text: row.prompt_text,
+      created_at: row.created_at,
+    }));
+  }
+
+  async countObservations(project?: string, tool?: string): Promise<number> {
+    let sql: string;
+    const params: unknown[] = [];
+
+    if (project && tool) {
+      sql = 'SELECT COUNT(*) as count FROM observations WHERE project LIKE ? AND tool_name = ?';
+      params.push(project + '%', tool);
+    } else if (project) {
+      sql = 'SELECT COUNT(*) as count FROM observations WHERE project LIKE ?';
+      params.push(project + '%');
+    } else if (tool) {
+      sql = 'SELECT COUNT(*) as count FROM observations WHERE tool_name = ?';
+      params.push(tool);
+    } else {
+      sql = 'SELECT COUNT(*) as count FROM observations';
+    }
+
+    const stmt = this.db.prepare(sql);
+    const result = stmt.get(...params) as { count: number };
+    return result.count;
+  }
+
+  async countSessions(project?: string, status?: string): Promise<number> {
+    let sql: string;
+    const params: unknown[] = [];
+
+    if (project && status) {
+      sql = 'SELECT COUNT(*) as count FROM sessions WHERE project LIKE ? AND status = ?';
+      params.push(project + '%', status);
+    } else if (project) {
+      sql = 'SELECT COUNT(*) as count FROM sessions WHERE project LIKE ?';
+      params.push(project + '%');
+    } else if (status) {
+      sql = 'SELECT COUNT(*) as count FROM sessions WHERE status = ?';
+      params.push(status);
+    } else {
+      sql = 'SELECT COUNT(*) as count FROM sessions';
+    }
+
+    const stmt = this.db.prepare(sql);
+    const result = stmt.get(...params) as { count: number };
+    return result.count;
   }
 
   close(): void {

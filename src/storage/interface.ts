@@ -50,6 +50,19 @@ export interface Stats {
   typical_injection_tokens: number;
 }
 
+export interface TimelineEntry {
+  date: string; // ISO date (YYYY-MM-DD)
+  tokens: number;
+  observations: number;
+  sessions: number;
+}
+
+export interface ProjectEntry {
+  path: string;
+  observation_count: number;
+  last_activity: string;
+}
+
 /**
  * Abstract storage interface for context observations
  */
@@ -131,6 +144,44 @@ export interface ContextStorage {
    * @param project - Project path (optional, for project-scoped search)
    */
   searchPrompts(query: string, project?: string): Promise<UserPrompt[]>;
+
+  /**
+   * Get token usage timeline for analytics
+   * @param project - Project path (optional, for project-scoped timeline)
+   * @param days - Number of days to include (default: 30)
+   */
+  getTimeline(project?: string, days?: number): Promise<TimelineEntry[]>;
+
+  /**
+   * Get list of unique projects with activity stats
+   */
+  getProjects(): Promise<ProjectEntry[]>;
+
+  /**
+   * Get observations for a specific session
+   * @param sessionId - Session ID
+   */
+  getSessionObservations(sessionId: string): Promise<Observation[]>;
+
+  /**
+   * Get prompts for a specific session
+   * @param sessionId - Session ID
+   */
+  getSessionPrompts(sessionId: string): Promise<UserPrompt[]>;
+
+  /**
+   * Count observations with optional filters
+   * @param project - Project path (optional)
+   * @param tool - Tool name filter (optional)
+   */
+  countObservations(project?: string, tool?: string): Promise<number>;
+
+  /**
+   * Count sessions with optional filters
+   * @param project - Project path (optional)
+   * @param status - Status filter: 'active' or 'complete' (optional)
+   */
+  countSessions(project?: string, status?: string): Promise<number>;
 
   /**
    * Close storage connection
