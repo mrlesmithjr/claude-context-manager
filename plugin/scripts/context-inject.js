@@ -147,9 +147,27 @@ var SQLiteStorage = class {
       END;
     `);
   }
+  /**
+   * Normalize summary text for dedup comparison.
+   * Groups similar observations that differ only in variable query text.
+   */
+  normalizeSummaryForDedup(summary, toolName) {
+    if (summary.includes("psql")) {
+      const match = summary.match(/^(Bash:\s*docker\s+exec\s+\S+\s+psql\b)/);
+      if (match?.[1])
+        return match[1];
+      const psqlMatch = summary.match(/^(Bash:\s*psql\b[^|;]*)/);
+      if (psqlMatch?.[1])
+        return psqlMatch[1].substring(0, 40);
+    }
+    if (/^Bash:\s*git\s+(status|diff|log)\b/.test(summary)) {
+      return summary.substring(0, 20);
+    }
+    return summary.substring(0, 60);
+  }
   async save(observation) {
-    const summaryPrefix = observation.summary.substring(0, 60);
-    let dedupeWindowMs = 6e4;
+    const summaryPrefix = this.normalizeSummaryForDedup(observation.summary, observation.tool_name);
+    let dedupeWindowMs = 3e5;
     let crossSession = false;
     if (observation.summary.includes("psql")) {
       dedupeWindowMs = 36e5;
@@ -160,24 +178,31 @@ var SQLiteStorage = class {
     } else if (observation.summary.includes("gh issue") || observation.summary.includes("gh pr")) {
       dedupeWindowMs = 3e5;
       crossSession = true;
+    } else if (observation.tool_name === "Read") {
+      dedupeWindowMs = 6e5;
+      crossSession = false;
+    } else if (observation.tool_name === "Grep" || observation.tool_name === "Glob") {
+      dedupeWindowMs = 3e5;
+      crossSession = false;
     } else if (observation.tool_name === "Edit") {
       dedupeWindowMs = 12e4;
       crossSession = false;
     }
     const windowStart = new Date(Date.now() - dedupeWindowMs).toISOString();
+    const prefixLen = summaryPrefix.length;
     const duplicateCheck = crossSession ? this.db.prepare(`
           SELECT COUNT(*) as count FROM observations
           WHERE project = ?
-            AND substr(summary, 1, 60) = ?
+            AND substr(summary, 1, ?) = ?
             AND created_at > ?
         `) : this.db.prepare(`
           SELECT COUNT(*) as count FROM observations
           WHERE session_id = ?
-            AND substr(summary, 1, 60) = ?
+            AND substr(summary, 1, ?) = ?
             AND created_at > ?
         `);
     const checkKey = crossSession ? observation.project : observation.session_id;
-    const result = duplicateCheck.get(checkKey, summaryPrefix, windowStart);
+    const result = duplicateCheck.get(checkKey, prefixLen, summaryPrefix, windowStart);
     if (result.count > 0) {
       return;
     }
@@ -411,6 +436,7 @@ var SQLiteStorage = class {
     }));
   }
   async vacuum(olderThanDays) {
+    let deletedObservations = 0;
     if (olderThanDays) {
       const cutoffDate = /* @__PURE__ */ new Date();
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
@@ -420,10 +446,18 @@ var SQLiteStorage = class {
         WHERE created_at < ?
       `);
       const result = stmt.run(cutoffISO);
-      return result.changes;
+      deletedObservations = result.changes;
     }
+    const orphanStmt = this.db.prepare(`
+      DELETE FROM sessions
+      WHERE id NOT IN (SELECT DISTINCT session_id FROM observations)
+        AND id NOT IN (SELECT DISTINCT session_id FROM user_prompts)
+    `);
+    const orphanResult = orphanStmt.run();
+    const deletedSessions = orphanResult.changes;
+    this.db.exec("ANALYZE");
     this.db.exec("VACUUM");
-    return 0;
+    return { observations: deletedObservations, sessions: deletedSessions };
   }
   async saveUserPrompt(prompt) {
     const stmt = this.db.prepare(`

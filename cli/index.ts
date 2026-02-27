@@ -207,13 +207,18 @@ async function vacuumCommand(args: string[]) {
 
   if (days) {
     console.log(`Deleting observations older than ${days} days...`);
-    const deleted = await storage.vacuum(days);
-    console.log(`Deleted ${deleted} observations.`);
-  } else {
-    console.log('Running VACUUM to reclaim disk space...');
-    await storage.vacuum();
-    console.log('Done.');
   }
+
+  console.log('Cleaning up orphaned sessions and optimizing database...');
+  const result = await storage.vacuum(days);
+
+  if (days) {
+    console.log(`Deleted ${result.observations} observations.`);
+  }
+  if (result.sessions > 0) {
+    console.log(`Cleaned up ${result.sessions} orphaned sessions.`);
+  }
+  console.log('Database optimized.');
 }
 
 function printHelp() {

@@ -20,21 +20,10 @@
 
 import { SQLiteStorage } from '../../src/storage/sqlite.js';
 import { validateStopInput } from '../../src/utils/validation.js';
+import { createDebugLogger } from '../../src/utils/logger.js';
 import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 
-// Debug: log to file for troubleshooting
-function debugLog(label: string, data: unknown): void {
-  const logDir = path.join(os.homedir(), '.claude-context', 'logs');
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
-  }
-  const logFile = path.join(logDir, 'stop-hook-debug.log');
-  const timestamp = new Date().toISOString();
-  const entry = `[${timestamp}] ${label}: ${JSON.stringify(data, null, 2)}\n`;
-  fs.appendFileSync(logFile, entry);
-}
+const debugLog = createDebugLogger('stop-hook-debug.log');
 
 interface TranscriptMessage {
   type: string;

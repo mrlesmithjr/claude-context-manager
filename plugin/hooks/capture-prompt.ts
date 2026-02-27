@@ -22,6 +22,7 @@
 import { SQLiteStorage } from '../../src/storage/sqlite.js';
 import { validateUserPromptSubmitInput } from '../../src/utils/validation.js';
 import { sanitizeContent } from '../../src/utils/sanitize.js';
+import { createDebugLogger } from '../../src/utils/logger.js';
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -34,30 +35,18 @@ async function readStdin(): Promise<string> {
 
 async function main() {
   const storage = new SQLiteStorage();
-  const fs = await import('fs');
-  const path = await import('path');
-  const os = await import('os');
-
-  const logDir = path.join(os.homedir(), '.claude-context', 'logs');
-  const logFile = path.join(logDir, 'prompt-hook-debug.log');
-
-  function debugLog(msg: string) {
-    try {
-      fs.mkdirSync(logDir, { recursive: true });
-      fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${msg}\n`);
-    } catch { /* ignore */ }
-  }
+  const debugLog = createDebugLogger('prompt-hook-debug.log');
 
   try {
     const inputStr = await readStdin();
-    debugLog(`RAW_INPUT: ${inputStr.substring(0, 500)}`);
+    debugLog('RAW_INPUT', inputStr.substring(0, 500));
 
     let rawInput;
     try {
       rawInput = JSON.parse(inputStr);
-      debugLog(`PARSED_KEYS: ${Object.keys(rawInput).join(', ')}`);
+      debugLog('PARSED_KEYS', Object.keys(rawInput).join(', '));
     } catch (parseError) {
-      debugLog(`PARSE_ERROR: ${parseError}`);
+      debugLog('PARSE_ERROR', String(parseError));
       console.error('[context-manager] Invalid JSON input');
       process.stdout.write(JSON.stringify({ status: 'error' }));
       return;

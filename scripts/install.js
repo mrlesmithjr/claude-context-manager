@@ -136,14 +136,14 @@ Display the matching observations with their summaries and timestamps.
 
 If no query is provided, ask the user what they want to search for.
 `,
-    'ctx-vacuum.md': `Clean up old observations from context-manager.
+    'ctx-vacuum.md': `Clean up old observations and orphaned sessions from context-manager.
 
 Usage: /ctx-vacuum [days]
 
 If a number of days is provided, delete observations older than that many days.
-If no argument is provided, default to 30 days.
+If no argument is provided, run orphan cleanup and database optimization only.
 
-First show what will be deleted:
+First show current stats:
 \`\`\`bash
 node ${CLI_PATH} stats
 \`\`\`
@@ -153,7 +153,12 @@ Then confirm with the user before running:
 node ${CLI_PATH} vacuum --days <N>
 \`\`\`
 
-Report how many observations were deleted.
+Or without --days to just clean up orphaned sessions and optimize:
+\`\`\`bash
+node ${CLI_PATH} vacuum
+\`\`\`
+
+Report how many observations and orphaned sessions were deleted.
 `,
     'ctx-web.md': `Start the context-manager web dashboard.
 

@@ -194,18 +194,43 @@ export class SQLiteStorage implements ContextStorage {
     `);
   }
 
+  /**
+   * Normalize summary text for dedup comparison.
+   * Groups similar observations that differ only in variable query text.
+   */
+  private normalizeSummaryForDedup(summary: string, toolName: string): string {
+    // psql: normalize to connection/command prefix, strip variable query text
+    if (summary.includes('psql')) {
+      const match = summary.match(/^(Bash:\s*docker\s+exec\s+\S+\s+psql\b)/);
+      if (match?.[1]) return match[1];
+      const psqlMatch = summary.match(/^(Bash:\s*psql\b[^|;]*)/);
+      if (psqlMatch?.[1]) return psqlMatch[1].substring(0, 40);
+    }
+
+    // git status/diff/log: first 20 chars (always identical command prefix)
+    if (/^Bash:\s*git\s+(status|diff|log)\b/.test(summary)) {
+      return summary.substring(0, 20);
+    }
+
+    // Default: 60-char prefix
+    return summary.substring(0, 60);
+  }
+
   async save(observation: Omit<Observation, 'id'>): Promise<void> {
     // Deduplication: skip if very similar observation exists recently
     // CROSS-SESSION deduplication within same project (not just same session)
     // Window varies by command type based on data analysis:
-    // - psql queries: 99% duplication rate, use 30 minute window
+    // - psql queries: 99% duplication rate, use 60 minute window + normalized prefix
     // - ssh commands: often repeated, use 10 minute window
     // - gh commands: repeated issue/PR lists, use 5 minute window
-    // - default: 60 seconds (same session behavior)
-    const summaryPrefix = observation.summary.substring(0, 60);
+    // - Read tool: re-reading files is very common, use 10 minute window
+    // - Grep/Glob: repeated searches, use 5 minute window
+    // - Edit: related edits on same file, use 2 minute window
+    // - default: 5 minutes same-session (catches re-reads of same files)
+    const summaryPrefix = this.normalizeSummaryForDedup(observation.summary, observation.tool_name);
 
-    let dedupeWindowMs = 60000; // default 60 seconds
-    let crossSession = false;   // whether to dedupe across sessions
+    let dedupeWindowMs = 300000; // default 5 minutes (same session)
+    let crossSession = false;     // whether to dedupe across sessions
 
     if (observation.summary.includes('psql')) {
       dedupeWindowMs = 3600000; // 60 minutes for psql (cross-session) - 99% dup rate
@@ -216,31 +241,37 @@ export class SQLiteStorage implements ContextStorage {
     } else if (observation.summary.includes('gh issue') || observation.summary.includes('gh pr')) {
       dedupeWindowMs = 300000; // 5 minutes for gh commands (cross-session)
       crossSession = true;
+    } else if (observation.tool_name === 'Read') {
+      dedupeWindowMs = 600000; // 10 minutes for Read (re-reading files is very common)
+      crossSession = false;
+    } else if (observation.tool_name === 'Grep' || observation.tool_name === 'Glob') {
+      dedupeWindowMs = 300000; // 5 minutes for search tools
+      crossSession = false;
     } else if (observation.tool_name === 'Edit') {
-      // Edit operations on same file within 2 minutes are likely related edits
       dedupeWindowMs = 120000; // 2 minutes for Edit deduplication
       crossSession = false;
     }
 
     const windowStart = new Date(Date.now() - dedupeWindowMs).toISOString();
+    const prefixLen = summaryPrefix.length;
 
     // Cross-session: check by project, same-session: check by session_id
     const duplicateCheck = crossSession
       ? this.db.prepare(`
           SELECT COUNT(*) as count FROM observations
           WHERE project = ?
-            AND substr(summary, 1, 60) = ?
+            AND substr(summary, 1, ?) = ?
             AND created_at > ?
         `)
       : this.db.prepare(`
           SELECT COUNT(*) as count FROM observations
           WHERE session_id = ?
-            AND substr(summary, 1, 60) = ?
+            AND substr(summary, 1, ?) = ?
             AND created_at > ?
         `);
 
     const checkKey = crossSession ? observation.project : observation.session_id;
-    const result = duplicateCheck.get(checkKey, summaryPrefix, windowStart) as { count: number };
+    const result = duplicateCheck.get(checkKey, prefixLen, summaryPrefix, windowStart) as { count: number };
 
     if (result.count > 0) {
       // Skip duplicate - already have a similar observation recently
@@ -593,7 +624,9 @@ export class SQLiteStorage implements ContextStorage {
     }));
   }
 
-  async vacuum(olderThanDays?: number): Promise<number> {
+  async vacuum(olderThanDays?: number): Promise<{ observations: number; sessions: number }> {
+    let deletedObservations = 0;
+
     if (olderThanDays) {
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
@@ -605,12 +638,23 @@ export class SQLiteStorage implements ContextStorage {
       `);
 
       const result = stmt.run(cutoffISO);
-      return result.changes;
+      deletedObservations = result.changes;
     }
 
-    // If no days specified, just run VACUUM to reclaim space
+    // Clean up orphaned sessions (no observations AND no prompts)
+    const orphanStmt = this.db.prepare(`
+      DELETE FROM sessions
+      WHERE id NOT IN (SELECT DISTINCT session_id FROM observations)
+        AND id NOT IN (SELECT DISTINCT session_id FROM user_prompts)
+    `);
+    const orphanResult = orphanStmt.run();
+    const deletedSessions = orphanResult.changes;
+
+    // Update query planner statistics and reclaim space
+    this.db.exec('ANALYZE');
     this.db.exec('VACUUM');
-    return 0;
+
+    return { observations: deletedObservations, sessions: deletedSessions };
   }
 
   async saveUserPrompt(prompt: Omit<UserPrompt, 'id'>): Promise<void> {

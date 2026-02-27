@@ -275,7 +275,21 @@ export function shouldCaptureTool(toolName: string, toolInput?: unknown): boolea
     'TodoWrite',
     'AskUserQuestion',
     'SlashCommand',
-    // Add more low-value tools as needed
+    // Meta/orchestration tools - zero cross-session value
+    'Task',
+    'TaskCreate',
+    'TaskUpdate',
+    'TaskGet',
+    'TaskOutput',
+    'TaskList',
+    'TaskStop',
+    'AgentOutputTool',
+    'BashOutput',
+    'KillShell',
+    'Skill',
+    'EnterPlanMode',
+    'ExitPlanMode',
+    'EnterWorktree',
   ];
 
   if (SKIP_TOOLS.includes(toolName)) {

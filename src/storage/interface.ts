@@ -120,11 +120,11 @@ export interface ContextStorage {
   getRecentSessions(project: string, limit: number): Promise<Session[]>;
 
   /**
-   * Vacuum old observations
+   * Vacuum old observations and orphaned sessions
    * @param olderThanDays - Delete observations older than this many days (optional)
-   * @returns Number of observations deleted
+   * @returns Count of deleted observations and orphaned sessions
    */
-  vacuum(olderThanDays?: number): Promise<number>;
+  vacuum(olderThanDays?: number): Promise<{ observations: number; sessions: number }>;
 
   /**
    * Save a user prompt
