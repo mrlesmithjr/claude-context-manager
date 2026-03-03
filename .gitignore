@@ -17,8 +17,13 @@
 
 # Dependencies
 node_modules/
-# Plugin's vendored native modules (rebuilt per-platform during build:plugin)
-plugin/node_modules/
+# EXCEPT plugin's vendored native modules — committed so GitHub installs work.
+# These are pruned to runtime-only files (~2MB vs ~12MB full).
+# Platform-specific: rebuild with `npm run build:plugin` if switching OS/arch.
+!plugin/node_modules/
+# Override global gitignore rules that block vendored native build artifacts
+!plugin/node_modules/**/build/
+!plugin/node_modules/**/build/**
 
 # Build output
 dist/

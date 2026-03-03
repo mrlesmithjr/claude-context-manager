@@ -11,7 +11,7 @@
  */
 
 import { build } from 'esbuild';
-import { readFileSync, existsSync, mkdirSync, cpSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, cpSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -29,9 +29,14 @@ console.log(`[build-hooks] Building hooks with version: ${VERSION}`);
 
 // Copy better-sqlite3 and its runtime dependencies into plugin/node_modules/
 // so the plugin is self-contained when installed to Claude Code's plugin cache.
+// These vendored deps are committed to git so GitHub-based installs work.
 const pluginNodeModules = join(PROJECT_ROOT, 'plugin', 'node_modules');
 const nativeDeps = ['better-sqlite3', 'bindings', 'file-uri-to-path'];
 
+// Clean and recreate to avoid stale files
+if (existsSync(pluginNodeModules)) {
+  rmSync(pluginNodeModules, { recursive: true });
+}
 mkdirSync(pluginNodeModules, { recursive: true });
 
 for (const dep of nativeDeps) {
@@ -44,6 +49,22 @@ for (const dep of nativeDeps) {
     console.error(`[build-hooks] WARNING: ${dep} not found in node_modules/`);
   }
 }
+
+// Remove build-time artifacts from better-sqlite3 that aren't needed at runtime
+// (deps/ = SQLite source ~9.5MB, src/ = C++ source ~176KB)
+const pruneFromSqlite = ['deps', 'src', 'binding.gyp'];
+for (const item of pruneFromSqlite) {
+  const target = join(pluginNodeModules, 'better-sqlite3', item);
+  if (existsSync(target)) {
+    rmSync(target, { recursive: true });
+  }
+}
+// Also prune prebuild-install (only needed during npm install, not runtime)
+const prebuildInstall = join(pluginNodeModules, 'better-sqlite3', 'node_modules');
+if (existsSync(prebuildInstall)) {
+  rmSync(prebuildInstall, { recursive: true });
+}
+console.log(`[build-hooks] Pruned build-time artifacts from better-sqlite3`);
 
 // Create banner that sets up require() for better-sqlite3 using standard
 // Node.js module resolution. Since we copy deps to plugin/node_modules/,
