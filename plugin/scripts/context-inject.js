@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createRequire as __createRequire } from 'module';
 const __require = __createRequire(import.meta.url);
-const __betterSqlite3 = __require('__homedir__/Projects/Personal/claude-context-manager/node_modules/better-sqlite3');
+const __betterSqlite3 = __require('better-sqlite3');
 
 // shim:better-sqlite3
 var better_sqlite3_default = __betterSqlite3;
@@ -1014,11 +1014,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.3.1") {
+    if (installedVersion !== "0.3.2") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.3.1"}
+   Source:    v${"0.3.2"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }

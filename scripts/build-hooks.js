@@ -5,15 +5,15 @@
  * Builds hook scripts with version injection for runtime version checking.
  *
  * IMPORTANT: better-sqlite3 is a native module that cannot be bundled.
- * We use a banner to create a shim that imports from an absolute path,
- * ensuring hooks work when installed to Claude Code's plugin cache directory.
+ * We copy the native module and its dependencies into plugin/node_modules/
+ * so the plugin is self-contained. The banner uses standard require()
+ * resolution (relative to script location) to find the module.
  */
 
 import { build } from 'esbuild';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, cpSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { createRequire } from 'module';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -25,22 +25,36 @@ const packageJson = JSON.parse(
 );
 const VERSION = packageJson.version;
 
-// Absolute path to better-sqlite3 in this project's node_modules
-// This ensures hooks work when installed to Claude Code's plugin cache
-const betterSqlite3Path = join(PROJECT_ROOT, 'node_modules', 'better-sqlite3');
-
 console.log(`[build-hooks] Building hooks with version: ${VERSION}`);
-console.log(`[build-hooks] Using better-sqlite3 from: ${betterSqlite3Path}`);
 
-// Create banner that sets up absolute import for better-sqlite3
-// ESM doesn't support require(), so we use createRequire to load native modules
+// Copy better-sqlite3 and its runtime dependencies into plugin/node_modules/
+// so the plugin is self-contained when installed to Claude Code's plugin cache.
+const pluginNodeModules = join(PROJECT_ROOT, 'plugin', 'node_modules');
+const nativeDeps = ['better-sqlite3', 'bindings', 'file-uri-to-path'];
+
+mkdirSync(pluginNodeModules, { recursive: true });
+
+for (const dep of nativeDeps) {
+  const src = join(PROJECT_ROOT, 'node_modules', dep);
+  const dest = join(pluginNodeModules, dep);
+  if (existsSync(src)) {
+    cpSync(src, dest, { recursive: true });
+    console.log(`[build-hooks] Copied ${dep} to plugin/node_modules/`);
+  } else {
+    console.error(`[build-hooks] WARNING: ${dep} not found in node_modules/`);
+  }
+}
+
+// Create banner that sets up require() for better-sqlite3 using standard
+// Node.js module resolution. Since we copy deps to plugin/node_modules/,
+// require('better-sqlite3') resolves from plugin/scripts/ → plugin/node_modules/.
 const banner = `
 import { createRequire as __createRequire } from 'module';
 const __require = __createRequire(import.meta.url);
-const __betterSqlite3 = __require('${betterSqlite3Path}');
+const __betterSqlite3 = __require('better-sqlite3');
 `.trim();
 
-// Build hooks with version injection and absolute path for native module
+// Build hooks with version injection
 await build({
   entryPoints: [
     'plugin/hooks/context-inject.ts',

@@ -17,6 +17,8 @@
 
 # Dependencies
 node_modules/
+# Plugin's vendored native modules (rebuilt per-platform during build:plugin)
+plugin/node_modules/
 
 # Build output
 dist/
