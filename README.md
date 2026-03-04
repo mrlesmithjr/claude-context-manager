@@ -112,7 +112,7 @@ Context visibility uses **prefix matching** - parent directories see all child c
 **This means:**
 - Working in a specific project → focused, relevant context
 - Working in a parent directory → broader context across children
-- Sibling projects are naturally isolated (Work can't see MyCompany)
+- Sibling projects are naturally isolated
 
 **Practical example:**
 ```
@@ -121,7 +121,7 @@ npm run import -- --source ~/.backup/... --project ~/Projects/Work/ProjectA
 
 # Context is now visible from:
 #   ~/Projects/Work/ProjectA  ✓
-#   ~/Projects/Work       ✓ (sees all Work children)
+#   ~/Projects/Work           ✓ (sees all Work children)
 #   ~/Projects            ✓ (sees everything)
 #
 # But NOT from:
@@ -313,7 +313,7 @@ npm run import -- \
 **Use cases:**
 - Migrating context when a project moves to a new directory
 - Importing historical sessions from before the plugin was installed
-- Filtering specific topic sessions (e.g., `--filter ProjectA`)
+- Filtering specific topic sessions (e.g., `--filter auth-service`)
 
 ### CLI Alias (Optional)
 

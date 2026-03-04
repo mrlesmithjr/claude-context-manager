@@ -46,8 +46,8 @@ function formatObservation(obs: Observation, index: number): string {
  * Group observations by immediate child project
  *
  * Example: basePath = /Projects/Work
- *   /Projects/Work/ProjectB/... -> "ProjectB"
  *   /Projects/Work/ProjectA/... -> "ProjectA"
+ *   /Projects/Work/ProjectB/... -> "ProjectB"
  *   /Projects/Work -> "_root"
  */
 function groupBySubProject(

@@ -7,9 +7,9 @@
  *
  * Example:
  *   npx ts-node scripts/import-transcripts.ts \
- *     --source ~/Backups/.claude.backup/projects/-Users-you-Projects-MyCompany-products-my-product-io/ \
+ *     --source ~/Backups/.claude.backup/projects/-Users-you-Projects-OldProject/ \
  *     --project ~/Projects/Work/ProjectA \
- *     --filter ProjectA \
+ *     --filter "some-keyword" \
  *     --dry-run
  */
 
@@ -85,7 +85,6 @@ function scoreMessage(text: string): number {
   if (text.length > 1000) score += 10;
 
   // Content quality indicators
-  if (/COGS|profit|margin|revenue|cost|financial/i.test(text)) score += 20;
   if (/implementation|architecture|design|solution/i.test(text)) score += 15;
   if (/completed|accomplished|created|implemented/i.test(text)) score += 10;
 

@@ -22,18 +22,18 @@ npm run import -- --source <dir> --project <path> [--filter <text>] [--dry-run]
 **Dry run to preview:**
 ```bash
 npm run import -- \
-  --source ~/Backups/.claude.backup/projects/-Users-you-Projects-MyCompany-products-my-product-io/ \
+  --source ~/Backups/.claude.backup/projects/-Users-you-Projects-OldProject/ \
   --project ~/Projects/Work/ProjectA \
-  --filter ProjectA \
+  --filter "some-keyword" \
   --dry-run
 ```
 
 **Actual import:**
 ```bash
 npm run import -- \
-  --source ~/Backups/.claude.backup/projects/-Users-you-Projects-MyCompany-products-my-product-io/ \
+  --source ~/Backups/.claude.backup/projects/-Users-you-Projects-OldProject/ \
   --project ~/Projects/Work/ProjectA \
-  --filter ProjectA
+  --filter "some-keyword"
 ```
 
 ### How It Works
