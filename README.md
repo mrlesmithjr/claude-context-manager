@@ -1,65 +1,49 @@
 # claude-context-manager
 
-Persistent memory for Claude Code sessions. Automatically captures context and injects it into future sessions.
+Automatic session history and searchable context for Claude Code. Captures every tool interaction in SQLite with full-text search and a web dashboard.
 
 **Status**: ACTIVE
-**Last Updated**: December 13, 2025
+**Last Updated**: March 4, 2026
 
 ---
 
-## The Problem
+## What This Does
 
-Claude Code sessions are stateless. Every new session starts fresh with no memory of:
+Claude Code has built-in memory (`CLAUDE.md` files and auto-memory) for persisting patterns and conventions. This plugin complements that by providing something built-in memory doesn't: **automatic, searchable session history**.
 
-- What you worked on yesterday
-- Decisions you made and why
-- Your project's architecture and patterns
-- Ongoing tasks and their current state
+**Built-in memory** is great for curated knowledge - things Claude deliberately saves, like project conventions and architecture decisions.
 
-You end up repeating yourself constantly:
-> "Remember, we're using the repository pattern..."
-> "As I mentioned before, the auth flow works like..."
-> "We decided last week to use Redis because..."
+**This plugin** automatically captures everything that happens during your sessions - every file read, edit, command run, and decision made - and stores it in a searchable database. Think of it as an activity log you can query later.
 
----
+### What you get
 
-## The Solution
-
-**claude-context-manager** automatically:
-
-1. **Captures** every tool interaction during your session
-2. **Stores** observations in a local SQLite database with full-text search
-3. **Injects** relevant context at the start of each new session
-
-No manual intervention required. Context persists across sessions automatically.
+- **"What did I do last week?"** - Browse sessions with summaries and timestamps
+- **"Where did I use that pattern?"** - Full-text search across all captured interactions
+- **"How much context am I generating?"** - Token analytics and usage dashboards
+- **Cross-project visibility** - Parent directories see all child project activity
 
 ---
 
 ## How It Works
 
 ```
-Session 1:
+During your session:
 +-----------------------------------------+
-| You: "Let's implement JWT auth"         |
-| Claude: [reads files, writes code]      |
-|                                         |
-| -> Captured: files read, decisions made,|
-|    patterns used, code written          |
+| Every tool interaction is captured:     |
+|  - Files read/written                   |
+|  - Commands run                         |
+|  - Edits made                           |
+|  - Session summary saved on exit        |
 +-----------------------------------------+
                     |
                     v (stored in SQLite)
 
-Session 2 (days later):
+Later:
 +-----------------------------------------+
-| [Context auto-injected]                 |
-| "Previous work in this project:         |
-|  - Implemented JWT auth in src/auth/    |
-|  - Using bcrypt for password hashing    |
-|  - Middleware pattern in src/middleware |
-|  ..."                                   |
-|                                         |
-| You: "Add password reset"               |
-| Claude: [Already knows the auth setup!] |
+| Search: "authentication"                |
+| Browse: last week's sessions            |
+| Dashboard: token usage analytics        |
+| Context: auto-injected at session start |
 +-----------------------------------------+
 ```
 
@@ -70,11 +54,12 @@ Session 2 (days later):
 | Feature | Description |
 |---------|-------------|
 | **Automatic Capture** | PostToolUse hook captures every tool interaction |
-| **Hierarchical Visibility** | Parent directories see child project contexts |
 | **Full-Text Search** | SQLite FTS5 enables fast keyword search |
+| **Web Dashboard** | Browse sessions, search observations, view analytics |
+| **Hierarchical Visibility** | Parent directories see child project contexts |
 | **Token Budget** | Configurable limit on injected context size |
 | **Privacy Tags** | `<private>` tag excludes sensitive content |
-| **Local Storage** | All data stays on your machine |
+| **Local Storage** | All data stays on your machine - no external APIs |
 | **Session Summaries** | Stop hook captures session summaries |
 | **Transcript Import** | Import historical sessions from backups |
 
@@ -443,6 +428,23 @@ npm rebuild better-sqlite3
 npm run plugin:uninstall:all
 npm run build:plugin
 ```
+
+---
+
+## How This Complements Built-in Memory
+
+Claude Code's built-in memory (`CLAUDE.md` and auto-memory files) handles **curated knowledge** - conventions, architecture decisions, and preferences that Claude deliberately saves.
+
+This plugin handles **automatic history** - a complete, searchable record of what happened across sessions. They work well together:
+
+| | Built-in Memory | This Plugin |
+|---|---|---|
+| **What it stores** | Curated patterns and conventions | Every tool interaction automatically |
+| **How it's saved** | Claude decides what to write | Automatic - nothing falls through |
+| **Searchable** | No (static files) | Yes (FTS5 full-text search) |
+| **Browsable** | Read files manually | Web dashboard with analytics |
+| **Session history** | No | Yes - timestamped session summaries |
+| **Cross-project** | Per-project only | Hierarchical visibility |
 
 ---
 
