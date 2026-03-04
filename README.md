@@ -269,6 +269,7 @@ Once installed, use these commands in Claude Code:
 | `/ctx-list` | List recent observations |
 | `/ctx-search <query>` | Search observations |
 | `/ctx-vacuum [days]` | Clean up old data |
+| `/ctx-web` | Start the web dashboard |
 
 ### CLI Commands
 

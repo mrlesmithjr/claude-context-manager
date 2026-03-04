@@ -148,7 +148,7 @@ claude-context-manager/
 |           +-- api.ts         # REST API endpoints
 +-- docs/
 |   +-- ARCHITECTURE.md        # Detailed architecture
-|   +-- IMPLEMENTATION_PLAN.md # Original implementation plan
+|   +-- ADR-001-web-ui-dashboard.md # Web UI design decision record
 +-- dist/                      # Built CLI and web server (gitignored)
 +-- package.json
 +-- tsconfig.json
@@ -290,6 +290,8 @@ Environment variables (optional):
 |----------|---------|-------------|
 | `CONTEXT_MANAGER_DB` | `~/.claude-context/context.db` | Database path |
 | `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens for context injection |
+| `CONTEXT_MANAGER_PORT` | `3847` | Web dashboard port |
+| `CONTEXT_MANAGER_HOST` | `localhost` | Web dashboard host |
 
 ---
 
