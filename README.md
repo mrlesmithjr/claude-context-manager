@@ -445,19 +445,35 @@ npm run build:plugin
 
 ---
 
-## Comparison with claude-mem
+## Why This Over claude-mem?
 
-| Aspect | claude-mem | claude-context-manager |
-|--------|------------|------------------------|
-| Lines of code | ~51,500 | ~2,500 |
-| AI extraction | Claude Agent SDK | Simple heuristics |
-| Vector search | ChromaDB | None (FTS5 only) |
-| Viewer UI | React web app | CLI only |
-| Dependencies | PM2, Chroma, SDK | SQLite only |
-| Architecture | HTTP service | Direct SQLite |
-| Complexity | Production-grade | Personal tool |
+[claude-mem](https://github.com/thedotmack/claude-mem) is the most popular Claude Code memory plugin (~33K stars). It's feature-rich but comes with trade-offs. Choose based on what matters to you:
 
-This project prioritizes simplicity over features. If you need the full feature set, use [claude-mem](https://github.com/thedotmack/claude-mem).
+| | **claude-context-manager** | **claude-mem** |
+|---|---|---|
+| **License** | MIT | AGPL 3.0 |
+| **Runtimes required** | Node.js | Node.js + Bun + Python |
+| **External API calls** | None | Anthropic API (costs $) |
+| **Background services** | None | Worker service on port 37777 |
+| **Storage** | SQLite + FTS5 | SQLite + ChromaDB vectors |
+| **Search** | Full-text keyword | Semantic + keyword |
+| **Summarization** | Deterministic heuristics | AI-powered (Agent SDK) |
+| **Web UI** | Fastify dashboard | React viewer |
+| **Lines of code** | ~2,500 | ~51,500+ |
+| **Install complexity** | Plugin install, done | Plugin install + auto-installs Bun & uv |
+
+**Choose this project if you want:**
+- Zero external API costs or dependencies
+- MIT license (AGPL can be problematic for commercial use)
+- Nothing running in the background
+- A single runtime (Node.js only)
+- Predictable, deterministic behavior
+
+**Choose claude-mem if you want:**
+- Semantic search (find conceptually related context, not just keywords)
+- AI-powered summarization
+- MCP tool integration
+- AST-based code navigation
 
 ---
 
