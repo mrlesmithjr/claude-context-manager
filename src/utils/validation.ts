@@ -23,7 +23,6 @@ const ALLOWED_PROJECT_ROOTS = [
   path.join(homedir(), 'code'),
   path.join(homedir(), 'Workspace'),
   path.join(homedir(), 'workspace'),
-  path.join(homedir(), 'Obsidian'),  // Obsidian vaults
   path.join(homedir(), 'Documents'),  // Common location
   homedir(),  // Allow home directory as fallback
 ];
