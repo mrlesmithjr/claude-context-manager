@@ -22,6 +22,26 @@ Claude Code has built-in memory (`CLAUDE.md` files and auto-memory) for persisti
 - **"How much context am I generating?"** - Token analytics and usage dashboards
 - **Cross-project visibility** - Parent directories see all child project activity
 
+### Where this fits
+
+Most teams already maintain curated knowledge — and they should. High-signal, domain-specific context lives in places like:
+
+- **`CLAUDE.md` files** — project-level instructions Claude always sees
+- **In-repo markdown** — architecture docs, protocol guides, component inventories, line indexes
+- **Knowledge bases** — Obsidian vaults, Notion, Confluence, or similar tools for planning, tracking, and cross-project notes
+- **Deliverable stores** — OneDrive, Google Drive, SharePoint for team-facing documents
+
+A typical workflow might split knowledge across multiple locations by purpose — notes and planning in one place, code in another, deliverables in a third. That curated knowledge is high-signal and domain-specific. This plugin doesn't replace any of it.
+
+Instead, this plugin covers the gap that manual curation can't: **everything you'd never bother writing down but wish you could search later**. Which files did you read while debugging that issue? What commands did you run last Thursday? What patterns emerged across sessions?
+
+The best setup is both:
+
+- **Manual curation** (CLAUDE.md, docs, knowledge bases) for domain knowledge, conventions, and architecture decisions
+- **Auto-capture** (this plugin) for searchable session history, cross-project visibility, and the safety net that nothing falls through the cracks
+
+This is "manual curation + auto-capture," not "auto-capture instead of manual curation."
+
 ---
 
 ## How It Works
