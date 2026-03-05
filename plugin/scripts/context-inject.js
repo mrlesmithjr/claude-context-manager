@@ -1171,11 +1171,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.3.5") {
+    if (installedVersion !== "0.3.6") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.3.5"}
+   Source:    v${"0.3.6"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
