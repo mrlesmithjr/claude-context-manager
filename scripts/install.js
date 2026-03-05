@@ -160,6 +160,20 @@ node ${CLI_PATH} vacuum
 
 Report how many observations and orphaned sessions were deleted.
 `,
+    'ctx-export.md': `Export high-importance observations to auto-memory topic file.
+
+Run this command and display the results:
+\`\`\`bash
+node ${CLI_PATH} export --project "$PWD"
+\`\`\`
+
+Show the number of observations exported and the target file path.
+
+To preview without writing, use --dry-run:
+\`\`\`bash
+node ${CLI_PATH} export --project "$PWD" --dry-run
+\`\`\`
+`,
     'ctx-web.md': `Start the context-manager web dashboard.
 
 This command starts the web dashboard server and opens it in your browser.
@@ -230,6 +244,7 @@ function install() {
   console.log('  - /ctx-list    List recent observations');
   console.log('  - /ctx-search  Search observations');
   console.log('  - /ctx-vacuum  Clean up old data');
+  console.log('  - /ctx-export  Export to auto-memory');
   console.log('  - /ctx-web     Start web dashboard');
   console.log(`\nCLI available: node ${join(PROJECT_ROOT, 'dist', 'cli.js')}\n`);
 }

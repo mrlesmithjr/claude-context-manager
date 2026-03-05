@@ -9,6 +9,7 @@
  */
 
 import { SQLiteStorage } from '../src/storage/sqlite.js';
+import { exportToAutoMemory, resolveMemoryDir, formatObservationsForMemory } from '../src/export/memory.js';
 import { homedir } from 'os';
 import path from 'path';
 
@@ -36,6 +37,10 @@ async function main() {
 
       case 'vacuum':
         await vacuumCommand(args.slice(1));
+        break;
+
+      case 'export':
+        await exportCommand(args.slice(1));
         break;
 
       case 'help':
@@ -243,6 +248,59 @@ async function vacuumCommand(args: string[]) {
   console.log('Database optimized.');
 }
 
+async function exportCommand(args: string[]) {
+  const projectIndex = args.indexOf('--project');
+  let project: string;
+
+  if (projectIndex !== -1) {
+    const providedPath = args[projectIndex + 1];
+    if (!providedPath || providedPath.startsWith('-')) {
+      console.error('Error: --project requires a path argument');
+      process.exit(1);
+    }
+    project = providedPath;
+  } else {
+    project = process.cwd();
+  }
+
+  const dryRun = args.includes('--dry-run');
+
+  // Get unexported high-importance observations
+  const observations = await storage.getUnexportedHighImportance(project);
+
+  if (observations.length === 0) {
+    console.log('No unexported high-importance observations found.');
+    return;
+  }
+
+  console.log(`\nFound ${observations.length} unexported high-importance observations for ${project}:\n`);
+
+  // Show preview
+  for (const obs of observations.slice(0, 20)) {
+    const date = new Date(obs.created_at);
+    const fileInfo = obs.files_touched[0] ? ` (${obs.files_touched[0]})` : '';
+    console.log(`  [${date.toISOString()}] ${obs.tool_name}: ${obs.summary.substring(0, 80)}${fileInfo}`);
+  }
+  if (observations.length > 20) {
+    console.log(`  ... and ${observations.length - 20} more`);
+  }
+
+  if (dryRun) {
+    console.log('\n--- Dry run: formatted output ---\n');
+    const formatted = formatObservationsForMemory(observations);
+    console.log(formatted);
+    console.log(`\nTarget: ${resolveMemoryDir(project)}/context-manager-activity.md`);
+    console.log('(dry run — no files written)');
+    return;
+  }
+
+  const result = await exportToAutoMemory(storage, project);
+  console.log(`\nExported ${result.exported} observations to auto-memory.`);
+  if (result.filePath) {
+    console.log(`Topic file: ${result.filePath}`);
+  }
+}
+
 function printHelp() {
   console.log(`
 claude-context-manager CLI
@@ -263,6 +321,9 @@ Commands:
   vacuum [--days N]
     Delete observations older than N days, or reclaim disk space
 
+  export [--project PATH] [--dry-run]
+    Export high-importance observations to auto-memory topic file
+
   help
     Show this help message
 
@@ -271,6 +332,7 @@ Examples:
   context-manager search "authentication" --project ~/Projects/my-app
   context-manager stats --project ~/Projects/my-app
   context-manager vacuum --days 30
+  context-manager export --dry-run
 `);
 }
 

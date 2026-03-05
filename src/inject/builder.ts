@@ -94,6 +94,10 @@ function groupBySubProject(
 /**
  * Build context block for injection
  *
+ * @deprecated Since v0.4.0 — SessionStart no longer injects raw observation lists.
+ * Context is now exported to auto-memory topic files at session end.
+ * Retained for web dashboard and potential future use.
+ *
  * @param observations - Observations to include
  * @param basePath - The current working directory (used for grouping)
  * @param summary - Optional session summary
@@ -198,7 +202,8 @@ export function buildContext(
 /**
  * Build visibility message showing what was injected
  *
- * This is displayed to the user to show what context was loaded.
+ * @deprecated Since v0.4.0 — SessionStart no longer injects observation lists.
+ * Retained for web dashboard and potential future use.
  */
 export function buildVisibilityMessage(
   observations: Observation[],
@@ -268,8 +273,8 @@ export function buildVisibilityMessage(
 /**
  * Select observations within token budget
  *
- * Prioritize most recent observations, accumulating until budget exceeded.
- * Applies 80% safety margin to budget.
+ * @deprecated Since v0.4.0 — SessionStart no longer injects observation lists.
+ * Retained for web dashboard and potential future use.
  */
 export function selectWithinBudget(
   observations: Observation[],
@@ -305,6 +310,9 @@ function recencyMultiplier(createdAt: string): number {
 
 /**
  * Select observations using multi-factor relevance scoring within token budget
+ *
+ * @deprecated Since v0.4.0 — SessionStart no longer injects observation lists.
+ * Retained for web dashboard and potential future use.
  *
  * Scoring formula:
  *   final_score = (importance_score * 0.70) + (recency * 0.30) + file_overlap_boost

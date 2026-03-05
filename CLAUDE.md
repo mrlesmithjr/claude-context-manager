@@ -3,13 +3,13 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: March 4, 2026
+**Last Updated**: March 5, 2026
 
 ---
 
 ## Project Overview
 
-**claude-context-manager** is a Claude Code plugin that provides persistent memory across sessions. It automatically captures tool interactions, stores them in SQLite with full-text search, and injects relevant context at the start of each session.
+**claude-context-manager** is a Claude Code plugin that provides structured session history and searchable context. It automatically captures tool interactions in SQLite with full-text search, and exports high-importance observations to Claude Code's auto-memory topic files.
 
 **Owner**: Larry Smith Jr.
 **Email**: mrlesmithjr@gmail.com
@@ -50,6 +50,7 @@ npm run plugin:uninstall:all  # Remove all data
 - `/ctx-list` - List recent observations
 - `/ctx-search <query>` - Search observations
 - `/ctx-vacuum [days]` - Clean up old data
+- `/ctx-export` - Export to auto-memory
 
 ### Web Dashboard
 ```bash
@@ -77,9 +78,9 @@ Direct SQLite access - no background HTTP service required.
 +-------------------------------------------------------------+
 |                    Claude Code Session                       |
 +-------------------------------------------------------------+
-|  SessionStart Hook    ->  Inject relevant past context       |
-|  PostToolUse Hook     ->  Capture tool interactions          |
-|  Stop Hook            ->  Save session summary               |
+|  SessionStart Hook    ->  Create session, minimal status hint |
+|  PostToolUse Hook     ->  Capture tool interactions           |
+|  Stop Hook            ->  Save summary + export to auto-memory|
 +-------------------------------------------------------------+
                               |
                               v
@@ -131,8 +132,10 @@ claude-context-manager/
 +-- src/
 |   +-- capture/
 |   |   +-- processor.ts       # Process tool outputs
+|   +-- export/
+|   |   +-- memory.ts          # Auto-memory export pipeline
 |   +-- inject/
-|   |   +-- builder.ts         # Build context for injection
+|   |   +-- builder.ts         # Build context for injection (deprecated)
 |   +-- storage/
 |   |   +-- interface.ts       # Storage interface definition
 |   |   +-- sqlite.ts          # SQLite implementation
@@ -202,12 +205,12 @@ claude-context-manager/
 - Adjustments: errors (+0.25), config files (+0.15), test files (+0.10), lock files (-0.30)
 - Scored at capture time (no post-hoc reprocessing needed)
 
-### 6. Relevance-Based Context Injection
-- Multi-factor scoring replaces pure recency: `importance * 0.70 + recency * 0.30 + file_overlap`
-- Recency uses 48-hour half-life decay
-- File overlap boost (+0.20) when observation touches files from recent sessions
-- Diversity cap: no single tool type can consume >60% of token budget
-- Low-importance observations excluded from injection but remain searchable
+### 6. Auto-Memory Export (v0.4.0)
+- High-importance observations (score >= 0.65) exported to `~/.claude/projects/<path>/memory/context-manager-activity.md`
+- Export happens at session end (Stop hook), not session start
+- Writes to a dedicated topic file — never touches MEMORY.md
+- SessionStart injects a minimal status hint (~30 tokens) instead of raw observation lists
+- Complements Claude Code's built-in auto-memory rather than competing with it
 
 ### 7. Rule-Based Compaction
 - Old observations (>7 days) compressed into summaries during vacuum
@@ -285,6 +288,7 @@ npm run plugin:uninstall:all
 npm run cli -- stats
 npm run cli -- list --limit 10
 npm run cli -- search "query"
+npm run cli -- export --dry-run
 
 # Import historical transcripts
 npm run import -- --source <path> --project <target> [--filter <text>] [--dry-run]
@@ -329,10 +333,10 @@ The plugin uses the Claude Code marketplace plugin system to register hooks.
 
 | Hook | Purpose | Timeout | Matcher |
 |------|---------|---------|---------|
-| `SessionStart` | Inject context at session start | 10s | `startup\|clear\|compact` |
+| `SessionStart` | Create session, inject status hint | 10s | `startup\|clear\|compact` |
 | `UserPromptSubmit` | Capture user prompts | 5s | - |
 | `PostToolUse` | Capture tool interactions | 5s | `*` |
-| `Stop` | Save session summary | 10s | - |
+| `Stop` | Save summary + export to auto-memory | 10s | - |
 
 **Installation mechanism:**
 - Hook definitions: `plugin/hooks/hooks.json`

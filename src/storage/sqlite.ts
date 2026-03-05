@@ -196,6 +196,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add importance scoring columns
     this.migrateAddImportanceColumns();
+
+    // Migration: add exported_at column
+    this.migrateAddExportedAtColumn();
   }
 
   /**
@@ -221,6 +224,18 @@ export class SQLiteStorage implements ContextStorage {
       CREATE INDEX IF NOT EXISTS idx_observations_project_score
       ON observations(project, importance_score DESC, created_at DESC)
     `);
+  }
+
+  /**
+   * Add exported_at column if it doesn't exist.
+   */
+  private migrateAddExportedAtColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('exported_at')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN exported_at TEXT`);
+    }
   }
 
   /**
@@ -262,6 +277,7 @@ export class SQLiteStorage implements ContextStorage {
       importance: (row.importance as ImportanceLevel) || 'medium',
       importance_score: (row.importance_score as number) ?? 0.5,
       is_compacted: (row.is_compacted as number) === 1,
+      exported_at: (row.exported_at as string) || undefined,
       created_at: row.created_at as string,
     };
   }
@@ -1045,6 +1061,45 @@ export class SQLiteStorage implements ContextStorage {
     compact();
 
     return { compacted: compactedCount, originals: originalsRemoved };
+  }
+
+  async getUnexportedHighImportance(
+    project: string,
+    sessionId?: string,
+    minScore: number = 0.65
+  ): Promise<Observation[]> {
+    let sql: string;
+    let params: unknown[];
+
+    if (sessionId) {
+      sql = `
+        SELECT * FROM observations
+        WHERE project LIKE ? AND session_id = ?
+          AND importance_score >= ? AND exported_at IS NULL
+        ORDER BY created_at ASC
+      `;
+      params = [project + '%', sessionId, minScore];
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE project LIKE ?
+          AND importance_score >= ? AND exported_at IS NULL
+        ORDER BY created_at ASC
+      `;
+      params = [project + '%', minScore];
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
+  }
+
+  async markExported(ids: number[]): Promise<void> {
+    if (ids.length === 0) return;
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare(
+      `UPDATE observations SET exported_at = ? WHERE id IN (SELECT value FROM json_each(?))`
+    );
+    stmt.run(now, JSON.stringify(ids));
   }
 
   close(): void {

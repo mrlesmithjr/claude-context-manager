@@ -3,7 +3,9 @@
  * Context Injection Hook (SessionStart)
  *
  * Triggered when a new Claude Code session begins.
- * Fetches relevant context from SQLite and injects into session.
+ * Creates session record and injects a minimal status hint.
+ * High-value context is now exported to auto-memory topic files
+ * at session end (Stop hook), not injected here.
  *
  * Input (stdin JSON):
  * {
@@ -13,26 +15,21 @@
  *
  * Output (stdout JSON):
  * {
- *   "context": "<claude-context>...</claude-context>"
+ *   "hookSpecificOutput": {
+ *     "hookEventName": "SessionStart",
+ *     "additionalContext": "..."
+ *   }
  * }
  */
 
 import { SQLiteStorage } from '../../src/storage/sqlite.js';
 import { validateSessionStartInput } from '../../src/utils/validation.js';
-import { buildContext, buildVisibilityMessage, selectRelevantWithinBudget } from '../../src/inject/builder.js';
-import { getPreviouslyContext } from '../../src/utils/transcript.js';
 import { existsSync, readFileSync } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { homedir } from 'os';
-import { fileURLToPath } from 'url';
 
 // This will be injected by esbuild --define during build
 declare const PLUGIN_VERSION: string;
-
-const TOKEN_BUDGET = parseInt(
-  process.env.CONTEXT_MANAGER_TOKEN_BUDGET || '4000',
-  10
-);
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -93,8 +90,7 @@ async function main() {
   try {
     const inputStr = await readStdin();
 
-    // Handle empty input gracefully (like claude-mem does)
-    // Treat empty/whitespace input as empty object
+    // Handle empty input gracefully
     let rawInput;
     try {
       rawInput = inputStr.trim() ? JSON.parse(inputStr) : {};
@@ -112,51 +108,26 @@ async function main() {
     // Create session record
     await storage.createSession(input.session_id, input.cwd);
 
-    // Get recent files as "working set" for relevance scoring
-    const recentObs = await storage.getRecent(input.cwd, 50);
-    const workingFileSet = new Set<string>();
-    for (const obs of recentObs) {
-      for (const f of obs.files_touched) {
-        workingFileSet.add(f);
-      }
-    }
-
-    // Get candidate observations and select by relevance
-    const candidates = await storage.getRelevantCandidates(input.cwd, 200);
-    const observations = selectRelevantWithinBudget(candidates, TOKEN_BUDGET, workingFileSet);
-
-    // Get recent session summary (optional)
-    const sessions = await storage.getRecentSessions(input.cwd, 1);
-    const lastSummary = sessions[0]?.summary;
-
-    // Get "Previously" context from prior session transcript
-    const previouslyContext = await getPreviouslyContext(
-      input.cwd,
-      input.session_id,
-      async (project, limit) => storage.getRecentSessions(project, limit)
-    );
+    // Get observation count for status hint
+    const count = await storage.countObservations(input.cwd);
 
     // Check for version mismatch
     const versionWarning = checkVersionMismatch();
 
-    // Build context for injection (pass cwd for project grouping)
-    let context = buildContext(observations, input.cwd, lastSummary, previouslyContext);
-
-    // Prepend version warning if present
+    // Build minimal status hint (~30 tokens instead of ~1,400)
+    const lines: string[] = [];
     if (versionWarning) {
-      context = versionWarning + '\n' + context;
+      lines.push(versionWarning);
     }
+    lines.push(`context-manager v${PLUGIN_VERSION} active. ${count} observations tracked.`);
+    lines.push('Activity log exported to auto-memory. Use /ctx-search <query> for full history.');
 
-    // Build visibility message (pass cwd for project grouping)
-    const visibilityMessage = buildVisibilityMessage(observations, input.cwd);
+    const context = lines.join('\n');
 
-    // Log visibility message to stderr (visible to user)
-    if (observations.length > 0) {
-      console.error(visibilityMessage);
-    }
+    // Log status to stderr (visible to user)
+    console.error(`[context-manager] ${count} observations tracked, activity exported to auto-memory`);
 
     // Return context using hookSpecificOutput format (compatible with thinking mode)
-    // This is the same format used by claude-mem
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
@@ -166,7 +137,6 @@ async function main() {
   } catch (error) {
     // Fail silently - never block Claude Code
     console.error('[context-manager] Error:', error);
-    // Return empty hookSpecificOutput response on error
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',

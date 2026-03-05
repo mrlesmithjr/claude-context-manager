@@ -21,6 +21,7 @@
 import { SQLiteStorage } from '../../src/storage/sqlite.js';
 import { validateStopInput } from '../../src/utils/validation.js';
 import { createDebugLogger } from '../../src/utils/logger.js';
+import { exportToAutoMemory } from '../../src/export/memory.js';
 import * as fs from 'fs';
 
 const debugLog = createDebugLogger('stop-hook-debug.log');
@@ -167,6 +168,16 @@ async function main() {
 
     // End session with summary
     await storage.endSession(input.session_id, summary);
+
+    // Export high-importance observations to auto-memory topic file
+    try {
+      const result = await exportToAutoMemory(storage, input.cwd, input.session_id);
+      if (result.exported > 0) {
+        console.error(`[context-manager] Exported ${result.exported} observations to auto-memory`);
+      }
+    } catch (exportError) {
+      console.error('[context-manager] Auto-memory export failed:', exportError);
+    }
 
     process.stdout.write(JSON.stringify({ status: 'complete' }));
   } catch (error) {

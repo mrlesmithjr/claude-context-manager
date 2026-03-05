@@ -20,6 +20,7 @@ export interface Observation {
   importance: ImportanceLevel;
   importance_score: number; // 0.0 to 1.0
   is_compacted?: boolean;
+  exported_at?: string; // ISO 8601 timestamp — when exported to auto-memory
   created_at: string; // ISO 8601 timestamp
 }
 
@@ -199,6 +200,20 @@ export interface ContextStorage {
    * @returns Count of observations compacted and originals removed
    */
   compactObservations(olderThanDays?: number): Promise<{ compacted: number; originals: number }>;
+
+  /**
+   * Get high-importance observations that haven't been exported to auto-memory
+   * @param project - Project path
+   * @param sessionId - Optional session ID filter
+   * @param minScore - Minimum importance score (default: 0.65)
+   */
+  getUnexportedHighImportance(project: string, sessionId?: string, minScore?: number): Promise<Observation[]>;
+
+  /**
+   * Mark observations as exported to auto-memory
+   * @param ids - Observation IDs to mark
+   */
+  markExported(ids: number[]): Promise<void>;
 
   /**
    * Count observations with optional filters

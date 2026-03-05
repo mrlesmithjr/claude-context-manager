@@ -1,9 +1,9 @@
 # claude-context-manager
 
-Automatic session history and searchable context for Claude Code. Captures every tool interaction in SQLite with full-text search and a web dashboard.
+Automatic session history and searchable context for Claude Code. Captures every tool interaction in SQLite with full-text search, exports high-value observations to Claude Code's auto-memory, and provides a web dashboard.
 
 **Status**: ACTIVE
-**Last Updated**: March 4, 2026
+**Last Updated**: March 5, 2026
 
 ---
 
@@ -35,18 +35,24 @@ During your session:
 |  - Edits made (importance: high)        |
 |  - Errors flagged (boosted +0.25)       |
 |  - Low-value tools filtered out         |
-|  - Session summary saved on exit        |
 +-----------------------------------------+
                     |
                     v (stored in SQLite with importance scores)
 
+Session end:
++-----------------------------------------+
+| Auto-memory export:                     |
+|  - High-importance observations         |
+|    (score >= 0.65) exported to          |
+|    ~/.claude/projects/<path>/memory/    |
+|    context-manager-activity.md          |
+|  - Session summary saved                |
++-----------------------------------------+
+
 Next session:
 +-----------------------------------------+
-| Relevance-based injection:              |
-|   importance * 0.70                     |
-|   + recency  * 0.30                     |
-|   + file overlap boost                  |
-|   (not just "newest first")             |
+| Minimal status hint (~30 tokens)        |
+| Auto-memory provides the context        |
 +-----------------------------------------+
 
 Anytime:
@@ -67,7 +73,7 @@ Anytime:
 | **Automatic Capture** | PostToolUse hook captures every tool interaction |
 | **Smart Filtering** | Skips low-value tools (cat, ls, node_modules reads, broad globs) at capture time |
 | **Importance Scoring** | Each observation scored 0.0-1.0 and classified as high/medium/low importance |
-| **Relevance-Based Injection** | Multi-factor scoring (importance + recency + file overlap) replaces simple newest-first |
+| **Auto-Memory Export** | High-importance observations exported to Claude Code's auto-memory topic files at session end |
 | **Auto-Compaction** | Old observations compressed into summaries during vacuum (`Read x4: file1, file2, ...`) |
 | **Full-Text Search** | SQLite FTS5 enables fast keyword search |
 | **Web Dashboard** | Browse sessions, search observations, view analytics |
@@ -83,16 +89,18 @@ Anytime:
 ## Architecture
 
 ```
-Claude Code Hooks                    Storage
------------------                    -------
+Claude Code Hooks                    Storage               Auto-Memory
+-----------------                    -------               -----------
 SessionStart ----------------------> SQLite + FTS5
-  (inject context)                   ~/.claude-context/context.db
-
+  (status hint)                      ~/.claude-context/
+                                     context.db
 PostToolUse ----------------------->
   (capture tools)
 
-Stop ------------------------------->
-  (save summary)
+Stop ------------------------------>                ----> ~/.claude/projects/
+  (save summary + export)                                  <path>/memory/
+                                                           context-manager-
+                                                           activity.md
 ```
 
 Direct SQLite access - no background service required.
@@ -255,9 +263,9 @@ npm run web:dev
 
 Once installed, the plugin works automatically:
 
-1. **Session Start**: Previous context is injected (you'll see a message like `[context-manager] Injected X observations...`)
-2. **During Session**: Tool interactions are captured in the background
-3. **Session End**: Session summary is saved
+1. **Session Start**: A minimal status hint is injected (~30 tokens)
+2. **During Session**: Tool interactions are captured and scored in the background
+3. **Session End**: Session summary is saved, high-importance observations are exported to auto-memory
 
 ### Slash Commands
 
@@ -269,6 +277,7 @@ Once installed, use these commands in Claude Code:
 | `/ctx-list` | List recent observations |
 | `/ctx-search <query>` | Search observations |
 | `/ctx-vacuum [days]` | Clean up old data |
+| `/ctx-export` | Export to auto-memory |
 | `/ctx-web` | Start the web dashboard |
 
 ### CLI Commands
@@ -288,6 +297,9 @@ node /path/to/claude-context-manager/dist/cli.js search "API" --project ~/Projec
 
 # Clean up old data
 node /path/to/claude-context-manager/dist/cli.js vacuum --days 30
+
+# Export to auto-memory (dry run)
+node /path/to/claude-context-manager/dist/cli.js export --dry-run
 ```
 
 ### Import Historical Transcripts
@@ -375,10 +387,10 @@ The plugin registers hooks via the Claude Code marketplace plugin system:
 
 | Hook | Purpose | Timeout | Matcher |
 |------|---------|---------|---------|
-| `SessionStart` | Inject context at session start | 10s | `startup\|clear\|compact` |
+| `SessionStart` | Create session, inject status hint | 10s | `startup\|clear\|compact` |
 | `UserPromptSubmit` | Capture user prompts | 5s | - |
 | `PostToolUse` | Capture tool interactions | 5s | `*` |
-| `Stop` | Save session summary | 10s | - |
+| `Stop` | Save summary + export to auto-memory | 10s | - |
 
 Hook definitions are in `plugin/hooks/hooks.json`. When you install the plugin via `/plugin install`, Claude Code automatically registers these hooks and executes the corresponding scripts in `plugin/scripts/`.
 
@@ -448,14 +460,15 @@ npm run build:plugin
 
 ## How This Complements Built-in Memory
 
-Claude Code's built-in memory (`CLAUDE.md` and auto-memory files) handles **curated knowledge** - conventions, architecture decisions, and preferences that Claude deliberately saves.
+Claude Code's built-in memory (`MEMORY.md` and auto-memory topic files) handles **curated knowledge** - conventions, architecture decisions, and preferences that Claude deliberately saves.
 
-This plugin handles **automatic history** - a complete, searchable record of what happened across sessions. They work well together:
+This plugin captures **everything automatically** and exports the important parts to auto-memory. Since v0.4.0, it writes high-importance observations directly to a topic file (`context-manager-activity.md`) that Claude reads via auto-memory — no competing injection systems.
 
 | | Built-in Memory | This Plugin |
 |---|---|---|
 | **What it stores** | Curated patterns and conventions | Every tool interaction automatically |
-| **How it's saved** | Claude decides what to write | Automatic - nothing falls through |
+| **How it's saved** | Claude decides what to write | Automatic capture, high-value auto-exported |
+| **Integration** | Native (MEMORY.md, topic files) | Exports to auto-memory topic files |
 | **Searchable** | No (static files) | Yes (FTS5 full-text search) |
 | **Browsable** | Read files manually | Web dashboard with analytics |
 | **Session history** | No | Yes - timestamped session summaries |

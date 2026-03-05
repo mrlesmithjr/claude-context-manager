@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: March 4, 2026
+**Last Updated**: March 5, 2026
 
 ---
 
@@ -49,17 +49,17 @@ Claude Code plugins can register hooks for lifecycle events. We use three:
 #### SessionStart Hook (`context-inject.ts`)
 - **Trigger**: When a new Claude Code session begins
 - **Matcher**: `startup|clear|compact`
-- **Purpose**: Inject relevant context from previous sessions
+- **Purpose**: Create session record, inject minimal status hint (~30 tokens)
+- **Note**: Since v0.4.0, high-value context is exported to auto-memory at session end, not injected here
 - **Response Format**:
   ```json
   {
     "hookSpecificOutput": {
       "hookEventName": "SessionStart",
-      "additionalContext": "<claude-context>...</claude-context>"
+      "additionalContext": "context-manager v0.4.0 active. 570 observations tracked..."
     }
   }
   ```
-- **Note**: This format is required for compatibility with Claude's extended thinking mode
 
 #### PostToolUse Hook (`capture-tool.ts`)
 - **Trigger**: After every tool execution (Read, Write, Bash, etc.)
@@ -73,7 +73,8 @@ Claude Code plugins can register hooks for lifecycle events. We use three:
 
 #### Stop Hook (`session-end.ts`)
 - **Trigger**: When Claude Code session ends normally
-- **Purpose**: Save session summary
+- **Purpose**: Save session summary + export high-importance observations to auto-memory
+- **Export**: Writes to `~/.claude/projects/<path>/memory/context-manager-activity.md`
 - **Response Format**:
   ```json
   {
@@ -103,6 +104,7 @@ export interface Observation {
   importance: ImportanceLevel;      // Classified at capture time
   importance_score: number;         // 0.0 to 1.0
   is_compacted?: boolean;           // True if this is a compacted summary
+  exported_at?: string;             // When exported to auto-memory
   created_at: string;
 }
 
@@ -134,6 +136,10 @@ export interface ContextStorage {
   countObservations(project?: string, tool?: string): Promise<number>;
   countSessions(project?: string, status?: string): Promise<number>;
 
+  // Auto-memory export
+  getUnexportedHighImportance(project: string, sessionId?: string, minScore?: number): Promise<Observation[]>;
+  markExported(ids: number[]): Promise<void>;
+
   // Maintenance
   vacuum(olderThanDays?: number): Promise<{ observations; sessions; compacted; compacted_originals }>;
   compactObservations(olderThanDays?: number): Promise<{ compacted; originals }>;
@@ -142,9 +148,11 @@ export interface ContextStorage {
 ```
 
 **Key methods:**
+- `getUnexportedHighImportance()` - Fetches observations with score >= 0.65 not yet exported to auto-memory
+- `markExported()` - Sets `exported_at` timestamp after successful export
 - `getRelevantCandidates()` - Fetches up to 200 candidates (excluding low-importance) for relevance scoring
 - `compactObservations()` - Groups old observations by session + tool into compressed summaries
-- `vacuum()` - Now also triggers compaction and returns compaction stats
+- `vacuum()` - Also triggers compaction and returns compaction stats
 
 #### SQLite Implementation (`src/storage/sqlite.ts`)
 
@@ -189,6 +197,7 @@ CREATE TABLE observations (
   importance TEXT DEFAULT 'medium',   -- 'high', 'medium', 'low'
   importance_score REAL DEFAULT 0.5,  -- 0.0 to 1.0
   is_compacted INTEGER DEFAULT 0,     -- 1 if compacted summary
+  exported_at TEXT,                   -- When exported to auto-memory
   created_at TEXT NOT NULL,
   FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
@@ -266,7 +275,7 @@ Claude Code executes tool
 +-------------------------+
 ```
 
-### Injection Flow (SessionStart)
+### Injection Flow (SessionStart) — v0.4.0
 
 ```
 New Claude Code session
@@ -277,37 +286,54 @@ New Claude Code session
 | (context-inject.ts)           |
 +-------------------------------+
 | 1. Parse stdin JSON           |
-| 2. Validate project           |
-| 3. Build working file set     |
-|    (from last 50 observations)|
+| 2. Create session record      |
+| 3. Count observations         |
+| 4. Build status hint          |
++-------------------------------+
+         |
+         v (stdout, ~30 tokens)
+{ hookSpecificOutput: {
+    additionalContext: "context-manager v0.4.0 active. 570 observations tracked..."
+  }
+}
+
+(High-value context is now provided via auto-memory topic files,
+ written at session end by the Stop hook)
+```
+
+### Export Flow (Stop Hook) — v0.4.0
+
+```
+Claude Code session ends
+         |
+         v
++-------------------------------+
+| Stop Hook                     |
+| (session-end.ts)              |
++-------------------------------+
+| 1. End session with summary   |
+| 2. Export to auto-memory      |
 +-------------------------------+
          |
          v (direct SQLite)
 +-------------------------------+
-| SQLiteStorage                 |
-+-------------------------------+
-| getRelevantCandidates()       |
-|   WHERE importance != 'low'   |
-|   ORDER BY score DESC         |
-|   LIMIT 200                   |
+| getUnexportedHighImportance() |
+|   WHERE importance_score >= 0.65 |
+|   AND exported_at IS NULL     |
 +-------------------------------+
          |
          v
 +-------------------------------+
-| Context Builder               |
-| selectRelevantWithinBudget()  |
+| Export Module (memory.ts)     |
 +-------------------------------+
-| Score each candidate:         |
-|   importance_score * 0.70     |
-|   + recency_decay  * 0.30    |
-|   + file_overlap_boost (0.20) |
-|   + compacted_bonus   (0.10) |
-| Diversity cap: 60% per tool   |
-| Sort final set chronologically|
+| 1. Format as dated markdown   |
+| 2. Append to topic file       |
+| 3. Trim if > 150 lines        |
+| 4. Mark exported in DB        |
 +-------------------------------+
          |
-         v (stdout)
-{ hookSpecificOutput: { additionalContext: "..." } }
+         v (file write)
+~/.claude/projects/<path>/memory/context-manager-activity.md
 ```
 
 ---
@@ -373,7 +399,9 @@ Every captured observation is classified with an importance level and numeric sc
 
 **Levels:** score >= 0.65 = high, >= 0.35 = medium, < 0.35 = low
 
-### Relevance-Based Injection
+### Relevance-Based Injection (Deprecated in v0.4.0)
+
+> **Note**: Since v0.4.0, SessionStart no longer injects observation lists. Context is now exported to auto-memory topic files at session end. The relevance scoring code is retained for the web dashboard and potential future use.
 
 Context injection uses multi-factor scoring instead of pure recency. Implemented in `src/inject/builder.ts` via `selectRelevantWithinBudget()`.
 
@@ -605,7 +633,7 @@ Potential enhancements for future consideration. Prioritized by estimated value.
 | **Outcome Tracking** | Store success/failure of actions to learn what approaches work | ELF |
 | **Pheromone Trails / Hotspots** | Track file activity to identify problem clusters ("this file is often touched during debugging") | ELF |
 | **Semantic/Vector Search** | Embeddings for conceptually similar observations | claude-mem (ChromaDB) |
-| **Export** | Export observations as markdown/JSON | - |
+| ~~**Export**~~ | ~~Export observations as markdown/JSON~~ **IMPLEMENTED** as auto-memory export to topic files (v0.4.0) | - |
 
 ### Lower Priority
 
@@ -645,4 +673,4 @@ These tools solve different problems and could work alongside context-manager:
 
 ---
 
-**Last Updated**: March 4, 2026
+**Last Updated**: March 5, 2026

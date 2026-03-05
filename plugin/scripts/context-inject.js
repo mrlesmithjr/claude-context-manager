@@ -147,6 +147,7 @@ var SQLiteStorage = class {
       END;
     `);
     this.migrateAddImportanceColumns();
+    this.migrateAddExportedAtColumn();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -168,6 +169,16 @@ var SQLiteStorage = class {
       CREATE INDEX IF NOT EXISTS idx_observations_project_score
       ON observations(project, importance_score DESC, created_at DESC)
     `);
+  }
+  /**
+   * Add exported_at column if it doesn't exist.
+   */
+  migrateAddExportedAtColumn() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("exported_at")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN exported_at TEXT`);
+    }
   }
   /**
    * Normalize summary text for dedup comparison.
@@ -204,6 +215,7 @@ var SQLiteStorage = class {
       importance: row.importance || "medium",
       importance_score: row.importance_score ?? 0.5,
       is_compacted: row.is_compacted === 1,
+      exported_at: row.exported_at || void 0,
       created_at: row.created_at
     };
   }
@@ -326,7 +338,7 @@ var SQLiteStorage = class {
     return rows.map((row) => this.mapRow(row));
   }
   async getStats(project) {
-    const TOKEN_BUDGET2 = parseInt(
+    const TOKEN_BUDGET = parseInt(
       process.env.CONTEXT_MANAGER_TOKEN_BUDGET || "4000",
       10
     );
@@ -395,7 +407,7 @@ var SQLiteStorage = class {
     const avgRecentTokens = recentRows.length > 0 ? Math.round(
       recentRows.reduce((sum, r) => sum + r.session_tokens, 0) / recentRows.length
     ) : 0;
-    const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET2);
+    const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET);
     const importanceSql = project ? `
         SELECT importance, COUNT(*) as cnt
         FROM observations
@@ -441,7 +453,7 @@ var SQLiteStorage = class {
       avg_tokens_per_observation: Math.round(baseRow.avg_tokens || 0),
       avg_tokens_per_session: avgTokensPerSession,
       tokens_by_tool: tokensByTool,
-      token_budget: TOKEN_BUDGET2,
+      token_budget: TOKEN_BUDGET,
       typical_injection_tokens: typicalInjection,
       importance_counts: importanceCounts,
       compacted_count: compactedRow?.compacted_count || 0,
@@ -767,6 +779,38 @@ var SQLiteStorage = class {
     compact();
     return { compacted: compactedCount, originals: originalsRemoved };
   }
+  async getUnexportedHighImportance(project, sessionId, minScore = 0.65) {
+    let sql;
+    let params;
+    if (sessionId) {
+      sql = `
+        SELECT * FROM observations
+        WHERE project LIKE ? AND session_id = ?
+          AND importance_score >= ? AND exported_at IS NULL
+        ORDER BY created_at ASC
+      `;
+      params = [project + "%", sessionId, minScore];
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE project LIKE ?
+          AND importance_score >= ? AND exported_at IS NULL
+        ORDER BY created_at ASC
+      `;
+      params = [project + "%", minScore];
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
+  }
+  async markExported(ids) {
+    if (ids.length === 0)
+      return;
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const stmt = this.db.prepare(
+      `UPDATE observations SET exported_at = ? WHERE id IN (SELECT value FROM json_each(?))`
+    );
+    stmt.run(now, JSON.stringify(ids));
+  }
   close() {
     this.db.close();
   }
@@ -831,322 +875,10 @@ function validateSessionStartInput(input) {
   };
 }
 
-// src/inject/builder.ts
-function calculateTimeAgo(dateStr) {
-  const createdDate = new Date(dateStr);
-  const now = /* @__PURE__ */ new Date();
-  const diffMs = now.getTime() - createdDate.getTime();
-  const diffHours = Math.floor(diffMs / (1e3 * 60 * 60));
-  const diffDays = Math.floor(diffHours / 24);
-  if (diffHours < 1) {
-    const diffMinutes = Math.floor(diffMs / (1e3 * 60));
-    return diffMinutes <= 1 ? "just now" : `${diffMinutes}m ago`;
-  } else if (diffHours < 24) {
-    return `${diffHours}h ago`;
-  } else if (diffDays < 7) {
-    return `${diffDays}d ago`;
-  } else {
-    const diffWeeks = Math.floor(diffDays / 7);
-    return `${diffWeeks}w ago`;
-  }
-}
-function formatObservation(obs, index) {
-  const fileInfo = obs.files_touched.length > 0 ? ` (${obs.files_touched.join(", ")})` : "";
-  const timeAgo = calculateTimeAgo(obs.created_at);
-  return `${index + 1}. [${timeAgo}] ${obs.summary}${fileInfo}`;
-}
-function groupBySubProject(observations, basePath) {
-  const normalizedBase = basePath.endsWith("/") ? basePath.slice(0, -1) : basePath;
-  const groups = /* @__PURE__ */ new Map();
-  for (const obs of observations) {
-    let groupKey;
-    if (obs.project === normalizedBase) {
-      groupKey = "_root";
-    } else if (obs.project.startsWith(normalizedBase + "/")) {
-      const relativePath = obs.project.substring(normalizedBase.length + 1);
-      const parts = relativePath.split("/");
-      groupKey = parts[0] || "_root";
-    } else {
-      groupKey = "_other";
-    }
-    let existing = groups.get(groupKey);
-    if (!existing) {
-      existing = [];
-      groups.set(groupKey, existing);
-    }
-    existing.push(obs);
-  }
-  return groups;
-}
-function buildContext(observations, basePath, summary, previouslyContext) {
-  if (observations.length === 0 && !summary && !previouslyContext) {
-    return "";
-  }
-  const totalTokens = observations.reduce(
-    (sum, obs) => sum + obs.token_estimate,
-    0
-  );
-  const lines = [];
-  lines.push("<claude-context>");
-  lines.push("## Previous Context for This Project");
-  lines.push("");
-  if (previouslyContext) {
-    lines.push("### Previously");
-    lines.push(previouslyContext);
-    lines.push("");
-  }
-  if (summary) {
-    lines.push("### Recent Session Summary");
-    lines.push(summary);
-    lines.push("");
-  }
-  if (observations.length > 0) {
-    const groups = groupBySubProject(observations, basePath);
-    const hasMultipleProjects = groups.size > 1 || groups.size === 1 && !groups.has("_root");
-    if (hasMultipleProjects) {
-      lines.push(
-        `### Recent Activity by Project (${observations.length} observations, ~${totalTokens} tokens)`
-      );
-      lines.push("");
-      const sortedGroups = Array.from(groups.entries()).sort((a, b) => {
-        const aNewest = a[1][0]?.created_at || "";
-        const bNewest = b[1][0]?.created_at || "";
-        return bNewest.localeCompare(aNewest);
-      });
-      for (const [groupKey, groupObservations] of sortedGroups) {
-        if (groupKey === "_root") {
-          lines.push(
-            `#### Root Directory (${groupObservations.length} observations)`
-          );
-        } else if (groupKey === "_other") {
-          lines.push(`#### Other (${groupObservations.length} observations)`);
-        } else {
-          lines.push(`#### ${groupKey} (${groupObservations.length} observations)`);
-        }
-        lines.push("");
-        for (let i = 0; i < groupObservations.length; i++) {
-          const obs = groupObservations[i];
-          if (obs) {
-            lines.push(formatObservation(obs, i));
-          }
-        }
-        lines.push("");
-      }
-    } else {
-      lines.push(
-        `### Recent Activity (${observations.length} observations, ~${totalTokens} tokens)`
-      );
-      lines.push("");
-      for (let i = 0; i < observations.length; i++) {
-        const obs = observations[i];
-        if (obs) {
-          lines.push(formatObservation(obs, i));
-        }
-      }
-      lines.push("");
-    }
-  }
-  lines.push("</claude-context>");
-  return lines.join("\n");
-}
-function buildVisibilityMessage(observations, basePath) {
-  if (observations.length === 0) {
-    return "[context-manager] No previous context found for this project";
-  }
-  const totalTokens = observations.reduce(
-    (sum, obs) => sum + obs.token_estimate,
-    0
-  );
-  const lines = [];
-  if (basePath) {
-    const groups = groupBySubProject(observations, basePath);
-    const hasMultipleProjects = groups.size > 1 || groups.size === 1 && !groups.has("_root");
-    if (hasMultipleProjects) {
-      const projectCount = Array.from(groups.keys()).filter(
-        (key) => key !== "_root" && key !== "_other"
-      ).length;
-      const projectCounts = Array.from(groups.entries()).map(([key, obs]) => {
-        const label = key === "_root" ? "Root" : key === "_other" ? "Other" : key;
-        return `${label}: ${obs.length}`;
-      }).join(", ");
-      lines.push(
-        `[context-manager] Injected ${observations.length} observations (${totalTokens} tokens) from ${projectCount} projects:`
-      );
-      lines.push(`  Projects: ${projectCounts}`);
-      return lines.join("\n");
-    }
-  }
-  lines.push(
-    `[context-manager] Injected ${observations.length} observations (${totalTokens} tokens):`
-  );
-  const preview = observations.slice(0, 3);
-  for (const obs of preview) {
-    const timeAgo = calculateTimeAgo(obs.created_at);
-    const firstFile = obs.files_touched[0];
-    const fileInfo = firstFile ? ` (${firstFile})` : "";
-    lines.push(`  - ${timeAgo}: ${obs.summary}${fileInfo}`);
-  }
-  if (observations.length > 3) {
-    lines.push(`  ... and ${observations.length - 3} more`);
-  }
-  return lines.join("\n");
-}
-function recencyMultiplier(createdAt) {
-  const ageMs = Date.now() - new Date(createdAt).getTime();
-  const ageHours = ageMs / (1e3 * 60 * 60);
-  return Math.pow(0.5, ageHours / 48);
-}
-function selectRelevantWithinBudget(candidates, tokenBudget, workingFileSet) {
-  const effectiveBudget = Math.floor(tokenBudget * 0.8);
-  const toolBudgetCap = Math.floor(effectiveBudget * 0.6);
-  const scored = candidates.map((obs) => {
-    const importanceWeight = (obs.importance_score ?? 0.5) * 0.7;
-    const recencyWeight = recencyMultiplier(obs.created_at) * 0.3;
-    let fileOverlapBoost = 0;
-    if (workingFileSet && workingFileSet.size > 0) {
-      const hasOverlap = obs.files_touched.some((f) => workingFileSet.has(f));
-      if (hasOverlap)
-        fileOverlapBoost = 0.2;
-    }
-    const compactedBonus = obs.is_compacted ? 0.1 : 0;
-    const finalScore = importanceWeight + recencyWeight + fileOverlapBoost + compactedBonus;
-    return { obs, finalScore };
-  });
-  scored.sort((a, b) => b.finalScore - a.finalScore);
-  const selected = [];
-  let totalTokens = 0;
-  const toolTokens = {};
-  for (const { obs } of scored) {
-    if (totalTokens + obs.token_estimate > effectiveBudget) {
-      continue;
-    }
-    const currentToolTokens = toolTokens[obs.tool_name] || 0;
-    if (currentToolTokens + obs.token_estimate > toolBudgetCap) {
-      continue;
-    }
-    selected.push(obs);
-    totalTokens += obs.token_estimate;
-    toolTokens[obs.tool_name] = currentToolTokens + obs.token_estimate;
-  }
-  selected.sort((a, b) => a.created_at.localeCompare(b.created_at));
-  return selected;
-}
-
-// src/utils/transcript.ts
-import { readFileSync, existsSync } from "fs";
+// plugin/hooks/context-inject.ts
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir as homedir3 } from "os";
-function convertPathToDashed(projectPath) {
-  return projectPath.replace(/\//g, "-");
-}
-function getTranscriptPath(project, sessionId) {
-  const dashedPath = convertPathToDashed(project);
-  return join(
-    homedir3(),
-    ".claude",
-    "projects",
-    dashedPath,
-    `${sessionId}.jsonl`
-  );
-}
-function extractTextFromContent(content) {
-  if (!content)
-    return null;
-  if (typeof content === "string") {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    const textBlocks = content.filter((block) => block.type === "text" && block.text).map((block) => block.text || "").filter((text) => text.length > 0);
-    return textBlocks.length > 0 ? textBlocks.join("\n\n") : null;
-  }
-  return null;
-}
-function extractTextContent(entry) {
-  if (entry.type === "assistant" && entry.message) {
-    return extractTextFromContent(entry.message.content);
-  }
-  if (entry.role === "assistant") {
-    return extractTextFromContent(entry.content);
-  }
-  return null;
-}
-function isAssistantEntry(entry) {
-  if (entry.type === "assistant") {
-    return true;
-  }
-  if (entry.role === "assistant") {
-    return true;
-  }
-  return false;
-}
-function stripSystemReminderTags(text) {
-  let result = "";
-  let i = 0;
-  const openTag = "<system-reminder>";
-  const closeTag = "</system-reminder>";
-  while (i < text.length) {
-    const remainingLength = text.length - i;
-    if (remainingLength >= openTag.length && text.substring(i, i + openTag.length) === openTag) {
-      const closeIndex = text.indexOf(closeTag, i + openTag.length);
-      if (closeIndex !== -1) {
-        i = closeIndex + closeTag.length;
-        continue;
-      }
-    }
-    result += text[i];
-    i++;
-  }
-  return result.trim();
-}
-function parseTranscriptForLastMessage(transcriptPath) {
-  if (!existsSync(transcriptPath)) {
-    return null;
-  }
-  try {
-    const content = readFileSync(transcriptPath, "utf-8");
-    const lines = content.split("\n").filter((line) => line.trim().length > 0);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i];
-      if (!line)
-        continue;
-      try {
-        const entry = JSON.parse(line);
-        if (isAssistantEntry(entry)) {
-          const text = extractTextContent(entry);
-          if (text && text.length > 0) {
-            return stripSystemReminderTags(text);
-          }
-        }
-      } catch (parseError) {
-        continue;
-      }
-    }
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
-async function getPreviouslyContext(project, currentSessionId, getRecentSessions) {
-  const sessions = await getRecentSessions(project, 10);
-  const priorSession = sessions.find(
-    (s) => s.id !== currentSessionId && s.status === "complete"
-  );
-  if (!priorSession) {
-    return null;
-  }
-  const transcriptPath = getTranscriptPath(project, priorSession.id);
-  const lastMessage = parseTranscriptForLastMessage(transcriptPath);
-  return lastMessage;
-}
-
-// plugin/hooks/context-inject.ts
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
-import { join as join2 } from "path";
-import { homedir as homedir4 } from "os";
-var TOKEN_BUDGET = parseInt(
-  process.env.CONTEXT_MANAGER_TOKEN_BUDGET || "4000",
-  10
-);
 async function readStdin() {
   return new Promise((resolve) => {
     let data = "";
@@ -1157,25 +889,25 @@ async function readStdin() {
 }
 function checkVersionMismatch() {
   try {
-    const installedPluginPath = join2(
-      homedir4(),
+    const installedPluginPath = join(
+      homedir3(),
       ".claude",
       "plugins",
       "context-manager",
       "package.json"
     );
-    if (!existsSync2(installedPluginPath)) {
+    if (!existsSync(installedPluginPath)) {
       return "";
     }
     const installedPackageJson = JSON.parse(
-      readFileSync2(installedPluginPath, "utf-8")
+      readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.3.6") {
+    if (installedVersion !== "0.4.0") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.3.6"}
+   Source:    v${"0.4.0"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1200,31 +932,16 @@ async function main() {
     const input = validateSessionStartInput(rawInput);
     await storage.initialize();
     await storage.createSession(input.session_id, input.cwd);
-    const recentObs = await storage.getRecent(input.cwd, 50);
-    const workingFileSet = /* @__PURE__ */ new Set();
-    for (const obs of recentObs) {
-      for (const f of obs.files_touched) {
-        workingFileSet.add(f);
-      }
-    }
-    const candidates = await storage.getRelevantCandidates(input.cwd, 200);
-    const observations = selectRelevantWithinBudget(candidates, TOKEN_BUDGET, workingFileSet);
-    const sessions = await storage.getRecentSessions(input.cwd, 1);
-    const lastSummary = sessions[0]?.summary;
-    const previouslyContext = await getPreviouslyContext(
-      input.cwd,
-      input.session_id,
-      async (project, limit) => storage.getRecentSessions(project, limit)
-    );
+    const count = await storage.countObservations(input.cwd);
     const versionWarning = checkVersionMismatch();
-    let context = buildContext(observations, input.cwd, lastSummary, previouslyContext);
+    const lines = [];
     if (versionWarning) {
-      context = versionWarning + "\n" + context;
+      lines.push(versionWarning);
     }
-    const visibilityMessage = buildVisibilityMessage(observations, input.cwd);
-    if (observations.length > 0) {
-      console.error(visibilityMessage);
-    }
+    lines.push(`context-manager v${"0.4.0"} active. ${count} observations tracked.`);
+    lines.push("Activity log exported to auto-memory. Use /ctx-search <query> for full history.");
+    const context = lines.join("\n");
+    console.error(`[context-manager] ${count} observations tracked, activity exported to auto-memory`);
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "SessionStart",
