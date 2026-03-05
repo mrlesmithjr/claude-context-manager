@@ -293,3 +293,80 @@ export function selectWithinBudget(
 
   return selected;
 }
+
+/**
+ * Calculate recency multiplier with 48-hour half-life
+ */
+function recencyMultiplier(createdAt: string): number {
+  const ageMs = Date.now() - new Date(createdAt).getTime();
+  const ageHours = ageMs / (1000 * 60 * 60);
+  return Math.pow(0.5, ageHours / 48);
+}
+
+/**
+ * Select observations using multi-factor relevance scoring within token budget
+ *
+ * Scoring formula:
+ *   final_score = (importance_score * 0.70) + (recency * 0.30) + file_overlap_boost
+ *
+ * Diversity cap: no single tool type can consume >60% of budget.
+ * Uses continue (not break) so smaller high-scoring observations can still fit.
+ * Final selection sorted chronologically for readable output.
+ */
+export function selectRelevantWithinBudget(
+  candidates: Observation[],
+  tokenBudget: number,
+  workingFileSet?: Set<string>
+): Observation[] {
+  const effectiveBudget = Math.floor(tokenBudget * 0.8);
+  const toolBudgetCap = Math.floor(effectiveBudget * 0.6);
+
+  // Score each candidate
+  const scored = candidates.map(obs => {
+    const importanceWeight = (obs.importance_score ?? 0.5) * 0.70;
+    const recencyWeight = recencyMultiplier(obs.created_at) * 0.30;
+
+    // File overlap boost
+    let fileOverlapBoost = 0;
+    if (workingFileSet && workingFileSet.size > 0) {
+      const hasOverlap = obs.files_touched.some(f => workingFileSet.has(f));
+      if (hasOverlap) fileOverlapBoost = 0.20;
+    }
+
+    // Compacted summary bonus (token-efficient, represents multiple actions)
+    const compactedBonus = obs.is_compacted ? 0.10 : 0;
+
+    const finalScore = importanceWeight + recencyWeight + fileOverlapBoost + compactedBonus;
+
+    return { obs, finalScore };
+  });
+
+  // Sort by score descending
+  scored.sort((a, b) => b.finalScore - a.finalScore);
+
+  // Greedy select within budget, with diversity cap
+  const selected: Observation[] = [];
+  let totalTokens = 0;
+  const toolTokens: Record<string, number> = {};
+
+  for (const { obs } of scored) {
+    if (totalTokens + obs.token_estimate > effectiveBudget) {
+      continue; // Try smaller observations
+    }
+
+    // Diversity cap check
+    const currentToolTokens = toolTokens[obs.tool_name] || 0;
+    if (currentToolTokens + obs.token_estimate > toolBudgetCap) {
+      continue;
+    }
+
+    selected.push(obs);
+    totalTokens += obs.token_estimate;
+    toolTokens[obs.tool_name] = currentToolTokens + obs.token_estimate;
+  }
+
+  // Sort chronologically for readable output
+  selected.sort((a, b) => a.created_at.localeCompare(b.created_at));
+
+  return selected;
+}

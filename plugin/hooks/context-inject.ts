@@ -19,7 +19,7 @@
 
 import { SQLiteStorage } from '../../src/storage/sqlite.js';
 import { validateSessionStartInput } from '../../src/utils/validation.js';
-import { buildContext, buildVisibilityMessage } from '../../src/inject/builder.js';
+import { buildContext, buildVisibilityMessage, selectRelevantWithinBudget } from '../../src/inject/builder.js';
 import { getPreviouslyContext } from '../../src/utils/transcript.js';
 import { existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -112,8 +112,18 @@ async function main() {
     // Create session record
     await storage.createSession(input.session_id, input.cwd);
 
-    // Get observations within token budget
-    const observations = await storage.getWithinBudget(input.cwd, TOKEN_BUDGET);
+    // Get recent files as "working set" for relevance scoring
+    const recentObs = await storage.getRecent(input.cwd, 50);
+    const workingFileSet = new Set<string>();
+    for (const obs of recentObs) {
+      for (const f of obs.files_touched) {
+        workingFileSet.add(f);
+      }
+    }
+
+    // Get candidate observations and select by relevance
+    const candidates = await storage.getRelevantCandidates(input.cwd, 200);
+    const observations = selectRelevantWithinBudget(candidates, TOKEN_BUDGET, workingFileSet);
 
     // Get recent session summary (optional)
     const sessions = await storage.getRecentSessions(input.cwd, 1);

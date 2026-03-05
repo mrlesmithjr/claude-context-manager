@@ -15,6 +15,7 @@ import { mkdirSync } from 'fs';
 import type {
   ContextStorage,
   Observation,
+  ImportanceLevel,
   Session,
   Stats,
   UserPrompt,
@@ -192,6 +193,34 @@ export class SQLiteStorage implements ContextStorage {
         );
       END;
     `);
+
+    // Migration: add importance scoring columns
+    this.migrateAddImportanceColumns();
+  }
+
+  /**
+   * Add importance and compaction columns if they don't exist.
+   * Uses pragma table_info to check column existence safely.
+   */
+  private migrateAddImportanceColumns(): void {
+    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('importance')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN importance TEXT DEFAULT 'medium'`);
+    }
+    if (!columnNames.has('importance_score')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN importance_score REAL DEFAULT 0.5`);
+    }
+    if (!columnNames.has('is_compacted')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN is_compacted INTEGER DEFAULT 0`);
+    }
+
+    // Index for relevance-based queries
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_project_score
+      ON observations(project, importance_score DESC, created_at DESC)
+    `);
   }
 
   /**
@@ -214,6 +243,27 @@ export class SQLiteStorage implements ContextStorage {
 
     // Default: 60-char prefix
     return summary.substring(0, 60);
+  }
+
+  /**
+   * Map a database row to an Observation object
+   */
+  private mapRow(row: Record<string, unknown>): Observation {
+    return {
+      id: row.id as number,
+      session_id: row.session_id as string,
+      project: row.project as string,
+      package: (row.package as string) || undefined,
+      tool_name: row.tool_name as string,
+      summary: row.summary as string,
+      files_touched: JSON.parse((row.files_touched as string) || '[]'),
+      metadata: JSON.parse((row.metadata as string) || '{}'),
+      token_estimate: row.token_estimate as number,
+      importance: (row.importance as ImportanceLevel) || 'medium',
+      importance_score: (row.importance_score as number) ?? 0.5,
+      is_compacted: (row.is_compacted as number) === 1,
+      created_at: row.created_at as string,
+    };
   }
 
   async save(observation: Omit<Observation, 'id'>): Promise<void> {
@@ -281,8 +331,9 @@ export class SQLiteStorage implements ContextStorage {
     const stmt = this.db.prepare(`
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
-        files_touched, metadata, token_estimate, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        files_touched, metadata, token_estimate,
+        importance, importance_score, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
@@ -294,6 +345,8 @@ export class SQLiteStorage implements ContextStorage {
       JSON.stringify(observation.files_touched),
       JSON.stringify(observation.metadata),
       observation.token_estimate,
+      observation.importance || 'medium',
+      observation.importance_score ?? 0.5,
       observation.created_at
     );
   }
@@ -307,31 +360,8 @@ export class SQLiteStorage implements ContextStorage {
       LIMIT ?
     `);
 
-    const rows = stmt.all(project + '%', limit) as Array<{
-      id: number;
-      session_id: string;
-      project: string;
-      package: string | null;
-      tool_name: string;
-      summary: string;
-      files_touched: string;
-      metadata: string;
-      token_estimate: number;
-      created_at: string;
-    }>;
-
-    return rows.map((row) => ({
-      id: row.id,
-      session_id: row.session_id,
-      project: row.project,
-      package: row.package || undefined,
-      tool_name: row.tool_name,
-      summary: row.summary,
-      files_touched: JSON.parse(row.files_touched || '[]'),
-      metadata: JSON.parse(row.metadata || '{}'),
-      token_estimate: row.token_estimate,
-      created_at: row.created_at,
-    }));
+    const rows = stmt.all(project + '%', limit) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
   }
 
   async getWithinBudget(
@@ -348,42 +378,20 @@ export class SQLiteStorage implements ContextStorage {
       ORDER BY created_at DESC
     `);
 
-    const rows = stmt.all(project + '%') as Array<{
-      id: number;
-      session_id: string;
-      project: string;
-      package: string | null;
-      tool_name: string;
-      summary: string;
-      files_touched: string;
-      metadata: string;
-      token_estimate: number;
-      created_at: string;
-    }>;
+    const rows = stmt.all(project + '%') as Array<Record<string, unknown>>;
 
     // Accumulate observations until budget exceeded
     const results: Observation[] = [];
     let totalTokens = 0;
 
     for (const row of rows) {
-      if (totalTokens + row.token_estimate > effectiveBudget) {
+      const tokenEstimate = row.token_estimate as number;
+      if (totalTokens + tokenEstimate > effectiveBudget) {
         break;
       }
 
-      results.push({
-        id: row.id,
-        session_id: row.session_id,
-        project: row.project,
-        package: row.package || undefined,
-        tool_name: row.tool_name,
-        summary: row.summary,
-        files_touched: JSON.parse(row.files_touched || '[]'),
-        metadata: JSON.parse(row.metadata || '{}'),
-        token_estimate: row.token_estimate,
-        created_at: row.created_at,
-      });
-
-      totalTokens += row.token_estimate;
+      results.push(this.mapRow(row));
+      totalTokens += tokenEstimate;
     }
 
     return results;
@@ -416,31 +424,8 @@ export class SQLiteStorage implements ContextStorage {
     }
 
     const stmt = this.db.prepare(sql);
-    const rows = stmt.all(...params) as Array<{
-      id: number;
-      session_id: string;
-      project: string;
-      package: string | null;
-      tool_name: string;
-      summary: string;
-      files_touched: string;
-      metadata: string;
-      token_estimate: number;
-      created_at: string;
-    }>;
-
-    return rows.map((row) => ({
-      id: row.id,
-      session_id: row.session_id,
-      project: row.project,
-      package: row.package || undefined,
-      tool_name: row.tool_name,
-      summary: row.summary,
-      files_touched: JSON.parse(row.files_touched || '[]'),
-      metadata: JSON.parse(row.metadata || '{}'),
-      token_estimate: row.token_estimate,
-      created_at: row.created_at,
-    }));
+    const rows = stmt.all(...params) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
   }
 
   async getStats(project?: string): Promise<Stats> {
@@ -552,6 +537,53 @@ export class SQLiteStorage implements ContextStorage {
         : 0;
     const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET);
 
+    // Importance distribution
+    const importanceSql = project
+      ? `
+        SELECT importance, COUNT(*) as cnt
+        FROM observations
+        WHERE project LIKE ? || '%'
+        GROUP BY importance
+      `
+      : `
+        SELECT importance, COUNT(*) as cnt
+        FROM observations
+        GROUP BY importance
+      `;
+
+    const importanceRows = this.db.prepare(importanceSql).all(
+      ...(project ? [project] : [])
+    ) as Array<{ importance: string | null; cnt: number }>;
+
+    const importanceCounts = { high: 0, medium: 0, low: 0 };
+    for (const row of importanceRows) {
+      const level = (row.importance || 'medium') as keyof typeof importanceCounts;
+      if (level in importanceCounts) {
+        importanceCounts[level] = row.cnt;
+      }
+    }
+
+    // Compaction stats
+    const compactedSql = project
+      ? `
+        SELECT
+          COUNT(*) as compacted_count,
+          COALESCE(SUM(json_extract(metadata, '$.compacted_from')), 0) as original_count
+        FROM observations
+        WHERE project LIKE ? || '%' AND is_compacted = 1
+      `
+      : `
+        SELECT
+          COUNT(*) as compacted_count,
+          COALESCE(SUM(json_extract(metadata, '$.compacted_from')), 0) as original_count
+        FROM observations
+        WHERE is_compacted = 1
+      `;
+
+    const compactedRow = this.db.prepare(compactedSql).get(
+      ...(project ? [project] : [])
+    ) as { compacted_count: number; original_count: number } | undefined;
+
     return {
       total_observations: baseRow.total_observations,
       total_sessions: sessionRow.count,
@@ -563,6 +595,9 @@ export class SQLiteStorage implements ContextStorage {
       tokens_by_tool: tokensByTool,
       token_budget: TOKEN_BUDGET,
       typical_injection_tokens: typicalInjection,
+      importance_counts: importanceCounts,
+      compacted_count: compactedRow?.compacted_count || 0,
+      compacted_original_count: compactedRow?.original_count || 0,
     };
   }
 
@@ -624,7 +659,12 @@ export class SQLiteStorage implements ContextStorage {
     }));
   }
 
-  async vacuum(olderThanDays?: number): Promise<{ observations: number; sessions: number }> {
+  async vacuum(olderThanDays?: number): Promise<{
+    observations: number;
+    sessions: number;
+    compacted: number;
+    compacted_originals: number;
+  }> {
     let deletedObservations = 0;
 
     if (olderThanDays) {
@@ -641,6 +681,9 @@ export class SQLiteStorage implements ContextStorage {
       deletedObservations = result.changes;
     }
 
+    // Run compaction on observations older than 7 days
+    const compactionResult = await this.compactObservations(7);
+
     // Clean up orphaned sessions (no observations AND no prompts)
     const orphanStmt = this.db.prepare(`
       DELETE FROM sessions
@@ -654,7 +697,12 @@ export class SQLiteStorage implements ContextStorage {
     this.db.exec('ANALYZE');
     this.db.exec('VACUUM');
 
-    return { observations: deletedObservations, sessions: deletedSessions };
+    return {
+      observations: deletedObservations,
+      sessions: deletedSessions,
+      compacted: compactionResult.compacted,
+      compacted_originals: compactionResult.originals,
+    };
   }
 
   async saveUserPrompt(prompt: Omit<UserPrompt, 'id'>): Promise<void> {
@@ -820,31 +868,8 @@ export class SQLiteStorage implements ContextStorage {
       ORDER BY created_at ASC
     `);
 
-    const rows = stmt.all(sessionId) as Array<{
-      id: number;
-      session_id: string;
-      project: string;
-      package: string | null;
-      tool_name: string;
-      summary: string;
-      files_touched: string;
-      metadata: string;
-      token_estimate: number;
-      created_at: string;
-    }>;
-
-    return rows.map((row) => ({
-      id: row.id,
-      session_id: row.session_id,
-      project: row.project,
-      package: row.package || undefined,
-      tool_name: row.tool_name,
-      summary: row.summary,
-      files_touched: JSON.parse(row.files_touched || '[]'),
-      metadata: JSON.parse(row.metadata || '{}'),
-      token_estimate: row.token_estimate,
-      created_at: row.created_at,
-    }));
+    const rows = stmt.all(sessionId) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
   }
 
   async getSessionPrompts(sessionId: string): Promise<UserPrompt[]> {
@@ -915,6 +940,111 @@ export class SQLiteStorage implements ContextStorage {
     const stmt = this.db.prepare(sql);
     const result = stmt.get(...params) as { count: number };
     return result.count;
+  }
+
+  async getRelevantCandidates(project: string, limit: number = 200): Promise<Observation[]> {
+    // Pre-filter low-importance at SQL level, fetch larger candidate pool
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? AND importance != 'low'
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT ?
+    `);
+
+    const rows = stmt.all(project + '%', limit) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
+  }
+
+  async compactObservations(olderThanDays: number = 7): Promise<{ compacted: number; originals: number }> {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
+    const cutoffISO = cutoffDate.toISOString();
+
+    // Find groups of 3+ observations with same session + tool, older than cutoff
+    // Never compact high-importance or already-compacted observations
+    const groups = this.db.prepare(`
+      SELECT session_id, tool_name, COUNT(*) as cnt,
+             GROUP_CONCAT(id) as ids,
+             GROUP_CONCAT(REPLACE(files_touched, ',', ';'), '|') as all_files,
+             MIN(created_at) as earliest,
+             MAX(created_at) as latest,
+             SUM(token_estimate) as total_tokens,
+             project
+      FROM observations
+      WHERE created_at < ?
+        AND importance != 'high'
+        AND is_compacted = 0
+      GROUP BY session_id, tool_name
+      HAVING COUNT(*) >= 3
+    `).all(cutoffISO) as Array<{
+      session_id: string;
+      tool_name: string;
+      cnt: number;
+      ids: string;
+      all_files: string;
+      earliest: string;
+      latest: string;
+      total_tokens: number;
+      project: string;
+    }>;
+
+    let compactedCount = 0;
+    let originalsRemoved = 0;
+
+    const insertCompacted = this.db.prepare(`
+      INSERT INTO observations (
+        session_id, project, tool_name, summary,
+        files_touched, metadata, token_estimate,
+        importance, importance_score, is_compacted, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'medium', 0.5, 1, ?)
+    `);
+
+    const deleteOriginals = this.db.prepare(`
+      DELETE FROM observations WHERE id IN (SELECT value FROM json_each(?))
+    `);
+
+    const compact = this.db.transaction(() => {
+      for (const group of groups) {
+        // Parse all files from the group
+        const fileEntries = group.all_files
+          .split('|')
+          .flatMap(f => {
+            try { return JSON.parse(f); }
+            catch { return []; }
+          })
+          .filter((f: string) => f && f.length > 0);
+        const uniqueFiles = [...new Set(fileEntries)].slice(0, 10); // Cap at 10
+
+        // Build compact summary
+        const summary = `${group.tool_name} x${group.cnt}: ${uniqueFiles.join(', ') || 'various'}`;
+
+        // Token estimate: ~15 tokens for the compact summary
+        const tokenEstimate = Math.max(15, Math.ceil(summary.length / 4));
+
+        // Insert compacted observation
+        insertCompacted.run(
+          group.session_id,
+          group.project,
+          group.tool_name,
+          summary,
+          JSON.stringify(uniqueFiles),
+          JSON.stringify({ compacted_from: group.cnt, original_tokens: group.total_tokens }),
+          tokenEstimate,
+          group.earliest
+        );
+
+        // Delete originals
+        const idList = group.ids.split(',').map(Number);
+        deleteOriginals.run(JSON.stringify(idList));
+
+        compactedCount++;
+        originalsRemoved += group.cnt;
+      }
+    });
+
+    compact();
+
+    return { compacted: compactedCount, originals: originalsRemoved };
   }
 
   close(): void {

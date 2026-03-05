@@ -146,6 +146,28 @@ var SQLiteStorage = class {
         );
       END;
     `);
+    this.migrateAddImportanceColumns();
+  }
+  /**
+   * Add importance and compaction columns if they don't exist.
+   * Uses pragma table_info to check column existence safely.
+   */
+  migrateAddImportanceColumns() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("importance")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN importance TEXT DEFAULT 'medium'`);
+    }
+    if (!columnNames.has("importance_score")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN importance_score REAL DEFAULT 0.5`);
+    }
+    if (!columnNames.has("is_compacted")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN is_compacted INTEGER DEFAULT 0`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_project_score
+      ON observations(project, importance_score DESC, created_at DESC)
+    `);
   }
   /**
    * Normalize summary text for dedup comparison.
@@ -164,6 +186,26 @@ var SQLiteStorage = class {
       return summary.substring(0, 20);
     }
     return summary.substring(0, 60);
+  }
+  /**
+   * Map a database row to an Observation object
+   */
+  mapRow(row) {
+    return {
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      package: row.package || void 0,
+      tool_name: row.tool_name,
+      summary: row.summary,
+      files_touched: JSON.parse(row.files_touched || "[]"),
+      metadata: JSON.parse(row.metadata || "{}"),
+      token_estimate: row.token_estimate,
+      importance: row.importance || "medium",
+      importance_score: row.importance_score ?? 0.5,
+      is_compacted: row.is_compacted === 1,
+      created_at: row.created_at
+    };
   }
   async save(observation) {
     const summaryPrefix = this.normalizeSummaryForDedup(observation.summary, observation.tool_name);
@@ -209,8 +251,9 @@ var SQLiteStorage = class {
     const stmt = this.db.prepare(`
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
-        files_touched, metadata, token_estimate, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        files_touched, metadata, token_estimate,
+        importance, importance_score, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       observation.session_id,
@@ -221,6 +264,8 @@ var SQLiteStorage = class {
       JSON.stringify(observation.files_touched),
       JSON.stringify(observation.metadata),
       observation.token_estimate,
+      observation.importance || "medium",
+      observation.importance_score ?? 0.5,
       observation.created_at
     );
   }
@@ -232,18 +277,7 @@ var SQLiteStorage = class {
       LIMIT ?
     `);
     const rows = stmt.all(project + "%", limit);
-    return rows.map((row) => ({
-      id: row.id,
-      session_id: row.session_id,
-      project: row.project,
-      package: row.package || void 0,
-      tool_name: row.tool_name,
-      summary: row.summary,
-      files_touched: JSON.parse(row.files_touched || "[]"),
-      metadata: JSON.parse(row.metadata || "{}"),
-      token_estimate: row.token_estimate,
-      created_at: row.created_at
-    }));
+    return rows.map((row) => this.mapRow(row));
   }
   async getWithinBudget(project, tokenBudget) {
     const effectiveBudget = Math.floor(tokenBudget * 0.8);
@@ -256,22 +290,12 @@ var SQLiteStorage = class {
     const results = [];
     let totalTokens = 0;
     for (const row of rows) {
-      if (totalTokens + row.token_estimate > effectiveBudget) {
+      const tokenEstimate = row.token_estimate;
+      if (totalTokens + tokenEstimate > effectiveBudget) {
         break;
       }
-      results.push({
-        id: row.id,
-        session_id: row.session_id,
-        project: row.project,
-        package: row.package || void 0,
-        tool_name: row.tool_name,
-        summary: row.summary,
-        files_touched: JSON.parse(row.files_touched || "[]"),
-        metadata: JSON.parse(row.metadata || "{}"),
-        token_estimate: row.token_estimate,
-        created_at: row.created_at
-      });
-      totalTokens += row.token_estimate;
+      results.push(this.mapRow(row));
+      totalTokens += tokenEstimate;
     }
     return results;
   }
@@ -299,18 +323,7 @@ var SQLiteStorage = class {
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
-    return rows.map((row) => ({
-      id: row.id,
-      session_id: row.session_id,
-      project: row.project,
-      package: row.package || void 0,
-      tool_name: row.tool_name,
-      summary: row.summary,
-      files_touched: JSON.parse(row.files_touched || "[]"),
-      metadata: JSON.parse(row.metadata || "{}"),
-      token_estimate: row.token_estimate,
-      created_at: row.created_at
-    }));
+    return rows.map((row) => this.mapRow(row));
   }
   async getStats(project) {
     const TOKEN_BUDGET = parseInt(
@@ -383,6 +396,42 @@ var SQLiteStorage = class {
       recentRows.reduce((sum, r) => sum + r.session_tokens, 0) / recentRows.length
     ) : 0;
     const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET);
+    const importanceSql = project ? `
+        SELECT importance, COUNT(*) as cnt
+        FROM observations
+        WHERE project LIKE ? || '%'
+        GROUP BY importance
+      ` : `
+        SELECT importance, COUNT(*) as cnt
+        FROM observations
+        GROUP BY importance
+      `;
+    const importanceRows = this.db.prepare(importanceSql).all(
+      ...project ? [project] : []
+    );
+    const importanceCounts = { high: 0, medium: 0, low: 0 };
+    for (const row of importanceRows) {
+      const level = row.importance || "medium";
+      if (level in importanceCounts) {
+        importanceCounts[level] = row.cnt;
+      }
+    }
+    const compactedSql = project ? `
+        SELECT
+          COUNT(*) as compacted_count,
+          COALESCE(SUM(json_extract(metadata, '$.compacted_from')), 0) as original_count
+        FROM observations
+        WHERE project LIKE ? || '%' AND is_compacted = 1
+      ` : `
+        SELECT
+          COUNT(*) as compacted_count,
+          COALESCE(SUM(json_extract(metadata, '$.compacted_from')), 0) as original_count
+        FROM observations
+        WHERE is_compacted = 1
+      `;
+    const compactedRow = this.db.prepare(compactedSql).get(
+      ...project ? [project] : []
+    );
     return {
       total_observations: baseRow.total_observations,
       total_sessions: sessionRow.count,
@@ -393,7 +442,10 @@ var SQLiteStorage = class {
       avg_tokens_per_session: avgTokensPerSession,
       tokens_by_tool: tokensByTool,
       token_budget: TOKEN_BUDGET,
-      typical_injection_tokens: typicalInjection
+      typical_injection_tokens: typicalInjection,
+      importance_counts: importanceCounts,
+      compacted_count: compactedRow?.compacted_count || 0,
+      compacted_original_count: compactedRow?.original_count || 0
     };
   }
   async createSession(sessionId, project) {
@@ -448,6 +500,7 @@ var SQLiteStorage = class {
       const result = stmt.run(cutoffISO);
       deletedObservations = result.changes;
     }
+    const compactionResult = await this.compactObservations(7);
     const orphanStmt = this.db.prepare(`
       DELETE FROM sessions
       WHERE id NOT IN (SELECT DISTINCT session_id FROM observations)
@@ -457,7 +510,12 @@ var SQLiteStorage = class {
     const deletedSessions = orphanResult.changes;
     this.db.exec("ANALYZE");
     this.db.exec("VACUUM");
-    return { observations: deletedObservations, sessions: deletedSessions };
+    return {
+      observations: deletedObservations,
+      sessions: deletedSessions,
+      compacted: compactionResult.compacted,
+      compacted_originals: compactionResult.originals
+    };
   }
   async saveUserPrompt(prompt) {
     const stmt = this.db.prepare(`
@@ -581,18 +639,7 @@ var SQLiteStorage = class {
       ORDER BY created_at ASC
     `);
     const rows = stmt.all(sessionId);
-    return rows.map((row) => ({
-      id: row.id,
-      session_id: row.session_id,
-      project: row.project,
-      package: row.package || void 0,
-      tool_name: row.tool_name,
-      summary: row.summary,
-      files_touched: JSON.parse(row.files_touched || "[]"),
-      metadata: JSON.parse(row.metadata || "{}"),
-      token_estimate: row.token_estimate,
-      created_at: row.created_at
-    }));
+    return rows.map((row) => this.mapRow(row));
   }
   async getSessionPrompts(sessionId) {
     const stmt = this.db.prepare(`
@@ -648,6 +695,78 @@ var SQLiteStorage = class {
     const result = stmt.get(...params);
     return result.count;
   }
+  async getRelevantCandidates(project, limit = 200) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? AND importance != 'low'
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(project + "%", limit);
+    return rows.map((row) => this.mapRow(row));
+  }
+  async compactObservations(olderThanDays = 7) {
+    const cutoffDate = /* @__PURE__ */ new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
+    const cutoffISO = cutoffDate.toISOString();
+    const groups = this.db.prepare(`
+      SELECT session_id, tool_name, COUNT(*) as cnt,
+             GROUP_CONCAT(id) as ids,
+             GROUP_CONCAT(REPLACE(files_touched, ',', ';'), '|') as all_files,
+             MIN(created_at) as earliest,
+             MAX(created_at) as latest,
+             SUM(token_estimate) as total_tokens,
+             project
+      FROM observations
+      WHERE created_at < ?
+        AND importance != 'high'
+        AND is_compacted = 0
+      GROUP BY session_id, tool_name
+      HAVING COUNT(*) >= 3
+    `).all(cutoffISO);
+    let compactedCount = 0;
+    let originalsRemoved = 0;
+    const insertCompacted = this.db.prepare(`
+      INSERT INTO observations (
+        session_id, project, tool_name, summary,
+        files_touched, metadata, token_estimate,
+        importance, importance_score, is_compacted, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'medium', 0.5, 1, ?)
+    `);
+    const deleteOriginals = this.db.prepare(`
+      DELETE FROM observations WHERE id IN (SELECT value FROM json_each(?))
+    `);
+    const compact = this.db.transaction(() => {
+      for (const group of groups) {
+        const fileEntries = group.all_files.split("|").flatMap((f) => {
+          try {
+            return JSON.parse(f);
+          } catch {
+            return [];
+          }
+        }).filter((f) => f && f.length > 0);
+        const uniqueFiles = [...new Set(fileEntries)].slice(0, 10);
+        const summary = `${group.tool_name} x${group.cnt}: ${uniqueFiles.join(", ") || "various"}`;
+        const tokenEstimate = Math.max(15, Math.ceil(summary.length / 4));
+        insertCompacted.run(
+          group.session_id,
+          group.project,
+          group.tool_name,
+          summary,
+          JSON.stringify(uniqueFiles),
+          JSON.stringify({ compacted_from: group.cnt, original_tokens: group.total_tokens }),
+          tokenEstimate,
+          group.earliest
+        );
+        const idList = group.ids.split(",").map(Number);
+        deleteOriginals.run(JSON.stringify(idList));
+        compactedCount++;
+        originalsRemoved += group.cnt;
+      }
+    });
+    compact();
+    return { compacted: compactedCount, originals: originalsRemoved };
+  }
   close() {
     this.db.close();
   }
@@ -666,8 +785,6 @@ var ALLOWED_PROJECT_ROOTS = [
   path2.join(homedir2(), "code"),
   path2.join(homedir2(), "Workspace"),
   path2.join(homedir2(), "workspace"),
-  path2.join(homedir2(), "Obsidian"),
-  // Obsidian vaults
   path2.join(homedir2(), "Documents"),
   // Common location
   homedir2()
@@ -785,11 +902,72 @@ function shouldCaptureTool(toolName, toolInput) {
       // Which commands
       /^type\s+/,
       // Type commands
-      /^find\s+/
+      /^find\s+/,
       // Find commands (verbose output)
+      // Exploratory/read-only commands with low cross-session value
+      /^cat\s+/,
+      // cat file reads
+      /^head\s+/,
+      // head file reads
+      /^tail\s+/,
+      // tail file reads
+      /^wc\s+/,
+      // Word/line count
+      /^file\s+/,
+      // File type detection
+      /^stat\s+/,
+      // File stats
+      /^diff\s+/,
+      // File diffs (exploratory)
+      /^git\s+stash\s+list/,
+      // Git stash listing
+      /^git\s+branch\s*($|\s+-[^dD])/,
+      // Git branch listing (not delete)
+      /^docker\s+(ps|images)\b/,
+      // Docker listing commands
+      /^kubectl\s+get\b/
+      // Kubernetes listing commands
     ];
     for (const pattern of SKIP_BASH_PATTERNS) {
       if (pattern.test(command)) {
+        return false;
+      }
+    }
+  }
+  if (toolName === "Read" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const filePath = typeof input.file_path === "string" ? input.file_path : "";
+    const SKIP_READ_PATTERNS = [
+      /\/node_modules\//,
+      // Vendored dependencies
+      /\/\.git\//,
+      // Git internals
+      /\/(dist|build|out|\.next)\//,
+      // Build output directories
+      /\/package-lock\.json$/,
+      // npm lock file
+      /\/yarn\.lock$/,
+      // Yarn lock file
+      /\/pnpm-lock\.yaml$/
+      // pnpm lock file
+    ];
+    for (const pattern of SKIP_READ_PATTERNS) {
+      if (pattern.test(filePath)) {
+        return false;
+      }
+    }
+  }
+  if (toolName === "Glob" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const pattern = typeof input.pattern === "string" ? input.pattern : "";
+    const SKIP_GLOB_PATTERNS = [
+      /^\*$/,
+      // Just "*" - matches everything
+      /^\*\.\*$/
+      // "*.*" - matches all files with extensions
+    ];
+    for (const p of SKIP_GLOB_PATTERNS) {
+      if (p.test(pattern)) {
         return false;
       }
     }
@@ -1107,6 +1285,115 @@ function summarizeTool(toolName, toolInput, toolResponse) {
   }
   return summary;
 }
+var CONFIG_FILE_PATTERNS = [
+  /package\.json$/,
+  /tsconfig.*\.json$/,
+  /docker-compose\.ya?ml$/,
+  /Dockerfile$/,
+  /\.env(\.\w+)?$/,
+  /webpack\.config\./,
+  /vite\.config\./,
+  /eslint/,
+  /prettier/,
+  /Makefile$/,
+  /Cargo\.toml$/,
+  /go\.mod$/,
+  /pyproject\.toml$/,
+  /requirements.*\.txt$/
+];
+var TEST_FILE_PATTERNS = [
+  /\.test\./,
+  /\.spec\./,
+  /__tests__\//,
+  /test\//
+];
+var LOCK_FILE_PATTERNS = [
+  /package-lock\.json$/,
+  /yarn\.lock$/,
+  /pnpm-lock\.yaml$/,
+  /Cargo\.lock$/,
+  /poetry\.lock$/
+];
+function calculateImportance(toolName, toolInput, toolResponse, filesTouched) {
+  let score;
+  const input = toolInput && typeof toolInput === "object" ? toolInput : {};
+  const command = typeof input.command === "string" ? input.command : "";
+  switch (toolName) {
+    case "Edit":
+    case "Write":
+      score = 0.8;
+      break;
+    case "Bash": {
+      if (/^git\s+(commit|merge|rebase|cherry-pick)\b/.test(command)) {
+        score = 0.9;
+      } else if (/\b(npm\s+(run\s+)?(build|test)|cargo\s+build|make\s+|pytest|go\s+build)\b/.test(command)) {
+        score = 0.7;
+      } else if (/\b(npm\s+install|yarn\s+add|pip\s+install|cargo\s+add|go\s+get)\b/.test(command)) {
+        score = 0.75;
+      } else if (/^git\s+(status|log|diff|show)\b/.test(command)) {
+        score = 0.35;
+      } else if (/^(cat|head|tail)\s+/.test(command)) {
+        score = 0.2;
+      } else {
+        score = 0.5;
+      }
+      break;
+    }
+    case "Read":
+      score = 0.3;
+      break;
+    case "Grep":
+      score = 0.25;
+      break;
+    case "Glob":
+      score = 0.2;
+      break;
+    case "NotebookEdit":
+      score = 0.75;
+      break;
+    default:
+      score = 0.5;
+  }
+  if (toolResponse) {
+    const responseLower = toolResponse.toLowerCase();
+    if (responseLower.includes("error") || responseLower.includes("failed") || responseLower.includes("exception") || responseLower.includes("fatal")) {
+      score += 0.25;
+    }
+  }
+  const allFiles = [
+    ...filesTouched || [],
+    typeof input.file_path === "string" ? input.file_path : "",
+    typeof input.path === "string" ? input.path : ""
+  ].filter(Boolean);
+  for (const file of allFiles) {
+    if (CONFIG_FILE_PATTERNS.some((p) => p.test(file))) {
+      score += 0.15;
+      break;
+    }
+  }
+  for (const file of allFiles) {
+    if (TEST_FILE_PATTERNS.some((p) => p.test(file))) {
+      score += 0.1;
+      break;
+    }
+  }
+  for (const file of allFiles) {
+    if (LOCK_FILE_PATTERNS.some((p) => p.test(file))) {
+      score -= 0.3;
+      break;
+    }
+  }
+  score = Math.max(0, Math.min(1, score));
+  let importance;
+  if (score >= 0.65) {
+    importance = "high";
+  } else if (score >= 0.35) {
+    importance = "medium";
+  } else {
+    importance = "low";
+  }
+  return { importance, importance_score: Math.round(score * 100) / 100 };
+}
 function processToolCapture(capture) {
   const sanitizedResponse = capture.tool_response ? sanitizeContent(capture.tool_response) : "";
   const extracted = extractOutput(
@@ -1127,6 +1414,12 @@ function processToolCapture(capture) {
   const contentToEstimate = `${summary}
 ${extracted.stored_output}`;
   const tokenEstimate = estimateTokens(contentToEstimate);
+  const { importance, importance_score } = calculateImportance(
+    capture.tool_name,
+    capture.tool_input,
+    sanitizedResponse,
+    filesTouched
+  );
   const metadata = {
     tool_input: capture.tool_input,
     stored_output: extracted.stored_output,
@@ -1140,6 +1433,8 @@ ${extracted.stored_output}`;
     files_touched: filesTouched,
     metadata,
     token_estimate: tokenEstimate,
+    importance,
+    importance_score,
     created_at: (/* @__PURE__ */ new Date()).toISOString()
   };
 }

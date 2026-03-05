@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: December 13, 2025
+**Last Updated**: March 4, 2026
 
 ---
 
@@ -100,9 +100,9 @@ Direct SQLite access - no background HTTP service required.
 | Component | Technology | Rationale |
 |-----------|------------|-----------|
 | Language | TypeScript | Type safety, Claude Code ecosystem |
-| Database | SQLite + FTS5 | Local-only, fast FTS, no dependencies |
+| Database | SQLite + FTS5 | No daemon needed — hooks open/query/close in <5ms. FTS5 gives full-text search free. WAL mode handles concurrent hook access. See `docs/ARCHITECTURE.md` "Why SQLite?" for full rationale vs HTTP services and vector DBs. |
 | Build | esbuild | Fast bundling, ESM output |
-| Native Module | better-sqlite3 | Synchronous SQLite access |
+| Native Module | better-sqlite3 | Synchronous API ideal for hooks with tight timeouts (5-10s) |
 
 ---
 
@@ -196,10 +196,24 @@ claude-context-manager/
 - No AI extraction (unlike claude-mem)
 - Trade-off: Less intelligent, but simpler and faster
 
-### 5. Token-Aware Context Injection
-- Track token estimates for stored observations
-- Inject context within configurable budget (default: 4000 tokens)
-- Most recent observations prioritized
+### 5. Importance Scoring at Capture Time
+- Every observation gets an importance level (high/medium/low) and numeric score (0.0-1.0)
+- Base scores by tool type: Edit/Write (0.80), git commit (0.90), Read (0.30), Grep (0.25)
+- Adjustments: errors (+0.25), config files (+0.15), test files (+0.10), lock files (-0.30)
+- Scored at capture time (no post-hoc reprocessing needed)
+
+### 6. Relevance-Based Context Injection
+- Multi-factor scoring replaces pure recency: `importance * 0.70 + recency * 0.30 + file_overlap`
+- Recency uses 48-hour half-life decay
+- File overlap boost (+0.20) when observation touches files from recent sessions
+- Diversity cap: no single tool type can consume >60% of token budget
+- Low-importance observations excluded from injection but remain searchable
+
+### 7. Rule-Based Compaction
+- Old observations (>7 days) compressed into summaries during vacuum
+- Groups by session + tool, only compact groups of 3+
+- Never compacts high-importance observations
+- Format: `"Read x4: file1.ts, file2.ts, ..."` (~15 tokens vs ~80)
 
 ---
 

@@ -199,6 +199,25 @@ async function statsCommand(args: string[]) {
       console.log(`  ${tool}: ${tokens.toLocaleString()} (${pct}%)`);
     }
   }
+
+  // Importance distribution
+  const imp = stats.importance_counts;
+  const impTotal = imp.high + imp.medium + imp.low;
+  if (impTotal > 0) {
+    console.log('\n=== Importance Distribution ===');
+    const pctH = Math.round((imp.high / impTotal) * 100);
+    const pctM = Math.round((imp.medium / impTotal) * 100);
+    const pctL = Math.round((imp.low / impTotal) * 100);
+    console.log(`  High:   ${imp.high.toLocaleString()} (${pctH}%)`);
+    console.log(`  Medium: ${imp.medium.toLocaleString()} (${pctM}%)`);
+    console.log(`  Low:    ${imp.low.toLocaleString()} (${pctL}%)`);
+  }
+
+  // Compaction stats
+  if (stats.compacted_count > 0) {
+    console.log('\n=== Compaction ===');
+    console.log(`  Compacted: ${stats.compacted_count} observations (from ${stats.compacted_original_count} originals)`);
+  }
 }
 
 async function vacuumCommand(args: string[]) {
@@ -214,6 +233,9 @@ async function vacuumCommand(args: string[]) {
 
   if (days) {
     console.log(`Deleted ${result.observations} observations.`);
+  }
+  if (result.compacted > 0) {
+    console.log(`Compacted ${result.compacted_originals} observations into ${result.compacted} summaries.`);
   }
   if (result.sessions > 0) {
     console.log(`Cleaned up ${result.sessions} orphaned sessions.`);

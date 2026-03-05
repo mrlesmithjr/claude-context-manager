@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: December 13, 2025
+**Last Updated**: March 4, 2026
 
 ---
 
@@ -15,6 +15,28 @@ claude-context-manager is a Claude Code plugin with a direct-access architecture
 2. **Storage Layer** - Direct SQLite access via better-sqlite3
 
 No background HTTP service required - hooks access the database directly.
+
+---
+
+## Why SQLite?
+
+SQLite was chosen deliberately over alternatives like HTTP-backed services (Redis, PostgreSQL) or vector databases (ChromaDB). The key constraints are that Claude Code hooks run as short-lived Node.js scripts with tight timeouts (5-10s), and users shouldn't need to install or manage external services.
+
+| Requirement | SQLite | HTTP Service | Vector DB (ChromaDB) |
+|-------------|--------|--------------|----------------------|
+| No background daemon | Yes — open, read/write, close | No — needs persistent process | No — needs server + Python |
+| Zero install dependencies | Yes — single file on disk | No — service management | No — ChromaDB + embeddings |
+| Full-text search | FTS5 built in | Depends on backend | Native (vector similarity) |
+| Synchronous access | better-sqlite3 is sync | Async HTTP calls | Async HTTP calls |
+| Concurrent hook access | WAL mode handles this | Natural | Natural |
+| Cold start latency | <5ms (file open) | Connection overhead | Connection + model load |
+
+**Trade-offs accepted:**
+- No vector/semantic search (mitigated by FTS5 keyword search and importance scoring)
+- No AI-powered extraction (mitigated by rule-based summarization and importance classification)
+- Single-machine only (acceptable — Claude Code is a local CLI tool)
+
+**Contrast with claude-mem:** The reference project uses ChromaDB + Agent SDK HTTP service, enabling vector embeddings and AI extraction. That's more powerful but requires Python, ChromaDB, and a running daemon. SQLite trades retrieval intelligence for operational simplicity.
 
 ---
 
@@ -66,6 +88,8 @@ Claude Code plugins can register hooks for lifecycle events. We use three:
 Abstraction layer for storage operations:
 
 ```typescript
+export type ImportanceLevel = 'high' | 'medium' | 'low';
+
 export interface Observation {
   id?: number;
   project: string;
@@ -76,6 +100,9 @@ export interface Observation {
   files_touched: string[];
   metadata: Record<string, unknown>;
   token_estimate: number;
+  importance: ImportanceLevel;      // Classified at capture time
+  importance_score: number;         // 0.0 to 1.0
+  is_compacted?: boolean;           // True if this is a compacted summary
   created_at: string;
 }
 
@@ -85,6 +112,7 @@ export interface ContextStorage {
   save(obs: Observation): Promise<void>;
   getRecent(project: string, limit: number): Promise<Observation[]>;
   getWithinBudget(project: string, tokenBudget: number): Promise<Observation[]>;
+  getRelevantCandidates(project: string, limit?: number): Promise<Observation[]>;
   search(query: string, project?: string): Promise<Observation[]>;
   getStats(project?: string): Promise<Stats>;
 
@@ -107,18 +135,16 @@ export interface ContextStorage {
   countSessions(project?: string, status?: string): Promise<number>;
 
   // Maintenance
-  vacuum(olderThanDays?: number): Promise<number>;
+  vacuum(olderThanDays?: number): Promise<{ observations; sessions; compacted; compacted_originals }>;
+  compactObservations(olderThanDays?: number): Promise<{ compacted; originals }>;
   close(): void;
 }
 ```
 
-**New methods added for Web UI:**
-- `getRecentSessions()` - List sessions for browsing
-- `getSessionObservations()` / `getSessionPrompts()` - Session detail views
-- `saveUserPrompt()` / `getRecentPrompts()` / `searchPrompts()` - User prompt tracking
-- `getTimeline()` - Token usage over time for charts
-- `getProjects()` - List all projects with activity stats
-- `countObservations()` / `countSessions()` - Efficient counting for stats
+**Key methods:**
+- `getRelevantCandidates()` - Fetches up to 200 candidates (excluding low-importance) for relevance scoring
+- `compactObservations()` - Groups old observations by session + tool into compressed summaries
+- `vacuum()` - Now also triggers compaction and returns compaction stats
 
 #### SQLite Implementation (`src/storage/sqlite.ts`)
 
@@ -157,9 +183,12 @@ CREATE TABLE observations (
   package TEXT,
   tool_name TEXT NOT NULL,
   summary TEXT NOT NULL,
-  files_touched TEXT,  -- JSON array
-  metadata TEXT,       -- JSON object
+  files_touched TEXT,          -- JSON array
+  metadata TEXT,               -- JSON object
   token_estimate INTEGER DEFAULT 0,
+  importance TEXT DEFAULT 'medium',   -- 'high', 'medium', 'low'
+  importance_score REAL DEFAULT 0.5,  -- 0.0 to 1.0
+  is_compacted INTEGER DEFAULT 0,     -- 1 if compacted summary
   created_at TEXT NOT NULL,
   FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
@@ -167,6 +196,8 @@ CREATE TABLE observations (
 CREATE INDEX idx_observations_project_created
   ON observations(project, created_at DESC);
 CREATE INDEX idx_observations_session ON observations(session_id);
+CREATE INDEX idx_observations_project_score
+  ON observations(project, importance_score DESC, created_at DESC);
 
 -- FTS5 virtual table for full-text search
 CREATE VIRTUAL TABLE observations_fts USING fts5(
@@ -201,32 +232,38 @@ END;
 Claude Code executes tool
          |
          v
-+---------------------+
-| PostToolUse Hook    |
-| (capture-tool.ts)   |
-+---------------------+
-| 1. Parse stdin JSON |
-| 2. Validate input   |
-| 3. Check tool type  |
-+---------------------+
-         |
-         v (direct SQLite)
-+---------------------+
-| SQLiteStorage       |
-+---------------------+
-| 1. Process input    |
-| 2. Generate summary |
-| 3. Estimate tokens  |
-| 4. INSERT to DB     |
-+---------------------+
++-------------------------+
+| PostToolUse Hook        |
+| (capture-tool.ts)       |
++-------------------------+
+| 1. Parse stdin JSON     |
+| 2. Validate input       |
+| 3. Check skip filters   |
++-------------------------+
          |
          v
-+---------------------+
-| SQLite Database     |
-+---------------------+
-| INSERT observation  |
-| FTS trigger fires   |
-+---------------------+
++-------------------------+
+| Capture Processor       |
+| (processor.ts)          |
++-------------------------+
+| 1. Sanitize response    |
+| 2. Generate summary     |
+| 3. Extract files        |
+| 4. Estimate tokens      |
+| 5. Score importance     |
+|    (calculateImportance)|
++-------------------------+
+         |
+         v (direct SQLite)
++-------------------------+
+| SQLiteStorage           |
++-------------------------+
+| 1. Deduplication check  |
+| 2. INSERT with          |
+|    importance +          |
+|    importance_score      |
+| 3. FTS trigger fires    |
++-------------------------+
 ```
 
 ### Injection Flow (SessionStart)
@@ -235,39 +272,39 @@ Claude Code executes tool
 New Claude Code session
          |
          v
-+---------------------+
-| SessionStart Hook   |
-| (context-inject.ts) |
-+---------------------+
-| 1. Parse stdin JSON |
-| 2. Validate project |
-+---------------------+
++-------------------------------+
+| SessionStart Hook             |
+| (context-inject.ts)           |
++-------------------------------+
+| 1. Parse stdin JSON           |
+| 2. Validate project           |
+| 3. Build working file set     |
+|    (from last 50 observations)|
++-------------------------------+
          |
          v (direct SQLite)
-+---------------------+
-| SQLiteStorage       |
-+---------------------+
-| 1. Query by project |
-| 2. Apply token budg |
-| 3. Build context    |
-+---------------------+
++-------------------------------+
+| SQLiteStorage                 |
++-------------------------------+
+| getRelevantCandidates()       |
+|   WHERE importance != 'low'   |
+|   ORDER BY score DESC         |
+|   LIMIT 200                   |
++-------------------------------+
          |
          v
-+---------------------+
-| SQLite Database     |
-+---------------------+
-| SELECT observations |
-| ORDER BY created_at |
-| LIMIT by tokens     |
-+---------------------+
-         |
-         v
-+---------------------+
-| Context Builder     |
-+---------------------+
-| Format as markdown  |
-| Wrap in JSON resp   |
-+---------------------+
++-------------------------------+
+| Context Builder               |
+| selectRelevantWithinBudget()  |
++-------------------------------+
+| Score each candidate:         |
+|   importance_score * 0.70     |
+|   + recency_decay  * 0.30    |
+|   + file_overlap_boost (0.20) |
+|   + compacted_bonus   (0.10) |
+| Diversity cap: 60% per tool   |
+| Sort final set chronologically|
++-------------------------------+
          |
          v (stdout)
 { hookSpecificOutput: { additionalContext: "..." } }
@@ -296,6 +333,72 @@ Different tools produce different observation summaries:
 Simple heuristic: `tokens = characters / 4`
 
 This is sufficient for budgeting purposes. More accurate estimation could use tiktoken if needed.
+
+### Capture Filtering
+
+Low-value tool interactions are filtered at the gate before reaching the database. Filtering is implemented in `src/utils/validation.ts` via `shouldCaptureTool()`.
+
+**Skipped entirely:**
+- Meta/orchestration tools: Task*, AgentOutputTool, Skill, EnterPlanMode, etc.
+- Bash: `cd`, `pwd`, `ls`, `echo`, `clear`, `history`, `which`, `type`, `find`
+- Bash (read-only): `cat`, `head`, `tail`, `wc`, `file`, `stat`, `diff`
+- Bash (listing): `git stash list`, `git branch` (non-delete), `docker ps/images`, `kubectl get`
+- Read: files in `node_modules/`, `.git/`, `dist/build/out/.next/`, lock files
+- Glob: overly broad patterns (`*`, `*.*`)
+- Edit: agent worklog/summary files
+
+### Importance Scoring
+
+Every captured observation is classified with an importance level and numeric score (0.0-1.0) at capture time by `calculateImportance()` in `src/capture/processor.ts`.
+
+**Base scores by tool/pattern:**
+
+| Tool/Pattern | Score | Rationale |
+|---|---|---|
+| Git commit/merge/rebase | 0.90 | Version control milestones |
+| Edit/Write | 0.80 | File changes are high signal |
+| npm install, pip install | 0.75 | Dependency changes |
+| npm build/test, cargo build | 0.70 | Build/test results |
+| Bash (general) | 0.50 | Depends on command |
+| Git status/log/diff | 0.35 | Exploratory |
+| Read | 0.30 | Usually exploration |
+| Grep | 0.25 | Search/exploration |
+| Glob | 0.20 | File listing |
+
+**Adjustments:**
+- Error/failure in response: +0.25
+- Config files (package.json, tsconfig, Dockerfile, etc.): +0.15
+- Test files: +0.10
+- Lock files / generated code: -0.30
+
+**Levels:** score >= 0.65 = high, >= 0.35 = medium, < 0.35 = low
+
+### Relevance-Based Injection
+
+Context injection uses multi-factor scoring instead of pure recency. Implemented in `src/inject/builder.ts` via `selectRelevantWithinBudget()`.
+
+**Scoring formula:**
+```
+final_score = (importance_score * 0.70) + (recency_multiplier * 0.30) + file_overlap_boost
+```
+
+- **Recency decay**: 48-hour half-life (`Math.pow(0.5, ageHours / 48)`)
+- **File overlap boost**: +0.20 if observation touches files seen in recent sessions
+- **Compacted summary bonus**: +0.10 (token-efficient, represents multiple actions)
+- **Diversity cap**: No single tool type can consume >60% of budget
+
+The SQL pre-filter excludes `importance='low'` observations and fetches 200 candidates for scoring. Low-importance observations remain searchable via `/ctx-search` and the web dashboard.
+
+### Rule-Based Compaction
+
+Old observations (>7 days) are compressed into summaries during `vacuum()`. Implemented in `src/storage/sqlite.ts` via `compactObservations()`.
+
+**Rules:**
+- Groups observations by session + tool type
+- Only compacts groups of 3+ observations
+- Never compacts high-importance observations
+- Compacted format: `"Read x4: file1.ts, file2.ts, file3.ts, file4.ts"` (~15 tokens vs ~80)
+- Original observations are deleted after compaction
 
 ---
 
@@ -422,10 +525,12 @@ Hooks fail gracefully:
 
 ### Database Queries
 
-- Index on `project` + `created_at` for common query
+- Index on `project` + `created_at` for recency queries
+- Index on `project` + `importance_score` + `created_at` for relevance queries
 - FTS5 for keyword search (sub-100ms typical)
-- LIMIT clauses to bound result size
-- Token budget limits total results
+- Pre-filter `importance != 'low'` at SQL level to reduce candidate pool
+- LIMIT 200 candidates for in-memory relevance scoring
+- Token budget limits final selected results
 
 ### Memory Usage
 
@@ -488,15 +593,15 @@ Potential enhancements for future consideration. Prioritized by estimated value.
 | Feature | Description | Inspiration | Priority |
 |---------|-------------|-------------|----------|
 | **Pinned Context** | Manual notes that ALWAYS inject (e.g., "Using repository pattern") | claude-mem | |
-| **Summary Compression** | Abbreviate verbose summaries: `Read:file.py` vs `Read file.py (Python)` | SuperClaude | |
-| **Progressive Disclosure** | Inject less by default, load more via `/ctx-search` on demand | SuperClaude | |
+| ~~**Summary Compression**~~ | ~~Abbreviate verbose summaries~~ **IMPLEMENTED** as rule-based compaction: `"Read x4: file1.ts, file2.ts, ..."` | SuperClaude | |
+| ~~**Progressive Disclosure**~~ | ~~Inject less by default~~ **PARTIALLY IMPLEMENTED** via importance filtering: low-importance observations excluded from injection but still searchable | SuperClaude | |
 | **AI-Powered Summarization** | Use Claude to generate better observation summaries | claude-mem | |
 
 ### Medium Value
 
 | Feature | Description | Inspiration |
 |---------|-------------|-------------|
-| **Confidence Scoring** | Track pattern usefulness (0.0→1.0); promote validated patterns to "golden rules" | ELF |
+| ~~**Confidence Scoring**~~ | ~~Track pattern usefulness (0.0→1.0)~~ **IMPLEMENTED** as importance scoring (0.0-1.0 scale with high/medium/low levels) | ELF |
 | **Outcome Tracking** | Store success/failure of actions to learn what approaches work | ELF |
 | **Pheromone Trails / Hotspots** | Track file activity to identify problem clusters ("this file is often touched during debugging") | ELF |
 | **Semantic/Vector Search** | Embeddings for conceptually similar observations | claude-mem (ChromaDB) |
@@ -524,7 +629,7 @@ Based on [SuperClaude Issue #286](https://github.com/SuperClaude-Org/SuperClaude
 Based on [artemgetmann's gist](https://gist.github.com/artemgetmann/74f28d2958b53baf50597b669d4bce43):
 
 1. **Modular Loading** - `@filename` on-demand vs inline injection
-2. **Periodic Compaction** - Summarize to `session_summary.md` every N messages
+2. ~~**Periodic Compaction**~~ - **IMPLEMENTED** as rule-based compaction during vacuum
 3. **Precise Prompting** - Guide users to specific queries
 
 ### Complementary Tools
@@ -540,4 +645,4 @@ These tools solve different problems and could work alongside context-manager:
 
 ---
 
-**Last Updated**: December 13, 2025
+**Last Updated**: March 4, 2026

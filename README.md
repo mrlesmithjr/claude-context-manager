@@ -29,21 +29,32 @@ Claude Code has built-in memory (`CLAUDE.md` files and auto-memory) for persisti
 ```
 During your session:
 +-----------------------------------------+
-| Every tool interaction is captured:     |
+| Tool interactions captured + scored:    |
 |  - Files read/written                   |
 |  - Commands run                         |
-|  - Edits made                           |
+|  - Edits made (importance: high)        |
+|  - Errors flagged (boosted +0.25)       |
+|  - Low-value tools filtered out         |
 |  - Session summary saved on exit        |
 +-----------------------------------------+
                     |
-                    v (stored in SQLite)
+                    v (stored in SQLite with importance scores)
 
-Later:
+Next session:
++-----------------------------------------+
+| Relevance-based injection:              |
+|   importance * 0.70                     |
+|   + recency  * 0.30                     |
+|   + file overlap boost                  |
+|   (not just "newest first")             |
++-----------------------------------------+
+
+Anytime:
 +-----------------------------------------+
 | Search: "authentication"                |
 | Browse: last week's sessions            |
-| Dashboard: token usage analytics        |
-| Context: auto-injected at session start |
+| Dashboard: token usage + importance     |
+| Vacuum: auto-compacts old observations  |
 +-----------------------------------------+
 ```
 
@@ -54,10 +65,14 @@ Later:
 | Feature | Description |
 |---------|-------------|
 | **Automatic Capture** | PostToolUse hook captures every tool interaction |
+| **Smart Filtering** | Skips low-value tools (cat, ls, node_modules reads, broad globs) at capture time |
+| **Importance Scoring** | Each observation scored 0.0-1.0 and classified as high/medium/low importance |
+| **Relevance-Based Injection** | Multi-factor scoring (importance + recency + file overlap) replaces simple newest-first |
+| **Auto-Compaction** | Old observations compressed into summaries during vacuum (`Read x4: file1, file2, ...`) |
 | **Full-Text Search** | SQLite FTS5 enables fast keyword search |
 | **Web Dashboard** | Browse sessions, search observations, view analytics |
 | **Hierarchical Visibility** | Parent directories see child project contexts |
-| **Token Budget** | Configurable limit on injected context size |
+| **Token Budget** | Configurable limit on injected context size with diversity caps |
 | **Privacy Tags** | `<private>` tag excludes sensitive content |
 | **Local Storage** | All data stays on your machine - no external APIs |
 | **Session Summaries** | Stop hook captures session summaries |

@@ -146,6 +146,28 @@ var SQLiteStorage = class {
         );
       END;
     `);
+    this.migrateAddImportanceColumns();
+  }
+  /**
+   * Add importance and compaction columns if they don't exist.
+   * Uses pragma table_info to check column existence safely.
+   */
+  migrateAddImportanceColumns() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("importance")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN importance TEXT DEFAULT 'medium'`);
+    }
+    if (!columnNames.has("importance_score")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN importance_score REAL DEFAULT 0.5`);
+    }
+    if (!columnNames.has("is_compacted")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN is_compacted INTEGER DEFAULT 0`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_project_score
+      ON observations(project, importance_score DESC, created_at DESC)
+    `);
   }
   /**
    * Normalize summary text for dedup comparison.
@@ -164,6 +186,26 @@ var SQLiteStorage = class {
       return summary.substring(0, 20);
     }
     return summary.substring(0, 60);
+  }
+  /**
+   * Map a database row to an Observation object
+   */
+  mapRow(row) {
+    return {
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      package: row.package || void 0,
+      tool_name: row.tool_name,
+      summary: row.summary,
+      files_touched: JSON.parse(row.files_touched || "[]"),
+      metadata: JSON.parse(row.metadata || "{}"),
+      token_estimate: row.token_estimate,
+      importance: row.importance || "medium",
+      importance_score: row.importance_score ?? 0.5,
+      is_compacted: row.is_compacted === 1,
+      created_at: row.created_at
+    };
   }
   async save(observation) {
     const summaryPrefix = this.normalizeSummaryForDedup(observation.summary, observation.tool_name);
@@ -209,8 +251,9 @@ var SQLiteStorage = class {
     const stmt = this.db.prepare(`
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
-        files_touched, metadata, token_estimate, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        files_touched, metadata, token_estimate,
+        importance, importance_score, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       observation.session_id,
@@ -221,6 +264,8 @@ var SQLiteStorage = class {
       JSON.stringify(observation.files_touched),
       JSON.stringify(observation.metadata),
       observation.token_estimate,
+      observation.importance || "medium",
+      observation.importance_score ?? 0.5,
       observation.created_at
     );
   }
@@ -232,18 +277,7 @@ var SQLiteStorage = class {
       LIMIT ?
     `);
     const rows = stmt.all(project + "%", limit);
-    return rows.map((row) => ({
-      id: row.id,
-      session_id: row.session_id,
-      project: row.project,
-      package: row.package || void 0,
-      tool_name: row.tool_name,
-      summary: row.summary,
-      files_touched: JSON.parse(row.files_touched || "[]"),
-      metadata: JSON.parse(row.metadata || "{}"),
-      token_estimate: row.token_estimate,
-      created_at: row.created_at
-    }));
+    return rows.map((row) => this.mapRow(row));
   }
   async getWithinBudget(project, tokenBudget) {
     const effectiveBudget = Math.floor(tokenBudget * 0.8);
@@ -256,22 +290,12 @@ var SQLiteStorage = class {
     const results = [];
     let totalTokens = 0;
     for (const row of rows) {
-      if (totalTokens + row.token_estimate > effectiveBudget) {
+      const tokenEstimate = row.token_estimate;
+      if (totalTokens + tokenEstimate > effectiveBudget) {
         break;
       }
-      results.push({
-        id: row.id,
-        session_id: row.session_id,
-        project: row.project,
-        package: row.package || void 0,
-        tool_name: row.tool_name,
-        summary: row.summary,
-        files_touched: JSON.parse(row.files_touched || "[]"),
-        metadata: JSON.parse(row.metadata || "{}"),
-        token_estimate: row.token_estimate,
-        created_at: row.created_at
-      });
-      totalTokens += row.token_estimate;
+      results.push(this.mapRow(row));
+      totalTokens += tokenEstimate;
     }
     return results;
   }
@@ -299,18 +323,7 @@ var SQLiteStorage = class {
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
-    return rows.map((row) => ({
-      id: row.id,
-      session_id: row.session_id,
-      project: row.project,
-      package: row.package || void 0,
-      tool_name: row.tool_name,
-      summary: row.summary,
-      files_touched: JSON.parse(row.files_touched || "[]"),
-      metadata: JSON.parse(row.metadata || "{}"),
-      token_estimate: row.token_estimate,
-      created_at: row.created_at
-    }));
+    return rows.map((row) => this.mapRow(row));
   }
   async getStats(project) {
     const TOKEN_BUDGET2 = parseInt(
@@ -383,6 +396,42 @@ var SQLiteStorage = class {
       recentRows.reduce((sum, r) => sum + r.session_tokens, 0) / recentRows.length
     ) : 0;
     const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET2);
+    const importanceSql = project ? `
+        SELECT importance, COUNT(*) as cnt
+        FROM observations
+        WHERE project LIKE ? || '%'
+        GROUP BY importance
+      ` : `
+        SELECT importance, COUNT(*) as cnt
+        FROM observations
+        GROUP BY importance
+      `;
+    const importanceRows = this.db.prepare(importanceSql).all(
+      ...project ? [project] : []
+    );
+    const importanceCounts = { high: 0, medium: 0, low: 0 };
+    for (const row of importanceRows) {
+      const level = row.importance || "medium";
+      if (level in importanceCounts) {
+        importanceCounts[level] = row.cnt;
+      }
+    }
+    const compactedSql = project ? `
+        SELECT
+          COUNT(*) as compacted_count,
+          COALESCE(SUM(json_extract(metadata, '$.compacted_from')), 0) as original_count
+        FROM observations
+        WHERE project LIKE ? || '%' AND is_compacted = 1
+      ` : `
+        SELECT
+          COUNT(*) as compacted_count,
+          COALESCE(SUM(json_extract(metadata, '$.compacted_from')), 0) as original_count
+        FROM observations
+        WHERE is_compacted = 1
+      `;
+    const compactedRow = this.db.prepare(compactedSql).get(
+      ...project ? [project] : []
+    );
     return {
       total_observations: baseRow.total_observations,
       total_sessions: sessionRow.count,
@@ -393,7 +442,10 @@ var SQLiteStorage = class {
       avg_tokens_per_session: avgTokensPerSession,
       tokens_by_tool: tokensByTool,
       token_budget: TOKEN_BUDGET2,
-      typical_injection_tokens: typicalInjection
+      typical_injection_tokens: typicalInjection,
+      importance_counts: importanceCounts,
+      compacted_count: compactedRow?.compacted_count || 0,
+      compacted_original_count: compactedRow?.original_count || 0
     };
   }
   async createSession(sessionId, project) {
@@ -448,6 +500,7 @@ var SQLiteStorage = class {
       const result = stmt.run(cutoffISO);
       deletedObservations = result.changes;
     }
+    const compactionResult = await this.compactObservations(7);
     const orphanStmt = this.db.prepare(`
       DELETE FROM sessions
       WHERE id NOT IN (SELECT DISTINCT session_id FROM observations)
@@ -457,7 +510,12 @@ var SQLiteStorage = class {
     const deletedSessions = orphanResult.changes;
     this.db.exec("ANALYZE");
     this.db.exec("VACUUM");
-    return { observations: deletedObservations, sessions: deletedSessions };
+    return {
+      observations: deletedObservations,
+      sessions: deletedSessions,
+      compacted: compactionResult.compacted,
+      compacted_originals: compactionResult.originals
+    };
   }
   async saveUserPrompt(prompt) {
     const stmt = this.db.prepare(`
@@ -581,18 +639,7 @@ var SQLiteStorage = class {
       ORDER BY created_at ASC
     `);
     const rows = stmt.all(sessionId);
-    return rows.map((row) => ({
-      id: row.id,
-      session_id: row.session_id,
-      project: row.project,
-      package: row.package || void 0,
-      tool_name: row.tool_name,
-      summary: row.summary,
-      files_touched: JSON.parse(row.files_touched || "[]"),
-      metadata: JSON.parse(row.metadata || "{}"),
-      token_estimate: row.token_estimate,
-      created_at: row.created_at
-    }));
+    return rows.map((row) => this.mapRow(row));
   }
   async getSessionPrompts(sessionId) {
     const stmt = this.db.prepare(`
@@ -648,6 +695,78 @@ var SQLiteStorage = class {
     const result = stmt.get(...params);
     return result.count;
   }
+  async getRelevantCandidates(project, limit = 200) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? AND importance != 'low'
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(project + "%", limit);
+    return rows.map((row) => this.mapRow(row));
+  }
+  async compactObservations(olderThanDays = 7) {
+    const cutoffDate = /* @__PURE__ */ new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
+    const cutoffISO = cutoffDate.toISOString();
+    const groups = this.db.prepare(`
+      SELECT session_id, tool_name, COUNT(*) as cnt,
+             GROUP_CONCAT(id) as ids,
+             GROUP_CONCAT(REPLACE(files_touched, ',', ';'), '|') as all_files,
+             MIN(created_at) as earliest,
+             MAX(created_at) as latest,
+             SUM(token_estimate) as total_tokens,
+             project
+      FROM observations
+      WHERE created_at < ?
+        AND importance != 'high'
+        AND is_compacted = 0
+      GROUP BY session_id, tool_name
+      HAVING COUNT(*) >= 3
+    `).all(cutoffISO);
+    let compactedCount = 0;
+    let originalsRemoved = 0;
+    const insertCompacted = this.db.prepare(`
+      INSERT INTO observations (
+        session_id, project, tool_name, summary,
+        files_touched, metadata, token_estimate,
+        importance, importance_score, is_compacted, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'medium', 0.5, 1, ?)
+    `);
+    const deleteOriginals = this.db.prepare(`
+      DELETE FROM observations WHERE id IN (SELECT value FROM json_each(?))
+    `);
+    const compact = this.db.transaction(() => {
+      for (const group of groups) {
+        const fileEntries = group.all_files.split("|").flatMap((f) => {
+          try {
+            return JSON.parse(f);
+          } catch {
+            return [];
+          }
+        }).filter((f) => f && f.length > 0);
+        const uniqueFiles = [...new Set(fileEntries)].slice(0, 10);
+        const summary = `${group.tool_name} x${group.cnt}: ${uniqueFiles.join(", ") || "various"}`;
+        const tokenEstimate = Math.max(15, Math.ceil(summary.length / 4));
+        insertCompacted.run(
+          group.session_id,
+          group.project,
+          group.tool_name,
+          summary,
+          JSON.stringify(uniqueFiles),
+          JSON.stringify({ compacted_from: group.cnt, original_tokens: group.total_tokens }),
+          tokenEstimate,
+          group.earliest
+        );
+        const idList = group.ids.split(",").map(Number);
+        deleteOriginals.run(JSON.stringify(idList));
+        compactedCount++;
+        originalsRemoved += group.cnt;
+      }
+    });
+    compact();
+    return { compacted: compactedCount, originals: originalsRemoved };
+  }
   close() {
     this.db.close();
   }
@@ -666,8 +785,6 @@ var ALLOWED_PROJECT_ROOTS = [
   path2.join(homedir2(), "code"),
   path2.join(homedir2(), "Workspace"),
   path2.join(homedir2(), "workspace"),
-  path2.join(homedir2(), "Obsidian"),
-  // Obsidian vaults
   path2.join(homedir2(), "Documents"),
   // Common location
   homedir2()
@@ -874,6 +991,46 @@ function buildVisibilityMessage(observations, basePath) {
   }
   return lines.join("\n");
 }
+function recencyMultiplier(createdAt) {
+  const ageMs = Date.now() - new Date(createdAt).getTime();
+  const ageHours = ageMs / (1e3 * 60 * 60);
+  return Math.pow(0.5, ageHours / 48);
+}
+function selectRelevantWithinBudget(candidates, tokenBudget, workingFileSet) {
+  const effectiveBudget = Math.floor(tokenBudget * 0.8);
+  const toolBudgetCap = Math.floor(effectiveBudget * 0.6);
+  const scored = candidates.map((obs) => {
+    const importanceWeight = (obs.importance_score ?? 0.5) * 0.7;
+    const recencyWeight = recencyMultiplier(obs.created_at) * 0.3;
+    let fileOverlapBoost = 0;
+    if (workingFileSet && workingFileSet.size > 0) {
+      const hasOverlap = obs.files_touched.some((f) => workingFileSet.has(f));
+      if (hasOverlap)
+        fileOverlapBoost = 0.2;
+    }
+    const compactedBonus = obs.is_compacted ? 0.1 : 0;
+    const finalScore = importanceWeight + recencyWeight + fileOverlapBoost + compactedBonus;
+    return { obs, finalScore };
+  });
+  scored.sort((a, b) => b.finalScore - a.finalScore);
+  const selected = [];
+  let totalTokens = 0;
+  const toolTokens = {};
+  for (const { obs } of scored) {
+    if (totalTokens + obs.token_estimate > effectiveBudget) {
+      continue;
+    }
+    const currentToolTokens = toolTokens[obs.tool_name] || 0;
+    if (currentToolTokens + obs.token_estimate > toolBudgetCap) {
+      continue;
+    }
+    selected.push(obs);
+    totalTokens += obs.token_estimate;
+    toolTokens[obs.tool_name] = currentToolTokens + obs.token_estimate;
+  }
+  selected.sort((a, b) => a.created_at.localeCompare(b.created_at));
+  return selected;
+}
 
 // src/utils/transcript.ts
 import { readFileSync, existsSync } from "fs";
@@ -1014,11 +1171,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.3.4") {
+    if (installedVersion !== "0.3.5") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.3.4"}
+   Source:    v${"0.3.5"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1043,7 +1200,15 @@ async function main() {
     const input = validateSessionStartInput(rawInput);
     await storage.initialize();
     await storage.createSession(input.session_id, input.cwd);
-    const observations = await storage.getWithinBudget(input.cwd, TOKEN_BUDGET);
+    const recentObs = await storage.getRecent(input.cwd, 50);
+    const workingFileSet = /* @__PURE__ */ new Set();
+    for (const obs of recentObs) {
+      for (const f of obs.files_touched) {
+        workingFileSet.add(f);
+      }
+    }
+    const candidates = await storage.getRelevantCandidates(input.cwd, 200);
+    const observations = selectRelevantWithinBudget(candidates, TOKEN_BUDGET, workingFileSet);
     const sessions = await storage.getRecentSessions(input.cwd, 1);
     const lastSummary = sessions[0]?.summary;
     const previouslyContext = await getPreviouslyContext(

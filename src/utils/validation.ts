@@ -318,10 +318,60 @@ export function shouldCaptureTool(toolName: string, toolInput?: unknown): boolea
       /^which\s+/,                        // Which commands
       /^type\s+/,                         // Type commands
       /^find\s+/,                         // Find commands (verbose output)
+      // Exploratory/read-only commands with low cross-session value
+      /^cat\s+/,                          // cat file reads
+      /^head\s+/,                         // head file reads
+      /^tail\s+/,                         // tail file reads
+      /^wc\s+/,                           // Word/line count
+      /^file\s+/,                         // File type detection
+      /^stat\s+/,                         // File stats
+      /^diff\s+/,                         // File diffs (exploratory)
+      /^git\s+stash\s+list/,              // Git stash listing
+      /^git\s+branch\s*($|\s+-[^dD])/,   // Git branch listing (not delete)
+      /^docker\s+(ps|images)\b/,          // Docker listing commands
+      /^kubectl\s+get\b/,                 // Kubernetes listing commands
     ];
 
     for (const pattern of SKIP_BASH_PATTERNS) {
       if (pattern.test(command)) {
+        return false;
+      }
+    }
+  }
+
+  // Check for low-value Read targets (generated/vendored files)
+  if (toolName === 'Read' && toolInput && typeof toolInput === 'object') {
+    const input = toolInput as Record<string, unknown>;
+    const filePath = typeof input.file_path === 'string' ? input.file_path : '';
+
+    const SKIP_READ_PATTERNS = [
+      /\/node_modules\//,                 // Vendored dependencies
+      /\/\.git\//,                        // Git internals
+      /\/(dist|build|out|\.next)\//,      // Build output directories
+      /\/package-lock\.json$/,            // npm lock file
+      /\/yarn\.lock$/,                    // Yarn lock file
+      /\/pnpm-lock\.yaml$/,              // pnpm lock file
+    ];
+
+    for (const pattern of SKIP_READ_PATTERNS) {
+      if (pattern.test(filePath)) {
+        return false;
+      }
+    }
+  }
+
+  // Check for overly broad Glob patterns
+  if (toolName === 'Glob' && toolInput && typeof toolInput === 'object') {
+    const input = toolInput as Record<string, unknown>;
+    const pattern = typeof input.pattern === 'string' ? input.pattern : '';
+
+    const SKIP_GLOB_PATTERNS = [
+      /^\*$/,                             // Just "*" - matches everything
+      /^\*\.\*$/,                         // "*.*" - matches all files with extensions
+    ];
+
+    for (const p of SKIP_GLOB_PATTERNS) {
+      if (p.test(pattern)) {
         return false;
       }
     }

@@ -5,6 +5,8 @@
  * Allows multiple implementations (SQLite, HTTP client, etc.)
  */
 
+export type ImportanceLevel = 'high' | 'medium' | 'low';
+
 export interface Observation {
   id?: number;
   project: string;
@@ -15,6 +17,9 @@ export interface Observation {
   files_touched: string[];
   metadata: Record<string, unknown>;
   token_estimate: number;
+  importance: ImportanceLevel;
+  importance_score: number; // 0.0 to 1.0
+  is_compacted?: boolean;
   created_at: string; // ISO 8601 timestamp
 }
 
@@ -48,6 +53,11 @@ export interface Stats {
   tokens_by_tool: Record<string, number>;
   token_budget: number;
   typical_injection_tokens: number;
+  // Importance distribution
+  importance_counts: { high: number; medium: number; low: number };
+  // Compaction stats
+  compacted_count: number;
+  compacted_original_count: number;
 }
 
 export interface TimelineEntry {
@@ -124,7 +134,12 @@ export interface ContextStorage {
    * @param olderThanDays - Delete observations older than this many days (optional)
    * @returns Count of deleted observations and orphaned sessions
    */
-  vacuum(olderThanDays?: number): Promise<{ observations: number; sessions: number }>;
+  vacuum(olderThanDays?: number): Promise<{
+    observations: number;
+    sessions: number;
+    compacted: number;
+    compacted_originals: number;
+  }>;
 
   /**
    * Save a user prompt
@@ -168,6 +183,22 @@ export interface ContextStorage {
    * @param sessionId - Session ID
    */
   getSessionPrompts(sessionId: string): Promise<UserPrompt[]>;
+
+  /**
+   * Get candidate observations for relevance-based injection
+   * Pre-filters low-importance, fetches larger pool for scoring
+   * @param project - Project path
+   * @param limit - Max candidates to fetch (default: 200)
+   */
+  getRelevantCandidates(project: string, limit?: number): Promise<Observation[]>;
+
+  /**
+   * Compact old observations into summaries
+   * Groups old observations by session + tool, compresses into single entries
+   * @param olderThanDays - Compact observations older than this (default: 7)
+   * @returns Count of observations compacted and originals removed
+   */
+  compactObservations(olderThanDays?: number): Promise<{ compacted: number; originals: number }>;
 
   /**
    * Count observations with optional filters

@@ -5,7 +5,7 @@
  */
 
 import { sanitizeContent, estimateTokens } from '../utils/sanitize.js';
-import type { Observation } from '../storage/interface.js';
+import type { Observation, ImportanceLevel } from '../storage/interface.js';
 
 /**
  * Output storage thresholds
@@ -403,6 +403,177 @@ function summarizeTool(
 }
 
 /**
+ * Config file patterns that get an importance boost
+ */
+const CONFIG_FILE_PATTERNS = [
+  /package\.json$/,
+  /tsconfig.*\.json$/,
+  /docker-compose\.ya?ml$/,
+  /Dockerfile$/,
+  /\.env(\.\w+)?$/,
+  /webpack\.config\./,
+  /vite\.config\./,
+  /eslint/,
+  /prettier/,
+  /Makefile$/,
+  /Cargo\.toml$/,
+  /go\.mod$/,
+  /pyproject\.toml$/,
+  /requirements.*\.txt$/,
+];
+
+const TEST_FILE_PATTERNS = [
+  /\.test\./,
+  /\.spec\./,
+  /__tests__\//,
+  /test\//,
+];
+
+const LOCK_FILE_PATTERNS = [
+  /package-lock\.json$/,
+  /yarn\.lock$/,
+  /pnpm-lock\.yaml$/,
+  /Cargo\.lock$/,
+  /poetry\.lock$/,
+];
+
+/**
+ * Calculate importance score for an observation
+ *
+ * Base scores by tool/pattern, then adjustments for errors, config files, etc.
+ * Returns { importance, importance_score }
+ */
+export function calculateImportance(
+  toolName: string,
+  toolInput: unknown,
+  toolResponse?: string,
+  filesTouched?: string[]
+): { importance: ImportanceLevel; importance_score: number } {
+  let score: number;
+
+  const input = (toolInput && typeof toolInput === 'object')
+    ? toolInput as Record<string, unknown>
+    : {};
+  const command = typeof input.command === 'string' ? input.command : '';
+
+  // Base score by tool type
+  switch (toolName) {
+    case 'Edit':
+    case 'Write':
+      score = 0.80;
+      break;
+
+    case 'Bash': {
+      // Git milestones
+      if (/^git\s+(commit|merge|rebase|cherry-pick)\b/.test(command)) {
+        score = 0.90;
+      }
+      // Build/test results
+      else if (/\b(npm\s+(run\s+)?(build|test)|cargo\s+build|make\s+|pytest|go\s+build)\b/.test(command)) {
+        score = 0.70;
+      }
+      // Dependency changes
+      else if (/\b(npm\s+install|yarn\s+add|pip\s+install|cargo\s+add|go\s+get)\b/.test(command)) {
+        score = 0.75;
+      }
+      // Git exploratory
+      else if (/^git\s+(status|log|diff|show)\b/.test(command)) {
+        score = 0.35;
+      }
+      // cat/head/tail via Bash (if they made it through filters)
+      else if (/^(cat|head|tail)\s+/.test(command)) {
+        score = 0.20;
+      }
+      // General Bash
+      else {
+        score = 0.50;
+      }
+      break;
+    }
+
+    case 'Read':
+      score = 0.30;
+      break;
+
+    case 'Grep':
+      score = 0.25;
+      break;
+
+    case 'Glob':
+      score = 0.20;
+      break;
+
+    case 'NotebookEdit':
+      score = 0.75;
+      break;
+
+    default:
+      score = 0.50;
+  }
+
+  // Adjustments based on content
+
+  // Error/failure boost: errors are high signal for future sessions
+  if (toolResponse) {
+    const responseLower = toolResponse.toLowerCase();
+    if (
+      responseLower.includes('error') ||
+      responseLower.includes('failed') ||
+      responseLower.includes('exception') ||
+      responseLower.includes('fatal')
+    ) {
+      score += 0.25;
+    }
+  }
+
+  // File-based adjustments
+  const allFiles = [
+    ...(filesTouched || []),
+    typeof input.file_path === 'string' ? input.file_path : '',
+    typeof input.path === 'string' ? input.path : '',
+  ].filter(Boolean);
+
+  for (const file of allFiles) {
+    // Config file boost
+    if (CONFIG_FILE_PATTERNS.some(p => p.test(file))) {
+      score += 0.15;
+      break; // Only apply once
+    }
+  }
+
+  for (const file of allFiles) {
+    // Test file boost
+    if (TEST_FILE_PATTERNS.some(p => p.test(file))) {
+      score += 0.10;
+      break;
+    }
+  }
+
+  for (const file of allFiles) {
+    // Lock/generated file penalty
+    if (LOCK_FILE_PATTERNS.some(p => p.test(file))) {
+      score -= 0.30;
+      break;
+    }
+  }
+
+  // Clamp to [0.0, 1.0]
+  score = Math.max(0.0, Math.min(1.0, score));
+
+  // Determine level
+  let importance: ImportanceLevel;
+  if (score >= 0.65) {
+    importance = 'high';
+  } else if (score >= 0.35) {
+    importance = 'medium';
+  } else {
+    importance = 'low';
+  }
+
+  return { importance, importance_score: Math.round(score * 100) / 100 };
+}
+
+/**
  * Process a tool capture into an observation
  */
 export function processToolCapture(capture: ToolCapture): Omit<Observation, 'id'> {
@@ -436,6 +607,14 @@ export function processToolCapture(capture: ToolCapture): Omit<Observation, 'id'
   const contentToEstimate = `${summary}\n${extracted.stored_output}`;
   const tokenEstimate = estimateTokens(contentToEstimate);
 
+  // Calculate importance score
+  const { importance, importance_score } = calculateImportance(
+    capture.tool_name,
+    capture.tool_input,
+    sanitizedResponse,
+    filesTouched
+  );
+
   // Build metadata with enhanced output storage
   const metadata: Record<string, unknown> = {
     tool_input: capture.tool_input,
@@ -451,6 +630,8 @@ export function processToolCapture(capture: ToolCapture): Omit<Observation, 'id'
     files_touched: filesTouched,
     metadata,
     token_estimate: tokenEstimate,
+    importance,
+    importance_score,
     created_at: new Date().toISOString(),
   };
 }
