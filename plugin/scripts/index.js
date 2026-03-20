@@ -146,6 +146,7 @@ var SQLiteStorage = class {
       END;
     `);
     this.migrateAddImportanceColumns();
+    this.migrateAddExportedAtColumn();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -167,6 +168,16 @@ var SQLiteStorage = class {
       CREATE INDEX IF NOT EXISTS idx_observations_project_score
       ON observations(project, importance_score DESC, created_at DESC)
     `);
+  }
+  /**
+   * Add exported_at column if it doesn't exist.
+   */
+  migrateAddExportedAtColumn() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("exported_at")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN exported_at TEXT`);
+    }
   }
   /**
    * Normalize summary text for dedup comparison.
@@ -203,6 +214,7 @@ var SQLiteStorage = class {
       importance: row.importance || "medium",
       importance_score: row.importance_score ?? 0.5,
       is_compacted: row.is_compacted === 1,
+      exported_at: row.exported_at || void 0,
       created_at: row.created_at
     };
   }
@@ -766,10 +778,169 @@ var SQLiteStorage = class {
     compact();
     return { compacted: compactedCount, originals: originalsRemoved };
   }
+  async getUnexportedHighImportance(project, sessionId, minScore = 0.65) {
+    let sql;
+    let params;
+    if (sessionId) {
+      sql = `
+        SELECT * FROM observations
+        WHERE project LIKE ? AND session_id = ?
+          AND importance_score >= ? AND exported_at IS NULL
+        ORDER BY created_at ASC
+      `;
+      params = [project + "%", sessionId, minScore];
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE project LIKE ?
+          AND importance_score >= ? AND exported_at IS NULL
+        ORDER BY created_at ASC
+      `;
+      params = [project + "%", minScore];
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
+  }
+  async markExported(ids) {
+    if (ids.length === 0)
+      return;
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const stmt = this.db.prepare(
+      `UPDATE observations SET exported_at = ? WHERE id IN (SELECT value FROM json_each(?))`
+    );
+    stmt.run(now, JSON.stringify(ids));
+  }
   close() {
     this.db.close();
   }
 };
+
+// src/export/memory.ts
+import { mkdirSync as mkdirSync2, readFileSync, writeFileSync, existsSync } from "fs";
+import { join } from "path";
+import { homedir as homedir2 } from "os";
+
+// src/utils/transcript.ts
+function convertPathToDashed(projectPath) {
+  return projectPath.replace(/\//g, "-");
+}
+
+// src/export/memory.ts
+var TOPIC_FILE = "context-manager-activity.md";
+var DEFAULT_MAX_LINES = 150;
+function resolveMemoryDir(projectPath) {
+  const dashedPath = convertPathToDashed(projectPath);
+  return join(homedir2(), ".claude", "projects", dashedPath, "memory");
+}
+function formatObservationsForMemory(observations) {
+  if (observations.length === 0)
+    return "";
+  const byDate = /* @__PURE__ */ new Map();
+  for (const obs of observations) {
+    const date = obs.created_at.split("T")[0] ?? "unknown";
+    if (!byDate.has(date))
+      byDate.set(date, /* @__PURE__ */ new Map());
+    const dateGroup = byDate.get(date);
+    if (!dateGroup.has(obs.session_id))
+      dateGroup.set(obs.session_id, []);
+    dateGroup.get(obs.session_id).push(obs);
+  }
+  const lines = [];
+  for (const [date, sessions] of byDate) {
+    lines.push(`## ${date}`);
+    lines.push("");
+    for (const [sessionId, sessionObs] of sessions) {
+      const shortId = sessionId.substring(0, 8);
+      const first = sessionObs[0];
+      const last = sessionObs[sessionObs.length - 1];
+      const startTime = first.created_at.split("T")[1]?.substring(0, 5) ?? "";
+      const endTime = last.created_at.split("T")[1]?.substring(0, 5) ?? "";
+      lines.push(`### Session ${shortId} (${startTime} - ${endTime})`);
+      for (const obs of sessionObs) {
+        lines.push(`- ${formatObservationLine(obs)}`);
+      }
+      lines.push("");
+    }
+  }
+  return lines.join("\n");
+}
+function formatObservationLine(obs) {
+  const file = obs.files_touched[0] || "";
+  const shortFile = file ? file.split("/").slice(-2).join("/") : "";
+  switch (obs.tool_name) {
+    case "Edit":
+      return `**Edited** ${shortFile}${extractDetail(obs)}`;
+    case "Write":
+      return `**Created** ${shortFile}${extractDetail(obs)}`;
+    case "Bash": {
+      if (obs.summary.includes("git commit")) {
+        const msg = obs.summary.match(/commit -m ["'](.+?)["']/)?.[1] || obs.summary.match(/"([^"]+)"/)?.[1] || "";
+        return `**Git commit** \u2014 "${msg.substring(0, 80)}"`;
+      }
+      if (obs.summary.includes("git push"))
+        return `**Git push** \u2014 ${obs.summary.substring(0, 80)}`;
+      return `**Ran** ${obs.summary.substring(0, 80)}`;
+    }
+    case "Read":
+      return `**Read** ${shortFile}`;
+    default:
+      return `**${obs.tool_name}** ${obs.summary.substring(0, 80)}`;
+  }
+}
+function extractDetail(obs) {
+  const summary = obs.summary;
+  const dashIndex = summary.indexOf(" \u2014 ");
+  if (dashIndex > 0) {
+    return ` \u2014 ${summary.substring(dashIndex + 3, dashIndex + 83)}`;
+  }
+  const colonIndex = summary.indexOf(": ");
+  if (colonIndex > 0 && colonIndex < 60) {
+    return ` \u2014 ${summary.substring(colonIndex + 2, colonIndex + 82)}`;
+  }
+  return "";
+}
+function writeActivityToMemory(projectPath, newContent, maxLines = DEFAULT_MAX_LINES) {
+  const memoryDir = resolveMemoryDir(projectPath);
+  mkdirSync2(memoryDir, { recursive: true });
+  const filePath = join(memoryDir, TOPIC_FILE);
+  const header = [
+    "# Project Activity Log",
+    "",
+    `> Auto-generated by context-manager. Updated ${(/* @__PURE__ */ new Date()).toISOString()}.`,
+    "> Use /ctx-search <query> for full history search.",
+    ""
+  ].join("\n");
+  let existingBody = "";
+  if (existsSync(filePath)) {
+    const existing = readFileSync(filePath, "utf-8");
+    const bodyMatch = existing.match(/^(## .+)/m);
+    if (bodyMatch?.index !== void 0) {
+      existingBody = existing.substring(bodyMatch.index);
+    }
+  }
+  const fullBody = existingBody ? existingBody.trimEnd() + "\n\n" + newContent.trimEnd() : newContent.trimEnd();
+  const bodyLines = fullBody.split("\n");
+  const trimmedBody = bodyLines.length > maxLines ? bodyLines.slice(bodyLines.length - maxLines).join("\n") : fullBody;
+  const finalContent = header + trimmedBody + "\n";
+  writeFileSync(filePath, finalContent);
+  return { filePath, linesWritten: trimmedBody.split("\n").length };
+}
+async function exportToAutoMemory(storage2, projectPath, sessionId) {
+  const observations = await storage2.getUnexportedHighImportance(
+    projectPath,
+    sessionId
+  );
+  if (observations.length === 0) {
+    return { exported: 0, filePath: null };
+  }
+  const formatted = formatObservationsForMemory(observations);
+  const { filePath } = writeActivityToMemory(projectPath, formatted);
+  const ids = observations.map((o) => o.id).filter((id) => id !== void 0);
+  if (ids.length > 0) {
+    await storage2.markExported(ids);
+  }
+  return { exported: observations.length, filePath };
+}
 
 // cli/index.ts
 var storage = new SQLiteStorage();
@@ -790,6 +961,9 @@ async function main() {
         break;
       case "vacuum":
         await vacuumCommand(args.slice(1));
+        break;
+      case "export":
+        await exportCommand(args.slice(1));
         break;
       case "help":
       case "--help":
@@ -958,6 +1132,52 @@ async function vacuumCommand(args) {
   }
   console.log("Database optimized.");
 }
+async function exportCommand(args) {
+  const projectIndex = args.indexOf("--project");
+  let project;
+  if (projectIndex !== -1) {
+    const providedPath = args[projectIndex + 1];
+    if (!providedPath || providedPath.startsWith("-")) {
+      console.error("Error: --project requires a path argument");
+      process.exit(1);
+    }
+    project = providedPath;
+  } else {
+    project = process.cwd();
+  }
+  const dryRun = args.includes("--dry-run");
+  const observations = await storage.getUnexportedHighImportance(project);
+  if (observations.length === 0) {
+    console.log("No unexported high-importance observations found.");
+    return;
+  }
+  console.log(`
+Found ${observations.length} unexported high-importance observations for ${project}:
+`);
+  for (const obs of observations.slice(0, 20)) {
+    const date = new Date(obs.created_at);
+    const fileInfo = obs.files_touched[0] ? ` (${obs.files_touched[0]})` : "";
+    console.log(`  [${date.toISOString()}] ${obs.tool_name}: ${obs.summary.substring(0, 80)}${fileInfo}`);
+  }
+  if (observations.length > 20) {
+    console.log(`  ... and ${observations.length - 20} more`);
+  }
+  if (dryRun) {
+    console.log("\n--- Dry run: formatted output ---\n");
+    const formatted = formatObservationsForMemory(observations);
+    console.log(formatted);
+    console.log(`
+Target: ${resolveMemoryDir(project)}/context-manager-activity.md`);
+    console.log("(dry run \u2014 no files written)");
+    return;
+  }
+  const result = await exportToAutoMemory(storage, project);
+  console.log(`
+Exported ${result.exported} observations to auto-memory.`);
+  if (result.filePath) {
+    console.log(`Topic file: ${result.filePath}`);
+  }
+}
 function printHelp() {
   console.log(`
 claude-context-manager CLI
@@ -978,6 +1198,9 @@ Commands:
   vacuum [--days N]
     Delete observations older than N days, or reclaim disk space
 
+  export [--project PATH] [--dry-run]
+    Export high-importance observations to auto-memory topic file
+
   help
     Show this help message
 
@@ -986,6 +1209,7 @@ Examples:
   context-manager search "authentication" --project ~/Projects/my-app
   context-manager stats --project ~/Projects/my-app
   context-manager vacuum --days 30
+  context-manager export --dry-run
 `);
 }
 main();
