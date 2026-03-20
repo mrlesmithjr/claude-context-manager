@@ -20,6 +20,7 @@ const COMMANDS_DIR = join(homedir(), '.claude', 'commands');
 const CONTEXT_DIR = join(homedir(), '.claude-context');
 const PLUGIN_SCRIPTS_DIR = join(PROJECT_ROOT, 'plugin', 'scripts');
 const PLUGIN_JSON_PATH = join(PROJECT_ROOT, 'plugin', '.claude-plugin', 'plugin.json');
+const MARKETPLACE_JSON_PATH = join(PROJECT_ROOT, '.claude-plugin', 'marketplace.json');
 
 function log(message) {
   console.log(`[context-manager] ${message}`);
@@ -69,10 +70,10 @@ function createContextDir() {
 }
 
 /**
- * Sync version from package.json to plugin.json
+ * Sync version from package.json to plugin.json and marketplace.json
  */
 function syncPluginVersion() {
-  log('Syncing version to plugin.json...');
+  log('Syncing version...');
 
   // Read version from package.json
   const packageJson = JSON.parse(
@@ -80,18 +81,23 @@ function syncPluginVersion() {
   );
   const version = packageJson.version;
 
-  // Read plugin.json
+  // Sync plugin.json
   const pluginJson = JSON.parse(
     readFileSync(PLUGIN_JSON_PATH, 'utf-8')
   );
-
-  // Update version
   pluginJson.version = version;
-
-  // Write back
   writeFileSync(PLUGIN_JSON_PATH, JSON.stringify(pluginJson, null, 2) + '\n');
 
-  log(`  Version synced: ${version}`);
+  // Sync marketplace.json
+  const marketplaceJson = JSON.parse(
+    readFileSync(MARKETPLACE_JSON_PATH, 'utf-8')
+  );
+  if (marketplaceJson.plugins?.[0]) {
+    marketplaceJson.plugins[0].version = version;
+  }
+  writeFileSync(MARKETPLACE_JSON_PATH, JSON.stringify(marketplaceJson, null, 2) + '\n');
+
+  log(`  Version synced to ${version} (plugin.json + marketplace.json)`);
 }
 
 /**

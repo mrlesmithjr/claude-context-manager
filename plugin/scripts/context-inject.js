@@ -1011,11 +1011,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.4.1") {
+    if (installedVersion !== "0.4.2") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.4.1"}
+   Source:    v${"0.4.2"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1067,7 +1067,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.4.1"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.4.2"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. Use /ctx-search <query> for full history.");
     const context = lines.join("\n");
     console.error(`[context-manager] ${count} observations tracked, activity exported to auto-memory`);
