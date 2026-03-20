@@ -17,7 +17,7 @@ const COMMANDS_DIR = join(homedir(), '.claude', 'commands');
 const CONTEXT_DIR = join(homedir(), '.claude-context');
 
 // Slash commands to remove
-const SLASH_COMMANDS = ['ctx-stats.md', 'ctx-list.md', 'ctx-search.md', 'ctx-vacuum.md'];
+const SLASH_COMMANDS = ['ctx-stats.md', 'ctx-list.md', 'ctx-search.md', 'ctx-vacuum.md', 'ctx-export.md', 'ctx-web.md'];
 
 function log(message) {
   console.log(`[context-manager] ${message}`);
