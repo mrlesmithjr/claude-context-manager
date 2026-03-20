@@ -5,8 +5,8 @@
  * All paths use portable globs that resolve at runtime via the plugin cache.
  */
 
-const CLI_PATH = '~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/index.js';
-const WEB_PATH = '~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/web/index.cjs';
+const CLI_PATH = '"$(ls ~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/index.js | sort -V | tail -1)"';
+const WEB_PATH = '"$(ls ~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/web/index.cjs | sort -V | tail -1)"';
 
 export const SLASH_COMMANDS: Record<string, string> = {
   'ctx-list.md': `List recent observations captured by context-manager for the current project.

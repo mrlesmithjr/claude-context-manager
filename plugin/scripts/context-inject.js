@@ -879,8 +879,8 @@ function validateSessionStartInput(input) {
 }
 
 // src/commands/definitions.ts
-var CLI_PATH = "~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/index.js";
-var WEB_PATH = "~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/web/index.cjs";
+var CLI_PATH = '"$(ls ~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/index.js | sort -V | tail -1)"';
+var WEB_PATH = '"$(ls ~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/web/index.cjs | sort -V | tail -1)"';
 var SLASH_COMMANDS = {
   "ctx-list.md": `List recent observations captured by context-manager for the current project.
 
@@ -1014,11 +1014,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.4.4") {
+    if (installedVersion !== "0.4.5") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.4.4"}
+   Source:    v${"0.4.5"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1070,7 +1070,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.4.4"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.4.5"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. Use /ctx-search <query> for full history.");
     const context = lines.join("\n");
     console.error(`[context-manager] ${count} observations tracked, activity exported to auto-memory`);
