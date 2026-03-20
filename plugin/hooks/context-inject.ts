@@ -24,7 +24,8 @@
 
 import { SQLiteStorage } from '../../src/storage/sqlite.js';
 import { validateSessionStartInput } from '../../src/utils/validation.js';
-import { existsSync, readFileSync } from 'fs';
+import { SLASH_COMMANDS } from '../../src/commands/definitions.js';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -81,6 +82,30 @@ function checkVersionMismatch(): string {
   }
 }
 
+/**
+ * Auto-provision slash commands to ~/.claude/commands/ if missing.
+ * Runs on every SessionStart but only writes files that don't exist,
+ * so it's a no-op after first run (~1ms check).
+ */
+function provisionSlashCommands(): number {
+  try {
+    const commandsDir = join(homedir(), '.claude', 'commands');
+    mkdirSync(commandsDir, { recursive: true });
+
+    let installed = 0;
+    for (const [filename, content] of Object.entries(SLASH_COMMANDS)) {
+      const dest = join(commandsDir, filename);
+      if (!existsSync(dest)) {
+        writeFileSync(dest, content);
+        installed++;
+      }
+    }
+    return installed;
+  } catch {
+    return 0;
+  }
+}
+
 async function main() {
   // Debug: log that hook was invoked
   console.error('[context-manager] SessionStart hook invoked');
@@ -104,6 +129,12 @@ async function main() {
 
     // Initialize storage
     await storage.initialize();
+
+    // Auto-provision slash commands on first run
+    const commandsInstalled = provisionSlashCommands();
+    if (commandsInstalled > 0) {
+      console.error(`[context-manager] Auto-installed ${commandsInstalled} slash commands`);
+    }
 
     // Create session record
     await storage.createSession(input.session_id, input.cwd);
