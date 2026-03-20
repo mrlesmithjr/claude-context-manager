@@ -38,6 +38,11 @@ export class SQLiteStorage implements ContextStorage {
     // Enable WAL mode for concurrent access
     this.db.pragma('journal_mode = WAL');
 
+    // Performance pragmas
+    this.db.pragma('synchronous = NORMAL');
+    this.db.pragma('temp_store = MEMORY');
+    this.db.pragma('cache_size = -64000');
+
     // CRITICAL P1 FIX: Enable foreign keys
     this.db.pragma('foreign_keys = ON');
   }

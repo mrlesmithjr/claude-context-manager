@@ -18,6 +18,9 @@ var SQLiteStorage = class {
     mkdirSync(dir, { recursive: true });
     this.db = new better_sqlite3_default(dbPath);
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("synchronous = NORMAL");
+    this.db.pragma("temp_store = MEMORY");
+    this.db.pragma("cache_size = -64000");
     this.db.pragma("foreign_keys = ON");
   }
   async initialize() {
@@ -1011,11 +1014,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.4.2") {
+    if (installedVersion !== "0.4.4") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.4.2"}
+   Source:    v${"0.4.4"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1067,7 +1070,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.4.2"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.4.4"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. Use /ctx-search <query> for full history.");
     const context = lines.join("\n");
     console.error(`[context-manager] ${count} observations tracked, activity exported to auto-memory`);

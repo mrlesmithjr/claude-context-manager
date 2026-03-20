@@ -43639,6 +43639,9 @@ var SQLiteStorage = class {
     (0, import_fs.mkdirSync)(dir, { recursive: true });
     this.db = new better_sqlite3_default(dbPath);
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("synchronous = NORMAL");
+    this.db.pragma("temp_store = MEMORY");
+    this.db.pragma("cache_size = -64000");
     this.db.pragma("foreign_keys = ON");
   }
   async initialize() {
