@@ -36,7 +36,9 @@ function verifyBuild() {
     'context-inject.js',
     'capture-prompt.js',
     'capture-tool.js',
-    'session-end.js'
+    'session-end.js',
+    'index.js',           // CLI bundled for plugin
+    'web/index.cjs',      // Web server bundled for plugin
   ];
 
   log('Verifying build...');
@@ -93,7 +95,11 @@ function syncPluginVersion() {
 
 /**
  * Install slash commands to ~/.claude/commands/
- * Commands are generated dynamically with the correct CLI path
+ *
+ * Uses a portable CLI_PATH that resolves at runtime via shell glob.
+ * The CLI is bundled into plugin/scripts/index.js and installed to:
+ *   ~/.claude/plugins/cache/mrlesmithjr/context-manager/{version}/scripts/index.js
+ * The glob matches any version, so updates don't break the path.
  */
 function installSlashCommands() {
   log('Installing slash commands...');
@@ -101,9 +107,11 @@ function installSlashCommands() {
   // Create commands directory if needed
   mkdirSync(COMMANDS_DIR, { recursive: true });
 
-  const CLI_PATH = join(PROJECT_ROOT, 'dist', 'cli.js');
+  // Portable path: shell glob resolves the version directory at runtime
+  const CLI_PATH = '~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/index.js';
+  const WEB_PATH = '~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/web/index.cjs';
 
-  // Define commands with dynamic CLI path
+  // Define commands with portable CLI path
   const commands = {
     'ctx-list.md': `List recent observations captured by context-manager for the current project.
 
@@ -188,7 +196,7 @@ Just tell the user: "Web dashboard is already running at http://localhost:3847"
 
 If the health check fails (empty response or connection refused), start the server:
 \`\`\`bash
-cd ${PROJECT_ROOT} && npm run web > /dev/null 2>&1 &
+node ${WEB_PATH} > /dev/null 2>&1 &
 sleep 2
 \`\`\`
 
@@ -200,7 +208,7 @@ open http://localhost:3847
 Tell the user:
 - Web dashboard started at http://localhost:3847
 - The server runs in the background
-- To stop it: \`pkill -f "node dist/web/server.js"\` or close the terminal
+- To stop it: \`pkill -f "scripts/web/index.cjs"\` or close the terminal
 
 Features available:
 - Sessions: Browse all Claude Code sessions

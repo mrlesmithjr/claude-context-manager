@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { createRequire as __createRequire } from 'module';
-const __require = __createRequire(import.meta.url);
-const __betterSqlite3 = __require('better-sqlite3');
+import { createRequire as __ctxCreateRequire } from 'module';
+const __ctxRequire = __ctxCreateRequire(import.meta.url);
+const __betterSqlite3 = __ctxRequire('better-sqlite3');
 
 // shim:better-sqlite3
 var better_sqlite3_default = __betterSqlite3;

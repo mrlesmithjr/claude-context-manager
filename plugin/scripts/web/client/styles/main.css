@@ -1,0 +1,113 @@
+/**
+ * Context Manager Dashboard - Custom Styles
+ *
+ * Minimal custom CSS for animations and refinements.
+ * Most styling is handled by Tailwind utility classes.
+ */
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1f2937; /* gray-800 */
+}
+
+::-webkit-scrollbar-thumb {
+  background: #4b5563; /* gray-600 */
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6b7280; /* gray-500 */
+}
+
+/* Loading spinner animation (used in components) */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Subtle hover effect for session rows */
+.bg-gray-750 {
+  background-color: #2d3748; /* Between gray-800 and gray-700 */
+}
+
+.bg-gray-850 {
+  background-color: #1a202c; /* Between gray-900 and gray-800 */
+}
+
+/* Focus ring for accessibility */
+*:focus-visible {
+  outline: 2px solid #3b82f6; /* blue-500 */
+  outline-offset: 2px;
+}
+
+/* Monospace font for code/paths */
+.font-mono {
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+}
+
+/* Ensure code blocks preserve whitespace */
+pre,
+code {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Animation for expand/collapse */
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 1;
+    max-height: 1000px;
+  }
+  to {
+    opacity: 0;
+    max-height: 0;
+  }
+}
+
+/* Smooth transitions for interactive elements */
+button,
+select,
+a {
+  transition: all 0.15s ease-in-out;
+}
+
+/* Prevent text selection on UI chrome */
+nav,
+header,
+footer,
+button {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Allow text selection in content areas */
+main {
+  user-select: text;
+  -webkit-user-select: text;
+}

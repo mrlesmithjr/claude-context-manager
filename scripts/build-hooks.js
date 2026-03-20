@@ -69,48 +69,90 @@ console.log(`[build-hooks] Pruned build-time artifacts from better-sqlite3`);
 // Create banner that sets up require() for better-sqlite3 using standard
 // Node.js module resolution. Since we copy deps to plugin/node_modules/,
 // require('better-sqlite3') resolves from plugin/scripts/ → plugin/node_modules/.
+// Uses __ctxRequire to avoid conflicting with esbuild's own __require polyfill.
 const banner = `
-import { createRequire as __createRequire } from 'module';
-const __require = __createRequire(import.meta.url);
-const __betterSqlite3 = __require('better-sqlite3');
+import { createRequire as __ctxCreateRequire } from 'module';
+const __ctxRequire = __ctxCreateRequire(import.meta.url);
+const __betterSqlite3 = __ctxRequire('better-sqlite3');
 `.trim();
 
-// Build hooks with version injection
+// esbuild plugin to shim better-sqlite3 with the banner-provided variable
+const betterSqlite3Shim = {
+  name: 'better-sqlite3-shim',
+  setup(build) {
+    build.onResolve({ filter: /^better-sqlite3$/ }, args => {
+      return { path: 'better-sqlite3', namespace: 'shim' };
+    });
+    build.onLoad({ filter: /.*/, namespace: 'shim' }, args => {
+      return {
+        contents: 'export default __betterSqlite3;',
+        loader: 'js'
+      };
+    });
+  }
+};
+
+// Shared build options for all plugin scripts
+const sharedOptions = {
+  bundle: true,
+  outdir: 'plugin/scripts',
+  platform: 'node',
+  target: 'node18',
+  format: 'esm',
+  banner: { js: banner },
+  external: ['better-sqlite3'],
+  define: { 'PLUGIN_VERSION': JSON.stringify(VERSION) },
+  plugins: [betterSqlite3Shim]
+};
+
+// Build hooks
 await build({
+  ...sharedOptions,
   entryPoints: [
     'plugin/hooks/context-inject.ts',
     'plugin/hooks/capture-prompt.ts',
     'plugin/hooks/capture-tool.ts',
     'plugin/hooks/session-end.ts'
   ],
-  bundle: true,
+});
+console.log('[build-hooks] Hooks built');
+
+// Build CLI into plugin/scripts/ so it ships with the plugin
+await build({
+  ...sharedOptions,
+  entryPoints: ['cli/index.ts'],
   outdir: 'plugin/scripts',
+});
+console.log('[build-hooks] CLI built (plugin/scripts/index.js)');
+
+// Build web server into plugin/scripts/web/ so it ships with the plugin
+// Uses CJS format because Fastify's internals use dynamic require() for Node builtins.
+// Output as .cjs so Node treats it correctly even with "type": "module" in package.json.
+await build({
+  entryPoints: ['web/server/index.ts'],
+  bundle: true,
+  outfile: 'plugin/scripts/web/index.cjs',
   platform: 'node',
   target: 'node18',
-  format: 'esm',
-  banner: {
-    js: banner
-  },
-  // Mark as external - our banner provides the import
+  format: 'cjs',
   external: ['better-sqlite3'],
-  define: {
-    'PLUGIN_VERSION': JSON.stringify(VERSION)
+  define: { 'PLUGIN_VERSION': JSON.stringify(VERSION) },
+  banner: {
+    js: `const __betterSqlite3 = require('better-sqlite3');`
   },
-  plugins: [{
-    name: 'better-sqlite3-shim',
-    setup(build) {
-      // Intercept better-sqlite3 imports and replace with our shim variable
-      build.onResolve({ filter: /^better-sqlite3$/ }, args => {
-        return { path: 'better-sqlite3', namespace: 'shim' };
-      });
-      build.onLoad({ filter: /.*/, namespace: 'shim' }, args => {
-        return {
-          contents: 'export default __betterSqlite3;',
-          loader: 'js'
-        };
-      });
-    }
-  }]
+  plugins: [betterSqlite3Shim]
 });
+console.log('[build-hooks] Web server built (plugin/scripts/web/index.cjs)');
+
+// Copy web client files into plugin so the web server can find them
+const webClientSrc = join(PROJECT_ROOT, 'web', 'client');
+const webClientDest = join(PROJECT_ROOT, 'plugin', 'scripts', 'web', 'client');
+if (existsSync(webClientSrc)) {
+  if (existsSync(webClientDest)) {
+    rmSync(webClientDest, { recursive: true });
+  }
+  cpSync(webClientSrc, webClientDest, { recursive: true });
+  console.log('[build-hooks] Web client files copied');
+}
 
 console.log('[build-hooks] Build complete');

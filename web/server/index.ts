@@ -10,13 +10,16 @@ import fastifyStatic from '@fastify/static';
 import fastifyCors from '@fastify/cors';
 import { homedir } from 'os';
 import { join } from 'path';
+import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { SQLiteStorage } from '../../src/storage/sqlite.js';
 import { registerApiRoutes } from './routes/api.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+// Support both ESM (dev: dist/web/server.js) and CJS (plugin: scripts/web/index.js)
+const __scriptDir = typeof __dirname !== 'undefined'
+  ? __dirname
+  : dirname(fileURLToPath(import.meta.url));
 
 // Configuration from environment
 const PORT = parseInt(process.env.CONTEXT_MANAGER_PORT || '3847', 10);
@@ -43,9 +46,10 @@ async function main() {
   });
 
   // Register static file serving for client
-  // When running from dist/web/server.js, we need to go up to project root, then to web/client
-  const projectRoot = join(__dirname, '..', '..');
-  const clientPath = join(projectRoot, 'web', 'client');
+  // Supports both dev (dist/web/server.js -> web/client) and plugin (scripts/web/index.js -> scripts/web/client)
+  const clientPath = existsSync(join(__scriptDir, 'client'))
+    ? join(__scriptDir, 'client')
+    : join(__scriptDir, '..', '..', 'web', 'client');
   await fastify.register(fastifyStatic, {
     root: clientPath,
     prefix: '/',
