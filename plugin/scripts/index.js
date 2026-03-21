@@ -999,9 +999,9 @@ function formatObservationLine(obs) {
   const shortFile = file ? file.split("/").slice(-2).join("/") : "";
   switch (obs.tool_name) {
     case "Edit":
-      return `**Edited** ${shortFile}${extractDetail(obs)}`;
+      return `**Edited** ${shortFile} \u2014 ${describeEdit(obs)}`;
     case "Write":
-      return `**Created** ${shortFile}${extractDetail(obs)}`;
+      return `**Created** ${shortFile}`;
     case "Bash": {
       if (obs.summary.includes("git commit")) {
         const msg = obs.summary.match(/commit -m ["'](.+?)["']/)?.[1] || obs.summary.match(/"([^"]+)"/)?.[1] || "";
@@ -1009,6 +1009,12 @@ function formatObservationLine(obs) {
       }
       if (obs.summary.includes("git push"))
         return `**Git push** \u2014 ${obs.summary.substring(0, 80)}`;
+      if (obs.summary.includes("npm run build"))
+        return `**Build** \u2014 ${obs.summary.substring(0, 80)}`;
+      if (obs.summary.includes("npm install"))
+        return `**Install** \u2014 ${obs.summary.substring(0, 80)}`;
+      if (obs.summary.includes("npm run test") || obs.summary.includes("npm test"))
+        return `**Test** \u2014 ${obs.summary.substring(0, 80)}`;
       return `**Ran** ${obs.summary.substring(0, 80)}`;
     }
     case "Read":
@@ -1017,17 +1023,59 @@ function formatObservationLine(obs) {
       return `**${obs.tool_name}** ${obs.summary.substring(0, 80)}`;
   }
 }
-function extractDetail(obs) {
-  const summary = obs.summary;
-  const dashIndex = summary.indexOf(" \u2014 ");
-  if (dashIndex > 0) {
-    return ` \u2014 ${summary.substring(dashIndex + 3, dashIndex + 83)}`;
+function describeEdit(obs) {
+  const toolInput = obs.metadata?.tool_input;
+  if (!toolInput)
+    return "modified";
+  const oldStr = toolInput.old_string || "";
+  const newStr = toolInput.new_string || "";
+  if (!oldStr && !newStr)
+    return "modified";
+  const oldLines = oldStr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const newLines = newStr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const oldSet = new Set(oldLines);
+  const addedLines = newLines.filter((l) => !oldSet.has(l));
+  for (const line of addedLines) {
+    const funcMatch = line.match(/(?:function|async function|class|const|export)\s+(\w+)/);
+    if (funcMatch)
+      return `Added ${funcMatch[0].substring(0, 60)}`;
+    const importMatch = line.match(/import\s+.+from\s+['"](.+?)['"]/);
+    if (importMatch)
+      return `Added import from '${importMatch[1]}'`;
+    const typeMatch = line.match(/(?:interface|type)\s+(\w+)/);
+    if (typeMatch)
+      return `Added ${typeMatch[0]}`;
+    const toolMatch = line.match(/['"](\w+)['"]/);
+    if (line.includes("server.tool") && toolMatch)
+      return `Added tool '${toolMatch[1]}'`;
+    if (line.includes('"dependencies"') || line.match(/["']\w+["']\s*:\s*["']\^/)) {
+      const depMatch = line.match(/["'](@?[\w/-]+)["']\s*:/);
+      if (depMatch)
+        return `Added dependency ${depMatch[1]}`;
+    }
+    if (line.includes("CREATE TABLE") || line.includes("CREATE VIRTUAL TABLE") || line.includes("ALTER TABLE")) {
+      return `Schema change: ${line.substring(0, 60)}`;
+    }
   }
-  const colonIndex = summary.indexOf(": ");
-  if (colonIndex > 0 && colonIndex < 60) {
-    return ` \u2014 ${summary.substring(colonIndex + 2, colonIndex + 82)}`;
+  if (oldLines.length > 0 && newLines.length > 0 && oldLines.length === newLines.length) {
+    if (oldLines.length === 1 && newLines.length === 1) {
+      const old = oldLines[0];
+      const new_ = newLines[0];
+      if (old.length < 80 && new_.length < 80) {
+        return `Changed "${old.substring(0, 40)}" \u2192 "${new_.substring(0, 40)}"`;
+      }
+    }
   }
-  return "";
+  const netLines = newLines.length - oldLines.length;
+  if (netLines > 5)
+    return `Added ~${netLines} lines`;
+  if (netLines < -5)
+    return `Removed ~${Math.abs(netLines)} lines`;
+  if (addedLines.length > 0) {
+    const hint = addedLines[0].substring(0, 60);
+    return `Changed: ${hint}`;
+  }
+  return "modified";
 }
 function writeActivityToMemory(projectPath, newContent, maxLines = DEFAULT_MAX_LINES) {
   const memoryDir = resolveMemoryDir(projectPath);

@@ -78,12 +78,11 @@ function formatObservationLine(obs: Observation): string {
   const file = obs.files_touched[0] || '';
   const shortFile = file ? file.split('/').slice(-2).join('/') : '';
 
-  // Map tool names to action verbs
   switch (obs.tool_name) {
     case 'Edit':
-      return `**Edited** ${shortFile}${extractDetail(obs)}`;
+      return `**Edited** ${shortFile} — ${describeEdit(obs)}`;
     case 'Write':
-      return `**Created** ${shortFile}${extractDetail(obs)}`;
+      return `**Created** ${shortFile}`;
     case 'Bash': {
       if (obs.summary.includes('git commit')) {
         const msg = obs.summary.match(/commit -m ["'](.+?)["']/)?.[1]
@@ -92,6 +91,9 @@ function formatObservationLine(obs: Observation): string {
         return `**Git commit** — "${msg.substring(0, 80)}"`;
       }
       if (obs.summary.includes('git push')) return `**Git push** — ${obs.summary.substring(0, 80)}`;
+      if (obs.summary.includes('npm run build')) return `**Build** — ${obs.summary.substring(0, 80)}`;
+      if (obs.summary.includes('npm install')) return `**Install** — ${obs.summary.substring(0, 80)}`;
+      if (obs.summary.includes('npm run test') || obs.summary.includes('npm test')) return `**Test** — ${obs.summary.substring(0, 80)}`;
       return `**Ran** ${obs.summary.substring(0, 80)}`;
     }
     case 'Read':
@@ -102,20 +104,79 @@ function formatObservationLine(obs: Observation): string {
 }
 
 /**
- * Extract a brief detail suffix from an observation's summary.
+ * Describe an Edit observation by analyzing the old_string/new_string diff
+ * in the metadata to produce a meaningful summary of what changed.
  */
-function extractDetail(obs: Observation): string {
-  // Try to extract a meaningful suffix from the summary
-  const summary = obs.summary;
-  const dashIndex = summary.indexOf(' — ');
-  if (dashIndex > 0) {
-    return ` — ${summary.substring(dashIndex + 3, dashIndex + 83)}`;
+function describeEdit(obs: Observation): string {
+  const toolInput = obs.metadata?.tool_input as Record<string, unknown> | undefined;
+  if (!toolInput) return 'modified';
+
+  const oldStr = (toolInput.old_string as string) || '';
+  const newStr = (toolInput.new_string as string) || '';
+
+  if (!oldStr && !newStr) return 'modified';
+
+  const oldLines = oldStr.split('\n').map(l => l.trim()).filter(Boolean);
+  const newLines = newStr.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // Find lines added (in new but not in old)
+  const oldSet = new Set(oldLines);
+  const addedLines = newLines.filter(l => !oldSet.has(l));
+
+  // Look for high-signal patterns in added lines
+  for (const line of addedLines) {
+    // New function/method/class
+    const funcMatch = line.match(/(?:function|async function|class|const|export)\s+(\w+)/);
+    if (funcMatch) return `Added ${funcMatch[0].substring(0, 60)}`;
+
+    // New import
+    const importMatch = line.match(/import\s+.+from\s+['"](.+?)['"]/);
+    if (importMatch) return `Added import from '${importMatch[1]}'`;
+
+    // New interface/type
+    const typeMatch = line.match(/(?:interface|type)\s+(\w+)/);
+    if (typeMatch) return `Added ${typeMatch[0]}`;
+
+    // New tool/route/endpoint
+    const toolMatch = line.match(/['"](\w+)['"]/);
+    if (line.includes('server.tool') && toolMatch) return `Added tool '${toolMatch[1]}'`;
+
+    // New dependency
+    if (line.includes('"dependencies"') || line.match(/["']\w+["']\s*:\s*["']\^/)) {
+      const depMatch = line.match(/["'](@?[\w/-]+)["']\s*:/);
+      if (depMatch) return `Added dependency ${depMatch[1]}`;
+    }
+
+    // New SQL/schema
+    if (line.includes('CREATE TABLE') || line.includes('CREATE VIRTUAL TABLE') || line.includes('ALTER TABLE')) {
+      return `Schema change: ${line.substring(0, 60)}`;
+    }
   }
-  const colonIndex = summary.indexOf(': ');
-  if (colonIndex > 0 && colonIndex < 60) {
-    return ` — ${summary.substring(colonIndex + 2, colonIndex + 82)}`;
+
+  // Check for renames/replacements
+  if (oldLines.length > 0 && newLines.length > 0 && oldLines.length === newLines.length) {
+    // Single-line change — show what changed
+    if (oldLines.length === 1 && newLines.length === 1) {
+      const old = oldLines[0]!;
+      const new_ = newLines[0]!;
+      // If lines are similar, describe the change
+      if (old.length < 80 && new_.length < 80) {
+        return `Changed "${old.substring(0, 40)}" → "${new_.substring(0, 40)}"`;
+      }
+    }
   }
-  return '';
+
+  // Summarize by size of change
+  const netLines = newLines.length - oldLines.length;
+  if (netLines > 5) return `Added ~${netLines} lines`;
+  if (netLines < -5) return `Removed ~${Math.abs(netLines)} lines`;
+  if (addedLines.length > 0) {
+    // Use first meaningful added line as hint
+    const hint = addedLines[0]!.substring(0, 60);
+    return `Changed: ${hint}`;
+  }
+
+  return 'modified';
 }
 
 /**
