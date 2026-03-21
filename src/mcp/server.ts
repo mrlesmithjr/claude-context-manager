@@ -146,9 +146,9 @@ function formatStats(stats: Stats, project?: string, vectorStats?: VectorStats):
 
 server.tool(
   'context_search',
-  'Search past Claude Code session activity using full-text search. Use when the user references past work, asks "where did I...", "when did I...", or needs to find previous changes.',
+  'Search past Claude Code session activity. Uses keyword search (FTS5) first, then automatically falls back to semantic similarity search if no keyword matches are found and embeddings are available.',
   {
-    query: z.string().describe('Search query (keywords, file names, tool names, etc.)'),
+    query: z.string().describe('Search query (keywords, file names, tool names, natural language, etc.)'),
     project: z
       .string()
       .optional()
@@ -159,13 +159,43 @@ server.tool(
   async ({ query, project }) => {
     const db = await getStorage();
     const observations = await db.search(query, project);
+
+    if (observations.length > 0) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Found ${observations.length} observations matching "${query}" (keyword search):\n\n${formatObservations(observations)}`,
+          },
+        ],
+      };
+    }
+
+    // FTS5 returned nothing — try semantic search as fallback
+    if (db.isVectorSearchEnabled()) {
+      const embeddingService = getEmbeddingService();
+      const queryEmbedding = await embeddingService.embed(query);
+
+      if (queryEmbedding) {
+        const semanticResults = await db.vectorSearch(queryEmbedding, project, 10);
+        if (semanticResults.length > 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `No exact keyword matches for "${query}", but found ${semanticResults.length} semantically similar observations:\n\n${formatObservations(semanticResults)}`,
+              },
+            ],
+          };
+        }
+      }
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: observations.length > 0
-            ? `Found ${observations.length} observations matching "${query}":\n\n${formatObservations(observations)}`
-            : `No observations found matching "${query}".`,
+          text: `No observations found matching "${query}".`,
         },
       ],
     };

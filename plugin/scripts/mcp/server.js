@@ -31324,7 +31324,7 @@ function getEmbeddingService() {
 // src/mcp/server.ts
 var server = new McpServer({
   name: "context-manager",
-  version: true ? "0.5.9" : "0.5.0"
+  version: true ? "0.5.10" : "0.5.0"
 });
 var storage = null;
 async function getStorage() {
@@ -31414,9 +31414,9 @@ function formatStats(stats, project, vectorStats) {
 }
 server.tool(
   "context_search",
-  'Search past Claude Code session activity using full-text search. Use when the user references past work, asks "where did I...", "when did I...", or needs to find previous changes.',
+  "Search past Claude Code session activity. Uses keyword search (FTS5) first, then automatically falls back to semantic similarity search if no keyword matches are found and embeddings are available.",
   {
-    query: external_exports3.string().describe("Search query (keywords, file names, tool names, etc.)"),
+    query: external_exports3.string().describe("Search query (keywords, file names, tool names, natural language, etc.)"),
     project: external_exports3.string().optional().describe(
       "Project path to scope search. Omit to search all projects."
     )
@@ -31424,13 +31424,42 @@ server.tool(
   async ({ query, project }) => {
     const db = await getStorage();
     const observations = await db.search(query, project);
+    if (observations.length > 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Found ${observations.length} observations matching "${query}" (keyword search):
+
+${formatObservations(observations)}`
+          }
+        ]
+      };
+    }
+    if (db.isVectorSearchEnabled()) {
+      const embeddingService = getEmbeddingService();
+      const queryEmbedding = await embeddingService.embed(query);
+      if (queryEmbedding) {
+        const semanticResults = await db.vectorSearch(queryEmbedding, project, 10);
+        if (semanticResults.length > 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `No exact keyword matches for "${query}", but found ${semanticResults.length} semantically similar observations:
+
+${formatObservations(semanticResults)}`
+              }
+            ]
+          };
+        }
+      }
+    }
     return {
       content: [
         {
           type: "text",
-          text: observations.length > 0 ? `Found ${observations.length} observations matching "${query}":
-
-${formatObservations(observations)}` : `No observations found matching "${query}".`
+          text: `No observations found matching "${query}".`
         }
       ]
     };
