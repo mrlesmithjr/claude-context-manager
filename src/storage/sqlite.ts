@@ -702,14 +702,16 @@ export class SQLiteStorage implements ContextStorage {
       deletedObservations = result.changes;
     }
 
-    // Run compaction on observations older than 7 days
-    const compactionResult = await this.compactObservations(7);
-
-    // Clean up orphaned observations (referencing non-existent sessions)
+    // Clean up orphaned observations BEFORE compaction (referencing non-existent sessions)
+    // Compaction groups by session_id and inserts new rows — if orphaned observations
+    // reference deleted sessions, the INSERT will violate the FK constraint.
     this.db.prepare(`
       DELETE FROM observations
       WHERE session_id NOT IN (SELECT id FROM sessions)
     `).run();
+
+    // Run compaction on observations older than 7 days
+    const compactionResult = await this.compactObservations(7);
 
     // Clean up orphaned user_prompts (sessions with no remaining observations)
     this.db.prepare(`

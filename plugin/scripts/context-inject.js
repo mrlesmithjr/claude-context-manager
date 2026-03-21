@@ -515,11 +515,11 @@ var SQLiteStorage = class {
       const result = stmt.run(cutoffISO);
       deletedObservations = result.changes;
     }
-    const compactionResult = await this.compactObservations(7);
     this.db.prepare(`
       DELETE FROM observations
       WHERE session_id NOT IN (SELECT id FROM sessions)
     `).run();
+    const compactionResult = await this.compactObservations(7);
     this.db.prepare(`
       DELETE FROM user_prompts
       WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)
@@ -916,11 +916,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.5.3") {
+    if (installedVersion !== "0.5.4") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.5.3"}
+   Source:    v${"0.5.4"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -951,7 +951,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.5.3"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.5.4"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     const context = lines.join("\n");
     console.error(`[context-manager] ${count} observations tracked, activity exported to auto-memory`);

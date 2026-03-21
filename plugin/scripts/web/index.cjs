@@ -44136,11 +44136,11 @@ var SQLiteStorage = class {
       const result = stmt.run(cutoffISO);
       deletedObservations = result.changes;
     }
-    const compactionResult = await this.compactObservations(7);
     this.db.prepare(`
       DELETE FROM observations
       WHERE session_id NOT IN (SELECT id FROM sessions)
     `).run();
+    const compactionResult = await this.compactObservations(7);
     this.db.prepare(`
       DELETE FROM user_prompts
       WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)

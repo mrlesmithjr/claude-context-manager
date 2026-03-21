@@ -30603,11 +30603,11 @@ var SQLiteStorage = class {
       const result = stmt.run(cutoffISO);
       deletedObservations = result.changes;
     }
-    const compactionResult = await this.compactObservations(7);
     this.db.prepare(`
       DELETE FROM observations
       WHERE session_id NOT IN (SELECT id FROM sessions)
     `).run();
+    const compactionResult = await this.compactObservations(7);
     this.db.prepare(`
       DELETE FROM user_prompts
       WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)
@@ -31047,7 +31047,7 @@ async function exportToAutoMemory(storage2, projectPath, sessionId) {
 // src/mcp/server.ts
 var server = new McpServer({
   name: "context-manager",
-  version: true ? "0.5.3" : "0.5.0"
+  version: true ? "0.5.4" : "0.5.0"
 });
 var storage = null;
 async function getStorage() {
