@@ -44496,7 +44496,7 @@ var SQLiteStorage = class {
         `UPDATE observations SET embedding = ? WHERE id = ?`
       ).run(embeddingBuf, id);
       this.db.prepare(
-        `INSERT OR REPLACE INTO vec_observations (observation_id, embedding) VALUES (?, ?)`
+        `INSERT OR REPLACE INTO vec_observations (observation_id, embedding) VALUES (CAST(? AS INTEGER), ?)`
       ).run(id, embeddingBuf);
     });
     saveTransaction();

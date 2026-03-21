@@ -1185,9 +1185,10 @@ export class SQLiteStorage implements ContextStorage {
         `UPDATE observations SET embedding = ? WHERE id = ?`
       ).run(embeddingBuf, id);
 
-      // Upsert into vec0 index
+      // Upsert into vec0 index — CAST required because vec0 only accepts
+      // SQL INTEGER types for primary keys, not JS numbers via parameters
       this.db.prepare(
-        `INSERT OR REPLACE INTO vec_observations (observation_id, embedding) VALUES (?, ?)`
+        `INSERT OR REPLACE INTO vec_observations (observation_id, embedding) VALUES (CAST(? AS INTEGER), ?)`
       ).run(id, embeddingBuf);
     });
 

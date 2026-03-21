@@ -30963,7 +30963,7 @@ var SQLiteStorage = class {
         `UPDATE observations SET embedding = ? WHERE id = ?`
       ).run(embeddingBuf, id);
       this.db.prepare(
-        `INSERT OR REPLACE INTO vec_observations (observation_id, embedding) VALUES (?, ?)`
+        `INSERT OR REPLACE INTO vec_observations (observation_id, embedding) VALUES (CAST(? AS INTEGER), ?)`
       ).run(id, embeddingBuf);
     });
     saveTransaction();
@@ -31324,7 +31324,7 @@ function getEmbeddingService() {
 // src/mcp/server.ts
 var server = new McpServer({
   name: "context-manager",
-  version: true ? "0.5.8" : "0.5.0"
+  version: true ? "0.5.9" : "0.5.0"
 });
 var storage = null;
 async function getStorage() {
