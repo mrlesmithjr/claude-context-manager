@@ -230,6 +230,33 @@ export interface ContextStorage {
   countSessions(project?: string, status?: string): Promise<number>;
 
   /**
+   * Check if vector search (sqlite-vec) is available
+   */
+  isVectorSearchEnabled(): boolean;
+
+  /**
+   * Save an embedding for an observation
+   * @param id - Observation ID
+   * @param embedding - Float32Array of embedding values (384-dim)
+   */
+  saveEmbedding(id: number, embedding: Float32Array): Promise<void>;
+
+  /**
+   * Search observations by vector similarity
+   * @param embedding - Query embedding (384-dim Float32Array)
+   * @param project - Project path (optional, for project-scoped search)
+   * @param topK - Maximum results to return (default: 10)
+   */
+  vectorSearch(embedding: Float32Array, project?: string, topK?: number): Promise<Observation[]>;
+
+  /**
+   * Get observations that don't have embeddings yet
+   * @param limit - Maximum number to return (default: 100)
+   * @param project - Project path (optional)
+   */
+  getUnembeddedObservations(limit?: number, project?: string): Promise<Observation[]>;
+
+  /**
    * Close storage connection
    */
   close(): void;

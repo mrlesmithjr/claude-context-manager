@@ -31,7 +31,13 @@ console.log(`[build-hooks] Building hooks with version: ${VERSION}`);
 // so the plugin is self-contained when installed to Claude Code's plugin cache.
 // These vendored deps are committed to git so GitHub-based installs work.
 const pluginNodeModules = join(PROJECT_ROOT, 'plugin', 'node_modules');
-const nativeDeps = ['better-sqlite3', 'bindings', 'file-uri-to-path'];
+const nativeDeps = ['better-sqlite3', 'bindings', 'file-uri-to-path', 'sqlite-vec'];
+
+// Also vendor platform-specific sqlite-vec binary package if present
+const sqliteVecPlatformPkg = `sqlite-vec-${process.platform}-${process.arch}`;
+if (existsSync(join(PROJECT_ROOT, 'node_modules', sqliteVecPlatformPkg))) {
+  nativeDeps.push(sqliteVecPlatformPkg);
+}
 
 // Clean and recreate to avoid stale files
 if (existsSync(pluginNodeModules)) {
@@ -74,18 +80,28 @@ const banner = `
 import { createRequire as __ctxCreateRequire } from 'module';
 const __ctxRequire = __ctxCreateRequire(import.meta.url);
 const __betterSqlite3 = __ctxRequire('better-sqlite3');
+const __sqliteVec = __ctxRequire('sqlite-vec');
 `.trim();
 
-// esbuild plugin to shim better-sqlite3 with the banner-provided variable
-const betterSqlite3Shim = {
-  name: 'better-sqlite3-shim',
+// esbuild plugin to shim native modules with the banner-provided variables
+const nativeModuleShim = {
+  name: 'native-module-shim',
   setup(build) {
     build.onResolve({ filter: /^better-sqlite3$/ }, args => {
       return { path: 'better-sqlite3', namespace: 'shim' };
     });
-    build.onLoad({ filter: /.*/, namespace: 'shim' }, args => {
+    build.onResolve({ filter: /^sqlite-vec$/ }, args => {
+      return { path: 'sqlite-vec', namespace: 'shim' };
+    });
+    build.onLoad({ filter: /^better-sqlite3$/, namespace: 'shim' }, args => {
       return {
         contents: 'export default __betterSqlite3;',
+        loader: 'js'
+      };
+    });
+    build.onLoad({ filter: /^sqlite-vec$/, namespace: 'shim' }, args => {
+      return {
+        contents: 'export const load = __sqliteVec.load; export default __sqliteVec;',
         loader: 'js'
       };
     });
@@ -100,9 +116,9 @@ const sharedOptions = {
   target: 'node18',
   format: 'esm',
   banner: { js: banner },
-  external: ['better-sqlite3'],
+  external: ['better-sqlite3', 'sqlite-vec', '@huggingface/transformers', 'onnxruntime-node'],
   define: { 'PLUGIN_VERSION': JSON.stringify(VERSION) },
-  plugins: [betterSqlite3Shim]
+  plugins: [nativeModuleShim]
 };
 
 // Build hooks
@@ -143,12 +159,12 @@ await build({
   platform: 'node',
   target: 'node18',
   format: 'cjs',
-  external: ['better-sqlite3'],
+  external: ['better-sqlite3', 'sqlite-vec', '@huggingface/transformers', 'onnxruntime-node'],
   define: { 'PLUGIN_VERSION': JSON.stringify(VERSION) },
   banner: {
-    js: `const __betterSqlite3 = require('better-sqlite3');`
+    js: `const __betterSqlite3 = require('better-sqlite3');\nconst __sqliteVec = require('sqlite-vec');`
   },
-  plugins: [betterSqlite3Shim]
+  plugins: [nativeModuleShim]
 });
 console.log('[build-hooks] Web server built (plugin/scripts/web/index.cjs)');
 

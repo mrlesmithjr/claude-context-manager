@@ -1,6 +1,7 @@
 import { createRequire as __ctxCreateRequire } from 'module';
 const __ctxRequire = __ctxCreateRequire(import.meta.url);
 const __betterSqlite3 = __ctxRequire('better-sqlite3');
+const __sqliteVec = __ctxRequire('sqlite-vec');
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -30098,9 +30099,16 @@ var better_sqlite3_default = __betterSqlite3;
 import { homedir } from "os";
 import path from "path";
 import { mkdirSync } from "fs";
+
+// shim:sqlite-vec
+var load = __sqliteVec.load;
+var sqlite_vec_default = __sqliteVec;
+
+// src/storage/sqlite.ts
 var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
 var SQLiteStorage = class {
   db;
+  vecEnabled = false;
   constructor(dbPath = DEFAULT_DB_PATH) {
     const dir = path.dirname(dbPath);
     mkdirSync(dir, { recursive: true });
@@ -30110,6 +30118,12 @@ var SQLiteStorage = class {
     this.db.pragma("temp_store = MEMORY");
     this.db.pragma("cache_size = -64000");
     this.db.pragma("foreign_keys = ON");
+    try {
+      load(this.db);
+      this.vecEnabled = true;
+    } catch {
+      this.vecEnabled = false;
+    }
   }
   async initialize() {
     this.db.exec(`
@@ -30239,6 +30253,7 @@ var SQLiteStorage = class {
     `);
     this.migrateAddImportanceColumns();
     this.migrateAddExportedAtColumn();
+    this.migrateAddVectorSearch();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -30912,6 +30927,108 @@ var SQLiteStorage = class {
     );
     stmt.run(now, JSON.stringify(ids));
   }
+  /**
+   * Migration: add embedding column and vec0 virtual table for vector search.
+   * Only creates the vec0 table if sqlite-vec loaded successfully.
+   */
+  migrateAddVectorSearch() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("embedding")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN embedding BLOB`);
+    }
+    if (!this.vecEnabled)
+      return;
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS vec_observations USING vec0(
+          observation_id INTEGER PRIMARY KEY,
+          embedding float[384]
+        )
+      `);
+    } catch {
+      this.vecEnabled = false;
+    }
+  }
+  isVectorSearchEnabled() {
+    return this.vecEnabled;
+  }
+  async saveEmbedding(id, embedding) {
+    if (!this.vecEnabled) {
+      throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
+    }
+    const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+    const saveTransaction = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE observations SET embedding = ? WHERE id = ?`
+      ).run(embeddingBuf, id);
+      this.db.prepare(
+        `INSERT OR REPLACE INTO vec_observations (observation_id, embedding) VALUES (?, ?)`
+      ).run(id, embeddingBuf);
+    });
+    saveTransaction();
+  }
+  async vectorSearch(embedding, project, topK = 10) {
+    if (!this.vecEnabled) {
+      throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
+    }
+    const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+    let sql;
+    let params;
+    if (project) {
+      sql = `
+        SELECT o.*, v.distance
+        FROM vec_observations v
+        INNER JOIN observations o ON o.id = v.observation_id
+        WHERE v.embedding MATCH ? AND k = ?
+          AND o.project LIKE ?
+        ORDER BY v.distance ASC
+      `;
+      params = [embeddingBuf, topK, project + "%"];
+    } else {
+      sql = `
+        SELECT o.*, v.distance
+        FROM vec_observations v
+        INNER JOIN observations o ON o.id = v.observation_id
+        WHERE v.embedding MATCH ? AND k = ?
+        ORDER BY v.distance ASC
+      `;
+      params = [embeddingBuf, topK];
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
+  }
+  /**
+   * Count observations missing embeddings (efficient SQL COUNT)
+   */
+  countUnembedded(project) {
+    const sql = project ? `SELECT COUNT(*) as count FROM observations WHERE embedding IS NULL AND project LIKE ?` : `SELECT COUNT(*) as count FROM observations WHERE embedding IS NULL`;
+    const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
+    return row.count;
+  }
+  async getUnembeddedObservations(limit = 100, project) {
+    let sql;
+    let params;
+    if (project) {
+      sql = `
+        SELECT * FROM observations
+        WHERE embedding IS NULL AND project LIKE ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [project + "%", limit];
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE embedding IS NULL
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [limit];
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
+  }
   close() {
     this.db.close();
   }
@@ -31044,10 +31161,87 @@ async function exportToAutoMemory(storage2, projectPath, sessionId) {
   return { exported: observations.length, filePath };
 }
 
+// src/embedding/service.ts
+var MODEL_ID = "Xenova/all-MiniLM-L6-v2";
+var EmbeddingService = class {
+  pipeline = null;
+  status = "not-loaded";
+  error = null;
+  /**
+   * Get current status of the embedding service
+   */
+  getStatus() {
+    return { status: this.status, error: this.error };
+  }
+  /**
+   * Load the embedding model (called automatically on first embed call)
+   */
+  async load() {
+    if (this.status === "ready")
+      return true;
+    if (this.status === "unavailable")
+      return false;
+    this.status = "loading";
+    this.error = null;
+    try {
+      const { pipeline } = await import("@huggingface/transformers");
+      this.pipeline = await pipeline("feature-extraction", MODEL_ID, {
+        dtype: "fp32"
+      });
+      this.status = "ready";
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("Cannot find module") || message.includes("MODULE_NOT_FOUND")) {
+        this.status = "unavailable";
+        this.error = "@huggingface/transformers is not installed. Install it with: npm install @huggingface/transformers";
+      } else {
+        this.status = "error";
+        this.error = `Failed to load embedding model: ${message}`;
+      }
+      return false;
+    }
+  }
+  /**
+   * Embed a single text string
+   * @returns Float32Array of 384 dimensions, or null if service unavailable
+   */
+  async embed(text) {
+    const results = await this.embedBatch([text]);
+    return results ? results[0] ?? null : null;
+  }
+  /**
+   * Embed a batch of text strings
+   * @returns Array of Float32Array (384-dim each), or null if service unavailable
+   */
+  async embedBatch(texts) {
+    if (texts.length === 0)
+      return [];
+    if (this.status !== "ready") {
+      const loaded = await this.load();
+      if (!loaded || !this.pipeline)
+        return null;
+    }
+    const output = await this.pipeline(texts, {
+      pooling: "mean",
+      normalize: true
+    });
+    const nested = output.tolist();
+    return nested.map((arr) => new Float32Array(arr));
+  }
+};
+var instance = null;
+function getEmbeddingService() {
+  if (!instance) {
+    instance = new EmbeddingService();
+  }
+  return instance;
+}
+
 // src/mcp/server.ts
 var server = new McpServer({
   name: "context-manager",
-  version: true ? "0.5.4" : "0.5.0"
+  version: true ? "0.5.5" : "0.5.0"
 });
 var storage = null;
 async function getStorage() {
@@ -31071,7 +31265,7 @@ function formatObservations(observations) {
   }
   return lines.join("\n");
 }
-function formatStats(stats, project) {
+function formatStats(stats, project, vectorStats) {
   const lines = [];
   lines.push("Context Manager Statistics");
   lines.push("");
@@ -31120,6 +31314,18 @@ function formatStats(stats, project) {
     lines.push(
       `  Compacted: ${stats.compacted_count} observations (from ${stats.compacted_original_count} originals)`
     );
+  }
+  if (vectorStats) {
+    lines.push("");
+    lines.push("=== Vector Search ===");
+    lines.push(`  Enabled: ${vectorStats.vector_search_enabled ? "yes" : "no"}`);
+    if (vectorStats.vector_search_enabled) {
+      const total = vectorStats.embedded_count + vectorStats.unembedded_count;
+      const pct = total > 0 ? Math.round(vectorStats.embedded_count / total * 100) : 0;
+      lines.push(`  Embedded: ${vectorStats.embedded_count.toLocaleString()} / ${total.toLocaleString()} (${pct}%)`);
+      lines.push(`  Pending: ${vectorStats.unembedded_count.toLocaleString()}`);
+      lines.push(`  Model Status: ${vectorStats.embedding_status}`);
+    }
   }
   return lines.join("\n");
 }
@@ -31180,11 +31386,23 @@ server.tool(
   async ({ project }) => {
     const db = await getStorage();
     const stats = await db.getStats(project);
+    const vecEnabled = db.isVectorSearchEnabled();
+    const embeddingService = getEmbeddingService();
+    const vectorStats = {
+      vector_search_enabled: vecEnabled,
+      embedded_count: 0,
+      unembedded_count: 0,
+      embedding_status: vecEnabled ? embeddingService.getStatus().status : "n/a"
+    };
+    if (vecEnabled) {
+      vectorStats.unembedded_count = db.countUnembedded(project);
+      vectorStats.embedded_count = stats.total_observations - vectorStats.unembedded_count;
+    }
     return {
       content: [
         {
           type: "text",
-          text: formatStats(stats, project)
+          text: formatStats(stats, project, vectorStats)
         }
       ]
     };
@@ -31260,6 +31478,147 @@ server.tool(
       lines.push(`Cleaned up ${result.sessions} orphaned sessions.`);
     }
     lines.push("Database optimized.");
+    return {
+      content: [
+        {
+          type: "text",
+          text: lines.join("\n")
+        }
+      ]
+    };
+  }
+);
+server.tool(
+  "context_semantic_search",
+  "Search past Claude Code session activity using semantic similarity. Finds conceptually related observations even when exact keywords differ. Requires embeddings to be generated first via context_embed.",
+  {
+    query: external_exports3.string().describe("Natural language query describing what you are looking for"),
+    project: external_exports3.string().optional().describe("Project path to scope search. Omit to search all projects."),
+    top_k: external_exports3.number().optional().default(10).describe("Maximum number of results to return (default: 10)")
+  },
+  async ({ query, project, top_k }) => {
+    const db = await getStorage();
+    if (!db.isVectorSearchEnabled()) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Vector search is not available (sqlite-vec extension not loaded). FTS5 keyword search via context_search is still available."
+          }
+        ]
+      };
+    }
+    const embeddingService = getEmbeddingService();
+    const queryEmbedding = await embeddingService.embed(query);
+    if (!queryEmbedding) {
+      const { status, error: error48 } = embeddingService.getStatus();
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Embedding model not available (status: ${status}).${error48 ? ` ${error48}` : ""}
+
+FTS5 keyword search via context_search is still available.`
+          }
+        ]
+      };
+    }
+    const observations = await db.vectorSearch(queryEmbedding, project, top_k);
+    return {
+      content: [
+        {
+          type: "text",
+          text: observations.length > 0 ? `Found ${observations.length} semantically similar observations for "${query}":
+
+${formatObservations(observations)}` : `No embedded observations found${project ? ` for ${project}` : ""}. Run context_embed first to generate embeddings.`
+        }
+      ]
+    };
+  }
+);
+server.tool(
+  "context_embed",
+  "Generate vector embeddings for observations that are missing them. Embeddings enable semantic search via context_semantic_search. Downloads the model (~80MB) on first use.",
+  {
+    project: external_exports3.string().optional().describe("Project path to scope embedding. Omit to embed all projects."),
+    batch_size: external_exports3.number().optional().default(50).describe("Number of observations to embed per batch (default: 50)"),
+    limit: external_exports3.number().optional().default(500).describe("Maximum total observations to embed in this call (default: 500)")
+  },
+  async ({ project, batch_size, limit }) => {
+    const db = await getStorage();
+    if (!db.isVectorSearchEnabled()) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Vector search is not available (sqlite-vec extension not loaded). Cannot generate embeddings."
+          }
+        ]
+      };
+    }
+    const embeddingService = getEmbeddingService();
+    const loaded = await embeddingService.load();
+    if (!loaded) {
+      const { error: error48 } = embeddingService.getStatus();
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to load embedding model.${error48 ? ` ${error48}` : ""}`
+          }
+        ]
+      };
+    }
+    const unembedded = await db.getUnembeddedObservations(limit, project);
+    if (unembedded.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `All observations${project ? ` for ${project}` : ""} already have embeddings.`
+          }
+        ]
+      };
+    }
+    let embedded = 0;
+    let errors = 0;
+    for (let i = 0; i < unembedded.length; i += batch_size) {
+      const batch = unembedded.slice(i, i + batch_size);
+      const texts = batch.map((obs) => {
+        const parts = [obs.summary];
+        if (obs.files_touched.length > 0) {
+          parts.push(obs.files_touched.join(", "));
+        }
+        return parts.join(" | ");
+      });
+      const embeddings = await embeddingService.embedBatch(texts);
+      if (!embeddings) {
+        errors += batch.length;
+        continue;
+      }
+      for (let j = 0; j < batch.length; j++) {
+        const obs = batch[j];
+        const emb = embeddings[j];
+        if (!obs?.id || !emb) {
+          errors++;
+          continue;
+        }
+        try {
+          await db.saveEmbedding(obs.id, emb);
+          embedded++;
+        } catch {
+          errors++;
+        }
+      }
+    }
+    const lines = [`Embedded ${embedded} observations.`];
+    if (errors > 0) {
+      lines.push(`${errors} observations failed to embed.`);
+    }
+    const remaining = unembedded.length - embedded;
+    if (remaining > 0 && unembedded.length === limit) {
+      lines.push(`More observations may remain \u2014 run again to continue.`);
+    }
     return {
       content: [
         {

@@ -16,6 +16,7 @@ import {
   resolveMemoryDir,
   formatObservationsForMemory,
 } from '../export/memory.js';
+import { getEmbeddingService } from '../embedding/service.js';
 import type { Observation, Stats } from '../storage/interface.js';
 
 // Version injected by esbuild
@@ -59,7 +60,14 @@ function formatObservations(observations: Observation[]): string {
 /**
  * Format stats for tool output
  */
-function formatStats(stats: Stats, project?: string): string {
+interface VectorStats {
+  vector_search_enabled: boolean;
+  embedded_count: number;
+  unembedded_count: number;
+  embedding_status: string;
+}
+
+function formatStats(stats: Stats, project?: string, vectorStats?: VectorStats): string {
   const lines: string[] = [];
 
   lines.push('Context Manager Statistics');
@@ -116,6 +124,19 @@ function formatStats(stats: Stats, project?: string): string {
     lines.push(
       `  Compacted: ${stats.compacted_count} observations (from ${stats.compacted_original_count} originals)`
     );
+  }
+
+  if (vectorStats) {
+    lines.push('');
+    lines.push('=== Vector Search ===');
+    lines.push(`  Enabled: ${vectorStats.vector_search_enabled ? 'yes' : 'no'}`);
+    if (vectorStats.vector_search_enabled) {
+      const total = vectorStats.embedded_count + vectorStats.unembedded_count;
+      const pct = total > 0 ? Math.round((vectorStats.embedded_count / total) * 100) : 0;
+      lines.push(`  Embedded: ${vectorStats.embedded_count.toLocaleString()} / ${total.toLocaleString()} (${pct}%)`);
+      lines.push(`  Pending: ${vectorStats.unembedded_count.toLocaleString()}`);
+      lines.push(`  Model Status: ${vectorStats.embedding_status}`);
+    }
   }
 
   return lines.join('\n');
@@ -194,11 +215,26 @@ server.tool(
   async ({ project }) => {
     const db = await getStorage();
     const stats = await db.getStats(project);
+
+    // Gather vector search stats
+    const vecEnabled = db.isVectorSearchEnabled();
+    const embeddingService = getEmbeddingService();
+    const vectorStats: VectorStats = {
+      vector_search_enabled: vecEnabled,
+      embedded_count: 0,
+      unembedded_count: 0,
+      embedding_status: vecEnabled ? embeddingService.getStatus().status : 'n/a',
+    };
+    if (vecEnabled) {
+      vectorStats.unembedded_count = db.countUnembedded(project);
+      vectorStats.embedded_count = stats.total_observations - vectorStats.unembedded_count;
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: formatStats(stats, project),
+          text: formatStats(stats, project, vectorStats),
         },
       ],
     };
@@ -284,6 +320,180 @@ server.tool(
       lines.push(`Cleaned up ${result.sessions} orphaned sessions.`);
     }
     lines.push('Database optimized.');
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: lines.join('\n'),
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
+  'context_semantic_search',
+  'Search past Claude Code session activity using semantic similarity. Finds conceptually related observations even when exact keywords differ. Requires embeddings to be generated first via context_embed.',
+  {
+    query: z.string().describe('Natural language query describing what you are looking for'),
+    project: z
+      .string()
+      .optional()
+      .describe('Project path to scope search. Omit to search all projects.'),
+    top_k: z
+      .number()
+      .optional()
+      .default(10)
+      .describe('Maximum number of results to return (default: 10)'),
+  },
+  async ({ query, project, top_k }) => {
+    const db = await getStorage();
+
+    if (!db.isVectorSearchEnabled()) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Vector search is not available (sqlite-vec extension not loaded). FTS5 keyword search via context_search is still available.',
+          },
+        ],
+      };
+    }
+
+    const embeddingService = getEmbeddingService();
+    const queryEmbedding = await embeddingService.embed(query);
+
+    if (!queryEmbedding) {
+      const { status, error } = embeddingService.getStatus();
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Embedding model not available (status: ${status}).${error ? ` ${error}` : ''}\n\nFTS5 keyword search via context_search is still available.`,
+          },
+        ],
+      };
+    }
+
+    const observations = await db.vectorSearch(queryEmbedding, project, top_k);
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: observations.length > 0
+            ? `Found ${observations.length} semantically similar observations for "${query}":\n\n${formatObservations(observations)}`
+            : `No embedded observations found${project ? ` for ${project}` : ''}. Run context_embed first to generate embeddings.`,
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
+  'context_embed',
+  'Generate vector embeddings for observations that are missing them. Embeddings enable semantic search via context_semantic_search. Downloads the model (~80MB) on first use.',
+  {
+    project: z
+      .string()
+      .optional()
+      .describe('Project path to scope embedding. Omit to embed all projects.'),
+    batch_size: z
+      .number()
+      .optional()
+      .default(50)
+      .describe('Number of observations to embed per batch (default: 50)'),
+    limit: z
+      .number()
+      .optional()
+      .default(500)
+      .describe('Maximum total observations to embed in this call (default: 500)'),
+  },
+  async ({ project, batch_size, limit }) => {
+    const db = await getStorage();
+
+    if (!db.isVectorSearchEnabled()) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Vector search is not available (sqlite-vec extension not loaded). Cannot generate embeddings.',
+          },
+        ],
+      };
+    }
+
+    const embeddingService = getEmbeddingService();
+    const loaded = await embeddingService.load();
+
+    if (!loaded) {
+      const { error } = embeddingService.getStatus();
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Failed to load embedding model.${error ? ` ${error}` : ''}`,
+          },
+        ],
+      };
+    }
+
+    const unembedded = await db.getUnembeddedObservations(limit, project);
+
+    if (unembedded.length === 0) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `All observations${project ? ` for ${project}` : ''} already have embeddings.`,
+          },
+        ],
+      };
+    }
+
+    let embedded = 0;
+    let errors = 0;
+
+    // Process in batches
+    for (let i = 0; i < unembedded.length; i += batch_size) {
+      const batch = unembedded.slice(i, i + batch_size);
+
+      // Build text for embedding: summary + files
+      const texts = batch.map(obs => {
+        const parts = [obs.summary];
+        if (obs.files_touched.length > 0) {
+          parts.push(obs.files_touched.join(', '));
+        }
+        return parts.join(' | ');
+      });
+
+      const embeddings = await embeddingService.embedBatch(texts);
+      if (!embeddings) {
+        errors += batch.length;
+        continue;
+      }
+
+      for (let j = 0; j < batch.length; j++) {
+        const obs = batch[j];
+        const emb = embeddings[j];
+        if (!obs?.id || !emb) { errors++; continue; }
+        try {
+          await db.saveEmbedding(obs.id, emb);
+          embedded++;
+        } catch {
+          errors++;
+        }
+      }
+    }
+
+    const lines = [`Embedded ${embedded} observations.`];
+    if (errors > 0) {
+      lines.push(`${errors} observations failed to embed.`);
+    }
+    const remaining = unembedded.length - embedded;
+    if (remaining > 0 && unembedded.length === limit) {
+      lines.push(`More observations may remain — run again to continue.`);
+    }
 
     return {
       content: [

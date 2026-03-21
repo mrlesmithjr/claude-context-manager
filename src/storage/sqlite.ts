@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import { homedir } from 'os';
 import path from 'path';
 import { mkdirSync } from 'fs';
+import * as sqliteVec from 'sqlite-vec';
 import type {
   ContextStorage,
   Observation,
@@ -27,6 +28,7 @@ const DEFAULT_DB_PATH = path.join(homedir(), '.claude-context', 'context.db');
 
 export class SQLiteStorage implements ContextStorage {
   private db: Database.Database;
+  private vecEnabled: boolean = false;
 
   constructor(dbPath: string = DEFAULT_DB_PATH) {
     // Ensure directory exists
@@ -45,6 +47,15 @@ export class SQLiteStorage implements ContextStorage {
 
     // CRITICAL P1 FIX: Enable foreign keys
     this.db.pragma('foreign_keys = ON');
+
+    // Load sqlite-vec extension for vector similarity search
+    try {
+      sqliteVec.load(this.db);
+      this.vecEnabled = true;
+    } catch {
+      // sqlite-vec not available — graceful degradation
+      this.vecEnabled = false;
+    }
   }
 
   async initialize(): Promise<void> {
@@ -204,6 +215,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add exported_at column
     this.migrateAddExportedAtColumn();
+
+    // Migration: add vector search support
+    this.migrateAddVectorSearch();
   }
 
   /**
@@ -1122,6 +1136,138 @@ export class SQLiteStorage implements ContextStorage {
       `UPDATE observations SET exported_at = ? WHERE id IN (SELECT value FROM json_each(?))`
     );
     stmt.run(now, JSON.stringify(ids));
+  }
+
+  /**
+   * Migration: add embedding column and vec0 virtual table for vector search.
+   * Only creates the vec0 table if sqlite-vec loaded successfully.
+   */
+  private migrateAddVectorSearch(): void {
+    // Add embedding BLOB column if it doesn't exist
+    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('embedding')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN embedding BLOB`);
+    }
+
+    if (!this.vecEnabled) return;
+
+    // Create vec0 virtual table for 384-dimensional float vectors
+    // vec0 tables use CREATE VIRTUAL TABLE which is idempotent-safe
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS vec_observations USING vec0(
+          observation_id INTEGER PRIMARY KEY,
+          embedding float[384]
+        )
+      `);
+    } catch {
+      // vec0 table creation failed — disable vector search
+      this.vecEnabled = false;
+    }
+  }
+
+  isVectorSearchEnabled(): boolean {
+    return this.vecEnabled;
+  }
+
+  async saveEmbedding(id: number, embedding: Float32Array): Promise<void> {
+    if (!this.vecEnabled) {
+      throw new Error('Vector search is not enabled (sqlite-vec not loaded)');
+    }
+
+    const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+
+    const saveTransaction = this.db.transaction(() => {
+      // Save embedding blob on the observations row
+      this.db.prepare(
+        `UPDATE observations SET embedding = ? WHERE id = ?`
+      ).run(embeddingBuf, id);
+
+      // Upsert into vec0 index
+      this.db.prepare(
+        `INSERT OR REPLACE INTO vec_observations (observation_id, embedding) VALUES (?, ?)`
+      ).run(id, embeddingBuf);
+    });
+
+    saveTransaction();
+  }
+
+  async vectorSearch(embedding: Float32Array, project?: string, topK: number = 10): Promise<Observation[]> {
+    if (!this.vecEnabled) {
+      throw new Error('Vector search is not enabled (sqlite-vec not loaded)');
+    }
+
+    const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+
+    let sql: string;
+    let params: unknown[];
+
+    if (project) {
+      sql = `
+        SELECT o.*, v.distance
+        FROM vec_observations v
+        INNER JOIN observations o ON o.id = v.observation_id
+        WHERE v.embedding MATCH ? AND k = ?
+          AND o.project LIKE ?
+        ORDER BY v.distance ASC
+      `;
+      params = [embeddingBuf, topK, project + '%'];
+    } else {
+      sql = `
+        SELECT o.*, v.distance
+        FROM vec_observations v
+        INNER JOIN observations o ON o.id = v.observation_id
+        WHERE v.embedding MATCH ? AND k = ?
+        ORDER BY v.distance ASC
+      `;
+      params = [embeddingBuf, topK];
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
+  }
+
+  /**
+   * Count observations missing embeddings (efficient SQL COUNT)
+   */
+  countUnembedded(project?: string): number {
+    const sql = project
+      ? `SELECT COUNT(*) as count FROM observations WHERE embedding IS NULL AND project LIKE ?`
+      : `SELECT COUNT(*) as count FROM observations WHERE embedding IS NULL`;
+
+    const row = project
+      ? this.db.prepare(sql).get(project + '%') as { count: number }
+      : this.db.prepare(sql).get() as { count: number };
+
+    return row.count;
+  }
+
+  async getUnembeddedObservations(limit: number = 100, project?: string): Promise<Observation[]> {
+    let sql: string;
+    let params: unknown[];
+
+    if (project) {
+      sql = `
+        SELECT * FROM observations
+        WHERE embedding IS NULL AND project LIKE ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [project + '%', limit];
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE embedding IS NULL
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [limit];
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
   }
 
   close(): void {
