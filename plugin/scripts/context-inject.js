@@ -516,11 +516,14 @@ var SQLiteStorage = class {
       deletedObservations = result.changes;
     }
     const compactionResult = await this.compactObservations(7);
-    const orphanPromptsStmt = this.db.prepare(`
+    this.db.prepare(`
+      DELETE FROM observations
+      WHERE session_id NOT IN (SELECT id FROM sessions)
+    `).run();
+    this.db.prepare(`
       DELETE FROM user_prompts
       WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)
-    `);
-    orphanPromptsStmt.run();
+    `).run();
     const orphanStmt = this.db.prepare(`
       DELETE FROM sessions
       WHERE id NOT IN (SELECT DISTINCT session_id FROM observations)
@@ -528,8 +531,10 @@ var SQLiteStorage = class {
     `);
     const orphanResult = orphanStmt.run();
     const deletedSessions = orphanResult.changes;
+    this.db.pragma("foreign_keys = OFF");
     this.db.exec("ANALYZE");
     this.db.exec("VACUUM");
+    this.db.pragma("foreign_keys = ON");
     return {
       observations: deletedObservations,
       sessions: deletedSessions,
@@ -911,11 +916,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.5.2") {
+    if (installedVersion !== "0.5.3") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.5.2"}
+   Source:    v${"0.5.3"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -946,7 +951,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.5.2"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.5.3"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     const context = lines.join("\n");
     console.error(`[context-manager] ${count} observations tracked, activity exported to auto-memory`);

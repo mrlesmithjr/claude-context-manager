@@ -515,11 +515,14 @@ var SQLiteStorage = class {
       deletedObservations = result.changes;
     }
     const compactionResult = await this.compactObservations(7);
-    const orphanPromptsStmt = this.db.prepare(`
+    this.db.prepare(`
+      DELETE FROM observations
+      WHERE session_id NOT IN (SELECT id FROM sessions)
+    `).run();
+    this.db.prepare(`
       DELETE FROM user_prompts
       WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)
-    `);
-    orphanPromptsStmt.run();
+    `).run();
     const orphanStmt = this.db.prepare(`
       DELETE FROM sessions
       WHERE id NOT IN (SELECT DISTINCT session_id FROM observations)
@@ -527,8 +530,10 @@ var SQLiteStorage = class {
     `);
     const orphanResult = orphanStmt.run();
     const deletedSessions = orphanResult.changes;
+    this.db.pragma("foreign_keys = OFF");
     this.db.exec("ANALYZE");
     this.db.exec("VACUUM");
+    this.db.pragma("foreign_keys = ON");
     return {
       observations: deletedObservations,
       sessions: deletedSessions,

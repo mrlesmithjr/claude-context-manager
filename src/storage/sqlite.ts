@@ -705,12 +705,17 @@ export class SQLiteStorage implements ContextStorage {
     // Run compaction on observations older than 7 days
     const compactionResult = await this.compactObservations(7);
 
+    // Clean up orphaned observations (referencing non-existent sessions)
+    this.db.prepare(`
+      DELETE FROM observations
+      WHERE session_id NOT IN (SELECT id FROM sessions)
+    `).run();
+
     // Clean up orphaned user_prompts (sessions with no remaining observations)
-    const orphanPromptsStmt = this.db.prepare(`
+    this.db.prepare(`
       DELETE FROM user_prompts
       WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)
-    `);
-    orphanPromptsStmt.run();
+    `).run();
 
     // Clean up orphaned sessions (no observations AND no prompts)
     const orphanStmt = this.db.prepare(`
@@ -722,8 +727,11 @@ export class SQLiteStorage implements ContextStorage {
     const deletedSessions = orphanResult.changes;
 
     // Update query planner statistics and reclaim space
+    // Temporarily disable FK checks for VACUUM (pre-existing violations may remain)
+    this.db.pragma('foreign_keys = OFF');
     this.db.exec('ANALYZE');
     this.db.exec('VACUUM');
+    this.db.pragma('foreign_keys = ON');
 
     return {
       observations: deletedObservations,
