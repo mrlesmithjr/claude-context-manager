@@ -31163,14 +31163,15 @@ async function exportToAutoMemory(storage2, projectPath, sessionId) {
 
 // src/embedding/service.ts
 import { execSync } from "child_process";
-import { existsSync as existsSync2, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3 } from "fs";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { dirname, join as join2 } from "path";
 var MODEL_ID = "Xenova/all-MiniLM-L6-v2";
-function resolvePluginRoot() {
+function resolveEmbeddingsDir() {
   const thisFile = fileURLToPath(import.meta.url);
-  return dirname(dirname(dirname(thisFile)));
+  const pluginRoot = dirname(dirname(dirname(thisFile)));
+  return join2(pluginRoot, "_embeddings");
 }
 var EmbeddingService = class {
   pipeline = null;
@@ -31184,17 +31185,18 @@ var EmbeddingService = class {
     return { status: this.status, error: this.error, didAutoInstall: this.didAutoInstall };
   }
   /**
-   * Auto-install @huggingface/transformers into the plugin's node_modules.
-   * Runs npm install in the plugin root directory so Node's module
-   * resolution finds the package from the MCP server's location.
+   * Auto-install @huggingface/transformers into a separate _embeddings/
+   * directory. This keeps the vendored native deps (better-sqlite3,
+   * sqlite-vec) in node_modules/ untouched.
    */
   autoInstall() {
-    const pluginRoot = resolvePluginRoot();
-    const nodeModulesDir = join2(pluginRoot, "node_modules");
+    const embeddingsDir = resolveEmbeddingsDir();
+    const nodeModulesDir = join2(embeddingsDir, "node_modules");
     if (existsSync2(join2(nodeModulesDir, "@huggingface", "transformers"))) {
       return true;
     }
-    const pkgJsonPath = join2(pluginRoot, "package.json");
+    mkdirSync3(embeddingsDir, { recursive: true });
+    const pkgJsonPath = join2(embeddingsDir, "package.json");
     if (!existsSync2(pkgJsonPath)) {
       writeFileSync2(pkgJsonPath, JSON.stringify({
         private: true,
@@ -31208,7 +31210,7 @@ var EmbeddingService = class {
       execSync(
         "npm install @huggingface/transformers onnxruntime-node --no-audit --no-fund --no-package-lock",
         {
-          cwd: pluginRoot,
+          cwd: embeddingsDir,
           stdio: "pipe",
           timeout: 3e5,
           // 5 minute timeout
@@ -31226,10 +31228,19 @@ var EmbeddingService = class {
   }
   /**
    * Import @huggingface/transformers, auto-installing if needed.
-   * Uses createRequire as fallback after auto-install since ESM import()
-   * may cache failed resolutions within the same process.
+   * Uses createRequire pointed at the _embeddings/ directory since
+   * that's where the package is installed (separate from vendored deps).
    */
   async importTransformers() {
+    const embeddingsDir = resolveEmbeddingsDir();
+    const embeddingsNodeModules = join2(embeddingsDir, "node_modules");
+    if (existsSync2(join2(embeddingsNodeModules, "@huggingface", "transformers"))) {
+      try {
+        const require2 = createRequire(join2(embeddingsDir, "index.js"));
+        return require2("@huggingface/transformers");
+      } catch {
+      }
+    }
     try {
       return await import("@huggingface/transformers");
     } catch {
@@ -31238,14 +31249,10 @@ var EmbeddingService = class {
     if (!installed)
       return null;
     try {
-      const require2 = createRequire(import.meta.url);
+      const require2 = createRequire(join2(embeddingsDir, "index.js"));
       return require2("@huggingface/transformers");
     } catch {
-      try {
-        return await import("@huggingface/transformers");
-      } catch {
-        return null;
-      }
+      return null;
     }
   }
   /**
@@ -31317,7 +31324,7 @@ function getEmbeddingService() {
 // src/mcp/server.ts
 var server = new McpServer({
   name: "context-manager",
-  version: true ? "0.5.7" : "0.5.0"
+  version: true ? "0.5.8" : "0.5.0"
 });
 var storage = null;
 async function getStorage() {

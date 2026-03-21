@@ -5,11 +5,15 @@
  * Lazy-loads the model on first use. Auto-installs the optional dependency
  * if not present (first run may take a few minutes).
  *
+ * IMPORTANT: Auto-installed packages go into a separate _embeddings/
+ * subdirectory to avoid conflicts with vendored native deps (better-sqlite3,
+ * sqlite-vec) in the plugin's node_modules/.
+ *
  * Model: Xenova/all-MiniLM-L6-v2 (384-dim, ~80MB, cached to ~/.cache/huggingface/)
  */
 
 import { execSync } from 'child_process';
-import { existsSync, writeFileSync } from 'fs';
+import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
@@ -25,13 +29,17 @@ type FeatureExtractionPipeline = (
 ) => Promise<{ tolist(): number[][] }>;
 
 /**
- * Resolve the plugin root directory for installing optional dependencies.
+ * Resolve the install directory for embedding dependencies.
+ * Uses a separate _embeddings/ subdirectory inside the plugin root
+ * to avoid conflicts with vendored native deps in node_modules/.
+ *
  * The bundled MCP server runs from plugin/scripts/mcp/server.js,
- * so the plugin root (containing node_modules/) is 3 levels up.
+ * so the plugin root is 3 levels up.
  */
-function resolvePluginRoot(): string {
+function resolveEmbeddingsDir(): string {
   const thisFile = fileURLToPath(import.meta.url);
-  return dirname(dirname(dirname(thisFile)));
+  const pluginRoot = dirname(dirname(dirname(thisFile)));
+  return join(pluginRoot, '_embeddings');
 }
 
 export class EmbeddingService {
@@ -48,21 +56,22 @@ export class EmbeddingService {
   }
 
   /**
-   * Auto-install @huggingface/transformers into the plugin's node_modules.
-   * Runs npm install in the plugin root directory so Node's module
-   * resolution finds the package from the MCP server's location.
+   * Auto-install @huggingface/transformers into a separate _embeddings/
+   * directory. This keeps the vendored native deps (better-sqlite3,
+   * sqlite-vec) in node_modules/ untouched.
    */
   private autoInstall(): boolean {
-    const pluginRoot = resolvePluginRoot();
-    const nodeModulesDir = join(pluginRoot, 'node_modules');
+    const embeddingsDir = resolveEmbeddingsDir();
+    const nodeModulesDir = join(embeddingsDir, 'node_modules');
 
     // If already installed, skip
     if (existsSync(join(nodeModulesDir, '@huggingface', 'transformers'))) {
       return true;
     }
 
-    // Ensure package.json exists so npm install works
-    const pkgJsonPath = join(pluginRoot, 'package.json');
+    // Create the embeddings directory and package.json
+    mkdirSync(embeddingsDir, { recursive: true });
+    const pkgJsonPath = join(embeddingsDir, 'package.json');
     if (!existsSync(pkgJsonPath)) {
       writeFileSync(pkgJsonPath, JSON.stringify({
         private: true,
@@ -78,7 +87,7 @@ export class EmbeddingService {
       execSync(
         'npm install @huggingface/transformers onnxruntime-node --no-audit --no-fund --no-package-lock',
         {
-          cwd: pluginRoot,
+          cwd: embeddingsDir,
           stdio: 'pipe',
           timeout: 300000, // 5 minute timeout
           env: { ...process.env, npm_config_loglevel: 'error' },
@@ -96,11 +105,24 @@ export class EmbeddingService {
 
   /**
    * Import @huggingface/transformers, auto-installing if needed.
-   * Uses createRequire as fallback after auto-install since ESM import()
-   * may cache failed resolutions within the same process.
+   * Uses createRequire pointed at the _embeddings/ directory since
+   * that's where the package is installed (separate from vendored deps).
    */
   private async importTransformers(): Promise<{ pipeline: Function } | null> {
-    // First attempt: dynamic import (works if already installed)
+    const embeddingsDir = resolveEmbeddingsDir();
+    const embeddingsNodeModules = join(embeddingsDir, 'node_modules');
+
+    // Try loading from _embeddings/ directory first (already installed)
+    if (existsSync(join(embeddingsNodeModules, '@huggingface', 'transformers'))) {
+      try {
+        const require = createRequire(join(embeddingsDir, 'index.js'));
+        return require('@huggingface/transformers');
+      } catch {
+        // Fall through to try other methods
+      }
+    }
+
+    // Try dynamic import (works if installed in project node_modules during dev)
     try {
       return await import('@huggingface/transformers');
     } catch {
@@ -110,17 +132,12 @@ export class EmbeddingService {
     const installed = this.autoInstall();
     if (!installed) return null;
 
-    // After auto-install, use createRequire to bypass any ESM resolution cache
+    // After auto-install, use createRequire pointed at _embeddings/
     try {
-      const require = createRequire(import.meta.url);
+      const require = createRequire(join(embeddingsDir, 'index.js'));
       return require('@huggingface/transformers');
     } catch {
-      // createRequire failed, try dynamic import as last resort
-      try {
-        return await import('@huggingface/transformers');
-      } catch {
-        return null;
-      }
+      return null;
     }
   }
 
