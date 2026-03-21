@@ -31317,7 +31317,7 @@ function getEmbeddingService() {
 // src/mcp/server.ts
 var server = new McpServer({
   name: "context-manager",
-  version: true ? "0.5.6" : "0.5.0"
+  version: true ? "0.5.7" : "0.5.0"
 });
 var storage = null;
 async function getStorage() {
@@ -31710,11 +31710,66 @@ server.tool(
     };
   }
 );
+async function backgroundEmbed() {
+  await new Promise((resolve) => setTimeout(resolve, 5e3));
+  try {
+    const db = await getStorage();
+    if (!db.isVectorSearchEnabled())
+      return;
+    const pending = db.countUnembedded();
+    if (pending === 0)
+      return;
+    const embeddingService = getEmbeddingService();
+    const { status } = embeddingService.getStatus();
+    if (status === "unavailable")
+      return;
+    const loaded = await embeddingService.load();
+    if (!loaded)
+      return;
+    console.error(`[context-manager-mcp] Background embedding: ${pending} observations pending`);
+    const BATCH_SIZE = 50;
+    const BATCH_DELAY_MS = 500;
+    let totalEmbedded = 0;
+    while (true) {
+      const batch = await db.getUnembeddedObservations(BATCH_SIZE);
+      if (batch.length === 0)
+        break;
+      const texts = batch.map((obs) => {
+        const parts = [obs.summary];
+        if (obs.files_touched.length > 0) {
+          parts.push(obs.files_touched.join(", "));
+        }
+        return parts.join(" | ");
+      });
+      const embeddings = await embeddingService.embedBatch(texts);
+      if (!embeddings)
+        break;
+      for (let j = 0; j < batch.length; j++) {
+        const obs = batch[j];
+        const emb = embeddings[j];
+        if (!obs?.id || !emb)
+          continue;
+        try {
+          await db.saveEmbedding(obs.id, emb);
+          totalEmbedded++;
+        } catch {
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+    }
+    if (totalEmbedded > 0) {
+      console.error(`[context-manager-mcp] Background embedding complete: ${totalEmbedded} observations embedded`);
+    }
+  } catch (err) {
+    console.error("[context-manager-mcp] Background embedding error:", err);
+  }
+}
 async function main() {
   console.error("[context-manager-mcp] Starting MCP server...");
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("[context-manager-mcp] MCP server connected via stdio");
+  backgroundEmbed();
   process.on("SIGINT", () => {
     console.error("[context-manager-mcp] Shutting down...");
     storage?.close();

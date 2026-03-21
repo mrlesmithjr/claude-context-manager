@@ -511,6 +511,83 @@ server.tool(
   }
 );
 
+// --- Background Embedding ---
+
+/**
+ * Embed observations in the background after MCP server starts.
+ * Runs in batches with a delay between each to avoid hogging resources.
+ * Silently skips if dependencies aren't installed yet (first context_embed
+ * call will trigger auto-install and future startups will embed automatically).
+ */
+async function backgroundEmbed(): Promise<void> {
+  // Short delay to let the server finish startup
+  await new Promise(resolve => setTimeout(resolve, 5000));
+
+  try {
+    const db = await getStorage();
+    if (!db.isVectorSearchEnabled()) return;
+
+    // Check if there's anything to embed
+    const pending = db.countUnembedded();
+    if (pending === 0) return;
+
+    const embeddingService = getEmbeddingService();
+
+    // Only proceed if transformers is already installed.
+    // Don't auto-install in background — that's a first-run experience
+    // that should happen via explicit context_embed call.
+    const { status } = embeddingService.getStatus();
+    if (status === 'unavailable') return;
+
+    const loaded = await embeddingService.load();
+    if (!loaded) return;
+
+    console.error(`[context-manager-mcp] Background embedding: ${pending} observations pending`);
+
+    const BATCH_SIZE = 50;
+    const BATCH_DELAY_MS = 500; // pause between batches to stay gentle
+    let totalEmbedded = 0;
+
+    while (true) {
+      const batch = await db.getUnembeddedObservations(BATCH_SIZE);
+      if (batch.length === 0) break;
+
+      const texts = batch.map(obs => {
+        const parts = [obs.summary];
+        if (obs.files_touched.length > 0) {
+          parts.push(obs.files_touched.join(', '));
+        }
+        return parts.join(' | ');
+      });
+
+      const embeddings = await embeddingService.embedBatch(texts);
+      if (!embeddings) break;
+
+      for (let j = 0; j < batch.length; j++) {
+        const obs = batch[j];
+        const emb = embeddings[j];
+        if (!obs?.id || !emb) continue;
+        try {
+          await db.saveEmbedding(obs.id, emb);
+          totalEmbedded++;
+        } catch {
+          // skip individual failures
+        }
+      }
+
+      // Pause between batches
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+    }
+
+    if (totalEmbedded > 0) {
+      console.error(`[context-manager-mcp] Background embedding complete: ${totalEmbedded} observations embedded`);
+    }
+  } catch (err) {
+    // Background task should never crash the server
+    console.error('[context-manager-mcp] Background embedding error:', err);
+  }
+}
+
 // --- Server Startup ---
 
 async function main() {
@@ -521,6 +598,9 @@ async function main() {
   await server.connect(transport);
 
   console.error('[context-manager-mcp] MCP server connected via stdio');
+
+  // Start background embedding (fire-and-forget)
+  backgroundEmbed();
 
   // Graceful shutdown
   process.on('SIGINT', () => {
