@@ -31162,19 +31162,95 @@ async function exportToAutoMemory(storage2, projectPath, sessionId) {
 }
 
 // src/embedding/service.ts
+import { execSync } from "child_process";
+import { existsSync as existsSync2, writeFileSync as writeFileSync2 } from "fs";
+import { fileURLToPath } from "url";
+import { createRequire } from "module";
+import { dirname, join as join2 } from "path";
 var MODEL_ID = "Xenova/all-MiniLM-L6-v2";
+function resolvePluginRoot() {
+  const thisFile = fileURLToPath(import.meta.url);
+  return dirname(dirname(dirname(thisFile)));
+}
 var EmbeddingService = class {
   pipeline = null;
   status = "not-loaded";
   error = null;
+  didAutoInstall = false;
   /**
    * Get current status of the embedding service
    */
   getStatus() {
-    return { status: this.status, error: this.error };
+    return { status: this.status, error: this.error, didAutoInstall: this.didAutoInstall };
   }
   /**
-   * Load the embedding model (called automatically on first embed call)
+   * Auto-install @huggingface/transformers into the plugin's node_modules.
+   * Runs npm install in the plugin root directory so Node's module
+   * resolution finds the package from the MCP server's location.
+   */
+  autoInstall() {
+    const pluginRoot = resolvePluginRoot();
+    const nodeModulesDir = join2(pluginRoot, "node_modules");
+    if (existsSync2(join2(nodeModulesDir, "@huggingface", "transformers"))) {
+      return true;
+    }
+    const pkgJsonPath = join2(pluginRoot, "package.json");
+    if (!existsSync2(pkgJsonPath)) {
+      writeFileSync2(pkgJsonPath, JSON.stringify({
+        private: true,
+        type: "module",
+        dependencies: {}
+      }, null, 2));
+    }
+    console.error("[context-manager] Auto-installing @huggingface/transformers + onnxruntime-node...");
+    console.error("[context-manager] This is a one-time setup (~265MB download, may take a few minutes)");
+    try {
+      execSync(
+        "npm install @huggingface/transformers onnxruntime-node --no-audit --no-fund --no-package-lock",
+        {
+          cwd: pluginRoot,
+          stdio: "pipe",
+          timeout: 3e5,
+          // 5 minute timeout
+          env: { ...process.env, npm_config_loglevel: "error" }
+        }
+      );
+      console.error("[context-manager] Dependencies installed successfully");
+      this.didAutoInstall = true;
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[context-manager] Auto-install failed: ${message}`);
+      return false;
+    }
+  }
+  /**
+   * Import @huggingface/transformers, auto-installing if needed.
+   * Uses createRequire as fallback after auto-install since ESM import()
+   * may cache failed resolutions within the same process.
+   */
+  async importTransformers() {
+    try {
+      return await import("@huggingface/transformers");
+    } catch {
+    }
+    const installed = this.autoInstall();
+    if (!installed)
+      return null;
+    try {
+      const require2 = createRequire(import.meta.url);
+      return require2("@huggingface/transformers");
+    } catch {
+      try {
+        return await import("@huggingface/transformers");
+      } catch {
+        return null;
+      }
+    }
+  }
+  /**
+   * Load the embedding model (called automatically on first embed call).
+   * On first run: auto-installs dependencies, downloads model (~80MB).
    */
   async load() {
     if (this.status === "ready")
@@ -31184,21 +31260,21 @@ var EmbeddingService = class {
     this.status = "loading";
     this.error = null;
     try {
-      const { pipeline } = await import("@huggingface/transformers");
-      this.pipeline = await pipeline("feature-extraction", MODEL_ID, {
+      const transformers = await this.importTransformers();
+      if (!transformers) {
+        this.status = "unavailable";
+        this.error = "Failed to install @huggingface/transformers automatically. Check npm and network access.";
+        return false;
+      }
+      this.pipeline = await transformers.pipeline("feature-extraction", MODEL_ID, {
         dtype: "fp32"
       });
       this.status = "ready";
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("Cannot find module") || message.includes("MODULE_NOT_FOUND")) {
-        this.status = "unavailable";
-        this.error = "@huggingface/transformers is not installed. Install it with: npm install @huggingface/transformers";
-      } else {
-        this.status = "error";
-        this.error = `Failed to load embedding model: ${message}`;
-      }
+      this.status = "error";
+      this.error = `Failed to load embedding model: ${message}`;
       return false;
     }
   }
@@ -31241,7 +31317,7 @@ function getEmbeddingService() {
 // src/mcp/server.ts
 var server = new McpServer({
   name: "context-manager",
-  version: true ? "0.5.5" : "0.5.0"
+  version: true ? "0.5.6" : "0.5.0"
 });
 var storage = null;
 async function getStorage() {
@@ -31538,7 +31614,7 @@ ${formatObservations(observations)}` : `No embedded observations found${project 
 );
 server.tool(
   "context_embed",
-  "Generate vector embeddings for observations that are missing them. Embeddings enable semantic search via context_semantic_search. Downloads the model (~80MB) on first use.",
+  "Generate vector embeddings for observations that are missing them. Embeddings enable semantic search via context_semantic_search. First run auto-installs dependencies (~265MB) and downloads the model (~80MB) \u2014 this may take a few minutes.",
   {
     project: external_exports3.string().optional().describe("Project path to scope embedding. Omit to embed all projects."),
     batch_size: external_exports3.number().optional().default(50).describe("Number of observations to embed per batch (default: 50)"),
@@ -31611,7 +31687,12 @@ server.tool(
         }
       }
     }
-    const lines = [`Embedded ${embedded} observations.`];
+    const lines = [];
+    const { didAutoInstall } = embeddingService.getStatus();
+    if (didAutoInstall) {
+      lines.push("Auto-installed @huggingface/transformers + onnxruntime-node.");
+    }
+    lines.push(`Embedded ${embedded} observations.`);
     if (errors > 0) {
       lines.push(`${errors} observations failed to embed.`);
     }

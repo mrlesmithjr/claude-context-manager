@@ -357,32 +357,26 @@ npm run import -- \
 
 Semantic search finds conceptually related observations even when exact keywords don't match. It uses local vector embeddings — no external APIs required.
 
-**Setup (one-time):**
+**Usage:**
 
-1. Install the optional embedding dependency:
-   ```bash
-   cd /path/to/claude-context-manager
-   npm install @huggingface/transformers
-   npm run build:plugin
-   ```
-
-2. Generate embeddings for existing observations (downloads ~80MB model on first use):
+1. Generate embeddings (first run auto-installs dependencies and downloads the model — takes a few minutes):
    ```
    # In Claude Code, use the MCP tool:
    context_embed
    ```
 
-3. Search by meaning:
+2. Search by meaning:
    ```
    # In Claude Code:
    context_semantic_search "authentication flow changes"
    ```
 
 **How it works:**
-- `context_embed` batch-processes observations missing embeddings using a local ONNX model (Xenova/all-MiniLM-L6-v2, 384 dimensions)
+- `context_embed` auto-installs `@huggingface/transformers` + `onnxruntime-node` on first use (~265MB one-time download)
+- The embedding model (`Xenova/all-MiniLM-L6-v2`, 384 dimensions, ~80MB) is downloaded and cached on first use
 - `context_semantic_search` embeds your query and finds the most similar observations via sqlite-vec
 - FTS5 keyword search (`context_search`) remains available and works independently
-- If `@huggingface/transformers` is not installed, all other features work normally
+- All existing features work normally even if embedding setup hasn't been run
 
 ### CLI Alias (Optional)
 

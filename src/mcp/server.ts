@@ -392,7 +392,7 @@ server.tool(
 
 server.tool(
   'context_embed',
-  'Generate vector embeddings for observations that are missing them. Embeddings enable semantic search via context_semantic_search. Downloads the model (~80MB) on first use.',
+  'Generate vector embeddings for observations that are missing them. Embeddings enable semantic search via context_semantic_search. First run auto-installs dependencies (~265MB) and downloads the model (~80MB) — this may take a few minutes.',
   {
     project: z
       .string()
@@ -486,7 +486,12 @@ server.tool(
       }
     }
 
-    const lines = [`Embedded ${embedded} observations.`];
+    const lines: string[] = [];
+    const { didAutoInstall } = embeddingService.getStatus();
+    if (didAutoInstall) {
+      lines.push('Auto-installed @huggingface/transformers + onnxruntime-node.');
+    }
+    lines.push(`Embedded ${embedded} observations.`);
     if (errors > 0) {
       lines.push(`${errors} observations failed to embed.`);
     }
