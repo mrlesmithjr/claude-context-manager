@@ -1,6 +1,6 @@
 {
   "name": "claude-context-manager",
-  "version": "0.4.5",
+  "version": "0.5.0",
   "description": "Persistent memory for Claude Code sessions",
   "type": "module",
   "main": "dist/cli.js",
@@ -36,6 +36,7 @@
   "dependencies": {
     "@fastify/cors": "^11.2.0",
     "@fastify/static": "^8.3.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "better-sqlite3": "^11.0.0",
     "fastify": "^5.6.2"
   },

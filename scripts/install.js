@@ -10,13 +10,11 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
-import { SLASH_COMMANDS } from '../dist/commands/definitions.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PROJECT_ROOT = join(__dirname, '..');
 
-const COMMANDS_DIR = join(homedir(), '.claude', 'commands');
 const CONTEXT_DIR = join(homedir(), '.claude-context');
 const PLUGIN_SCRIPTS_DIR = join(PROJECT_ROOT, 'plugin', 'scripts');
 const PLUGIN_JSON_PATH = join(PROJECT_ROOT, 'plugin', '.claude-plugin', 'plugin.json');
@@ -41,6 +39,7 @@ function verifyBuild() {
     'session-end.js',
     'index.js',           // CLI bundled for plugin
     'web/index.cjs',      // Web server bundled for plugin
+    'mcp/server.js',      // MCP server bundled for plugin
   ];
 
   log('Verifying build...');
@@ -101,26 +100,6 @@ function syncPluginVersion() {
 }
 
 /**
- * Install slash commands to ~/.claude/commands/
- *
- * Uses shared definitions from src/commands/definitions.ts.
- * The SessionStart hook also auto-provisions these for users who
- * install via the plugin marketplace without cloning the repo.
- */
-function installSlashCommands() {
-  log('Installing slash commands...');
-
-  // Create commands directory if needed
-  mkdirSync(COMMANDS_DIR, { recursive: true });
-
-  for (const [filename, content] of Object.entries(SLASH_COMMANDS)) {
-    const dest = join(COMMANDS_DIR, filename);
-    writeFileSync(dest, content);
-    log(`  Installed /${filename.replace('.md', '')}`);
-  }
-}
-
-/**
  * Main install function
  */
 function install() {
@@ -132,7 +111,6 @@ function install() {
   verifyBuild();
   createContextDir();
   syncPluginVersion();
-  installSlashCommands();
 
   console.log('\n========================================');
   console.log('  Build preparation complete!');
@@ -143,13 +121,12 @@ function install() {
   console.log('  /plugin install context-manager');
   console.log('  (then restart Claude Code)\n');
   console.log('Data will be stored in: ~/.claude-context/');
-  console.log('\nSlash commands available after install:');
-  console.log('  - /ctx-stats   Show statistics');
-  console.log('  - /ctx-list    List recent observations');
-  console.log('  - /ctx-search  Search observations');
-  console.log('  - /ctx-vacuum  Clean up old data');
-  console.log('  - /ctx-export  Export to auto-memory');
-  console.log('  - /ctx-web     Start web dashboard');
+  console.log('\nMCP tools available after install:');
+  console.log('  - context_search   Search observations');
+  console.log('  - context_list     List recent observations');
+  console.log('  - context_stats    Show statistics');
+  console.log('  - context_export   Export to auto-memory');
+  console.log('  - context_vacuum   Clean up old data');
   console.log(`\nCLI available: node ${join(PROJECT_ROOT, 'dist', 'cli.js')}\n`);
 }
 

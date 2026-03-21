@@ -125,6 +125,14 @@ await build({
 });
 console.log('[build-hooks] CLI built (plugin/scripts/index.js)');
 
+// Build MCP server into plugin/scripts/mcp/ so it ships with the plugin
+await build({
+  ...sharedOptions,
+  entryPoints: ['src/mcp/server.ts'],
+  outdir: 'plugin/scripts/mcp',
+});
+console.log('[build-hooks] MCP server built (plugin/scripts/mcp/server.js)');
+
 // Build web server into plugin/scripts/web/ so it ships with the plugin
 // Uses CJS format because Fastify's internals use dynamic require() for Node builtins.
 // Output as .cjs so Node treats it correctly even with "type": "module" in package.json.
