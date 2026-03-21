@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: March 5, 2026
+**Last Updated**: March 21, 2026
 
 ---
 
@@ -46,9 +46,11 @@ npm run plugin:uninstall:all  # Remove all data
 ```
 
 ### MCP Tools (available after install)
-- `context_stats` - Show statistics
+- `context_stats` - Show statistics (includes vector search status)
 - `context_list` - List recent observations
-- `context_search` - Search observations
+- `context_search` - Search observations (FTS5 keyword)
+- `context_semantic_search` - Search by meaning (vector similarity)
+- `context_embed` - Generate vector embeddings for semantic search
 - `context_vacuum` - Clean up old data
 - `context_export` - Export to auto-memory
 
@@ -101,9 +103,10 @@ Direct SQLite access - no background HTTP service required.
 | Component | Technology | Rationale |
 |-----------|------------|-----------|
 | Language | TypeScript | Type safety, Claude Code ecosystem |
-| Database | SQLite + FTS5 | No daemon needed — hooks open/query/close in <5ms. FTS5 gives full-text search free. WAL mode handles concurrent hook access. See `docs/ARCHITECTURE.md` "Why SQLite?" for full rationale vs HTTP services and vector DBs. |
+| Database | SQLite + FTS5 + sqlite-vec | No daemon needed — hooks open/query/close in <5ms. FTS5 gives full-text search free. sqlite-vec adds vector similarity. WAL mode handles concurrent hook access. See `docs/ARCHITECTURE.md` "Why SQLite?" for full rationale. |
+| Embeddings | @huggingface/transformers (optional) | Local ONNX inference, Xenova/all-MiniLM-L6-v2, 384-dim. No external APIs. |
 | Build | esbuild | Fast bundling, ESM output |
-| Native Module | better-sqlite3 | Synchronous API ideal for hooks with tight timeouts (5-10s) |
+| Native Module | better-sqlite3, sqlite-vec | Synchronous API ideal for hooks with tight timeouts (5-10s) |
 
 ---
 
@@ -132,13 +135,15 @@ claude-context-manager/
 +-- src/
 |   +-- capture/
 |   |   +-- processor.ts       # Process tool outputs
+|   +-- embedding/
+|   |   +-- service.ts         # Vector embedding service (HF transformers)
 |   +-- export/
 |   |   +-- memory.ts          # Auto-memory export pipeline
 |   +-- inject/
 |   |   +-- builder.ts         # Build context for injection (deprecated)
 |   +-- storage/
 |   |   +-- interface.ts       # Storage interface definition
-|   |   +-- sqlite.ts          # SQLite implementation
+|   |   +-- sqlite.ts          # SQLite implementation + sqlite-vec
 |   +-- utils/
 |       +-- sanitize.ts        # Privacy tag stripping
 |       +-- validation.ts      # Input validation
@@ -212,7 +217,14 @@ claude-context-manager/
 - SessionStart injects a minimal status hint (~30 tokens) instead of raw observation lists
 - Complements Claude Code's built-in auto-memory rather than competing with it
 
-### 7. Rule-Based Compaction
+### 8. Vector Embedding Search (v0.5.5)
+- sqlite-vec extension loaded at database open (graceful fallback if unavailable)
+- `embedding BLOB` column on observations + `vec_observations` vec0 virtual table (384-dim)
+- Embeddings generated on-demand via `context_embed` MCP tool (NOT at capture time — avoids hook latency)
+- `@huggingface/transformers` is an optional dependency — all other features work without it
+- Model: `Xenova/all-MiniLM-L6-v2` (~80MB, cached to `~/.cache/huggingface/`)
+
+### 9. Rule-Based Compaction
 - Old observations (>7 days) compressed into summaries during vacuum
 - Groups by session + tool, only compact groups of 3+
 - Never compacts high-importance observations

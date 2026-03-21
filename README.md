@@ -3,7 +3,7 @@
 Automatic session history and searchable context for Claude Code. Captures every tool interaction in SQLite with full-text search, exports high-value observations to Claude Code's auto-memory, and provides a web dashboard.
 
 **Status**: ACTIVE
-**Last Updated**: March 5, 2026
+**Last Updated**: March 21, 2026
 
 ---
 
@@ -96,6 +96,7 @@ Anytime:
 | **Auto-Memory Export** | High-importance observations exported to Claude Code's auto-memory topic files at session end |
 | **Auto-Compaction** | Old observations compressed into summaries during vacuum (`Read x4: file1, file2, ...`) |
 | **Full-Text Search** | SQLite FTS5 enables fast keyword search |
+| **Semantic Search** | Vector embeddings via sqlite-vec find conceptually related observations |
 | **Web Dashboard** | Browse sessions, search observations, view analytics |
 | **Hierarchical Visibility** | Parent directories see child project contexts |
 | **Token Budget** | Configurable limit on injected context size with diversity caps |
@@ -112,15 +113,18 @@ Anytime:
 Claude Code Hooks                    Storage               Auto-Memory
 -----------------                    -------               -----------
 SessionStart ----------------------> SQLite + FTS5
-  (status hint)                      ~/.claude-context/
-                                     context.db
-PostToolUse ----------------------->
+  (status hint)                      + sqlite-vec
+                                     ~/.claude-context/
+PostToolUse -----------------------> context.db
   (capture tools)
 
 Stop ------------------------------>                ----> ~/.claude/projects/
   (save summary + export)                                  <path>/memory/
                                                            context-manager-
-                                                           activity.md
+MCP Tools:                                                 activity.md
+  context_search -------> FTS5 keyword search
+  context_semantic_search -> Vector similarity search
+  context_embed ---------> Generate embeddings
 ```
 
 Direct SQLite access - no background service required.
@@ -295,7 +299,9 @@ Once installed, these tools are available to Claude Code via MCP:
 |------|-------------|
 | `context_stats` | Show statistics for current project |
 | `context_list` | List recent observations |
-| `context_search` | Search observations |
+| `context_search` | Search observations (keyword, FTS5) |
+| `context_semantic_search` | Search observations by meaning (vector similarity) |
+| `context_embed` | Generate vector embeddings for semantic search |
 | `context_vacuum` | Clean up old data |
 | `context_export` | Export to auto-memory |
 
@@ -346,6 +352,37 @@ npm run import -- \
 - Migrating context when a project moves to a new directory
 - Importing historical sessions from before the plugin was installed
 - Filtering specific topic sessions (e.g., `--filter auth-service`)
+
+### Semantic Search (Vector Embeddings)
+
+Semantic search finds conceptually related observations even when exact keywords don't match. It uses local vector embeddings — no external APIs required.
+
+**Setup (one-time):**
+
+1. Install the optional embedding dependency:
+   ```bash
+   cd /path/to/claude-context-manager
+   npm install @huggingface/transformers
+   npm run build:plugin
+   ```
+
+2. Generate embeddings for existing observations (downloads ~80MB model on first use):
+   ```
+   # In Claude Code, use the MCP tool:
+   context_embed
+   ```
+
+3. Search by meaning:
+   ```
+   # In Claude Code:
+   context_semantic_search "authentication flow changes"
+   ```
+
+**How it works:**
+- `context_embed` batch-processes observations missing embeddings using a local ONNX model (Xenova/all-MiniLM-L6-v2, 384 dimensions)
+- `context_semantic_search` embeds your query and finds the most similar observations via sqlite-vec
+- FTS5 keyword search (`context_search`) remains available and works independently
+- If `@huggingface/transformers` is not installed, all other features work normally
 
 ### CLI Alias (Optional)
 
@@ -505,8 +542,8 @@ This plugin captures **everything automatically** and exports the important part
 | **Runtimes required** | Node.js | Node.js + Bun + Python |
 | **External API calls** | None | Anthropic API (costs $) |
 | **Background services** | None | Worker service on port 37777 |
-| **Storage** | SQLite + FTS5 | SQLite + ChromaDB vectors |
-| **Search** | Full-text keyword | Semantic + keyword |
+| **Storage** | SQLite + FTS5 + sqlite-vec | SQLite + ChromaDB vectors |
+| **Search** | Full-text keyword + semantic vectors | Semantic + keyword |
 | **Summarization** | Deterministic heuristics | AI-powered (Agent SDK) |
 | **Web UI** | Fastify dashboard | React viewer |
 | **Lines of code** | ~2,500 | ~51,500+ |
@@ -520,7 +557,6 @@ This plugin captures **everything automatically** and exports the important part
 - Predictable, deterministic behavior
 
 **Choose claude-mem if you want:**
-- Semantic search (find conceptually related context, not just keywords)
 - AI-powered summarization
 - MCP tool integration
 - AST-based code navigation
