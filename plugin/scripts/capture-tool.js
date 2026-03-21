@@ -516,6 +516,11 @@ var SQLiteStorage = class {
       deletedObservations = result.changes;
     }
     const compactionResult = await this.compactObservations(7);
+    const orphanPromptsStmt = this.db.prepare(`
+      DELETE FROM user_prompts
+      WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)
+    `);
+    orphanPromptsStmt.run();
     const orphanStmt = this.db.prepare(`
       DELETE FROM sessions
       WHERE id NOT IN (SELECT DISTINCT session_id FROM observations)

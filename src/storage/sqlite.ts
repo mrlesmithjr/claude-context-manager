@@ -705,6 +705,13 @@ export class SQLiteStorage implements ContextStorage {
     // Run compaction on observations older than 7 days
     const compactionResult = await this.compactObservations(7);
 
+    // Clean up orphaned user_prompts (sessions with no remaining observations)
+    const orphanPromptsStmt = this.db.prepare(`
+      DELETE FROM user_prompts
+      WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)
+    `);
+    orphanPromptsStmt.run();
+
     // Clean up orphaned sessions (no observations AND no prompts)
     const orphanStmt = this.db.prepare(`
       DELETE FROM sessions
