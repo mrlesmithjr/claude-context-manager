@@ -8,7 +8,7 @@
 
 ## Context
 
-The claude-context-manager plugin currently provides context persistence through SQLite storage with CLI-based access (`/ctx-stats`, `/ctx-list`, `/ctx-search` slash commands, and `npm run cli` commands). Users have requested a local web interface for richer browsing, searching, and analytics capabilities.
+The claude-context-manager plugin provides context persistence through SQLite storage with MCP tool access (`context_stats`, `context_list`, `context_search`) and CLI commands. Users have requested a local web interface for richer browsing, searching, and analytics capabilities.
 
 ### Current State Assessment
 

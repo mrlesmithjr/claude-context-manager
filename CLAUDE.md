@@ -45,12 +45,12 @@ npm run plugin:uninstall  # Keep data
 npm run plugin:uninstall:all  # Remove all data
 ```
 
-### Slash Commands (in Claude Code)
-- `/ctx-stats` - Show statistics
-- `/ctx-list` - List recent observations
-- `/ctx-search <query>` - Search observations
-- `/ctx-vacuum [days]` - Clean up old data
-- `/ctx-export` - Export to auto-memory
+### MCP Tools (available after install)
+- `context_stats` - Show statistics
+- `context_list` - List recent observations
+- `context_search` - Search observations
+- `context_vacuum` - Clean up old data
+- `context_export` - Export to auto-memory
 
 ### Web Dashboard
 ```bash
@@ -126,7 +126,7 @@ claude-context-manager/
 |   |   +-- session-end.ts     # Stop: save summary
 |   +-- scripts/               # Built hooks (gitignored)
 +-- scripts/
-|   +-- install.js             # Prep script (dirs, slash commands)
+|   +-- install.js             # Prep script (dirs, version sync)
 |   +-- uninstall.js           # Cleanup script
 |   +-- import-transcripts.ts  # Import historical transcripts from backups
 +-- src/
@@ -382,7 +382,7 @@ echo '{"cwd":"'$(pwd)'"}' | node ~/.claude/plugins/cache/mrlesmithjr/context-man
 ```
 
 ### Check database stats
-Use `/ctx-stats` in Claude Code or run the CLI directly from the project directory.
+Use the `context_stats` MCP tool in Claude Code or run the CLI directly from the project directory.
 
 ### Updates not applying (IMPORTANT)
 

@@ -228,7 +228,7 @@ Then restart Claude Code.
 **Then optionally clean up:**
 
 ```bash
-# Clean up slash commands and data directory (keep data)
+# Clean up legacy files and data directory (keep data)
 npm run plugin:uninstall
 
 # Clean up everything including all stored data
@@ -287,18 +287,17 @@ Once installed, the plugin works automatically:
 2. **During Session**: Tool interactions are captured and scored in the background
 3. **Session End**: Session summary is saved, high-importance observations are exported to auto-memory
 
-### Slash Commands
+### MCP Tools
 
-Once installed, use these commands in Claude Code:
+Once installed, these tools are available to Claude Code via MCP:
 
-| Command | Description |
-|---------|-------------|
-| `/ctx-stats` | Show statistics for current project |
-| `/ctx-list` | List recent observations |
-| `/ctx-search <query>` | Search observations |
-| `/ctx-vacuum [days]` | Clean up old data |
-| `/ctx-export` | Export to auto-memory |
-| `/ctx-web` | Start the web dashboard |
+| Tool | Description |
+|------|-------------|
+| `context_stats` | Show statistics for current project |
+| `context_list` | List recent observations |
+| `context_search` | Search observations |
+| `context_vacuum` | Clean up old data |
+| `context_export` | Export to auto-memory |
 
 ### CLI Commands
 
@@ -440,7 +439,7 @@ Hook definitions are in `plugin/hooks/hooks.json`. When you install the plugin v
      node ~/.claude/plugins/cache/mrlesmithjr/context-manager/*/scripts/context-inject.js
    ```
 
-4. Use `/ctx-stats` in Claude Code to check statistics
+4. Use the `context_stats` MCP tool in Claude Code to check statistics
 
 ### Updates not applying?
 

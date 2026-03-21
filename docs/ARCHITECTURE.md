@@ -415,7 +415,7 @@ final_score = (importance_score * 0.70) + (recency_multiplier * 0.30) + file_ove
 - **Compacted summary bonus**: +0.10 (token-efficient, represents multiple actions)
 - **Diversity cap**: No single tool type can consume >60% of budget
 
-The SQL pre-filter excludes `importance='low'` observations and fetches 200 candidates for scoring. Low-importance observations remain searchable via `/ctx-search` and the web dashboard.
+The SQL pre-filter excludes `importance='low'` observations and fetches 200 candidates for scoring. Low-importance observations remain searchable via `context_search` and the web dashboard.
 
 ### Rule-Based Compaction
 

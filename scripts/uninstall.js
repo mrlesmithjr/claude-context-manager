@@ -3,7 +3,7 @@
  * Uninstall Script for claude-context-manager
  *
  * This script:
- * 1. Removes slash commands from ~/.claude/commands/
+ * 1. Removes legacy slash commands from ~/.claude/commands/ (if present)
  * 2. Optionally removes data directory ~/.claude-context/
  * 3. Provides instructions for marketplace uninstallation
  */
@@ -41,23 +41,21 @@ async function confirm(question) {
 }
 
 /**
- * Remove slash commands from ~/.claude/commands/
+ * Remove legacy slash commands from ~/.claude/commands/ (pre-v0.5.0)
  */
-function removeSlashCommands() {
-  log('Removing slash commands...');
-
+function removeLegacySlashCommands() {
   let removed = 0;
   for (const cmd of SLASH_COMMANDS) {
     const cmdPath = join(COMMANDS_DIR, cmd);
     if (existsSync(cmdPath)) {
       rmSync(cmdPath);
-      log(`  Removed /${cmd.replace('.md', '')}`);
+      log(`  Removed legacy /${cmd.replace('.md', '')}`);
       removed++;
     }
   }
 
-  if (removed === 0) {
-    log('  No slash commands found');
+  if (removed > 0) {
+    log(`  Cleaned up ${removed} legacy slash command(s)`);
   }
 }
 
@@ -97,7 +95,7 @@ async function uninstall() {
   // Check for --remove-data flag (no prompt)
   const removeData = process.argv.includes('--remove-data');
 
-  removeSlashCommands();
+  removeLegacySlashCommands();
 
   if (removeData) {
     if (existsSync(CONTEXT_DIR)) {
@@ -115,11 +113,10 @@ async function uninstall() {
   console.log('========================================');
   console.log('\nTo uninstall the plugin, run this command in Claude Code:\n');
   console.log('  /plugin uninstall context-manager\n');
-  console.log('Note: Slash commands have been removed from ~/.claude/commands/');
   if (!removeData) {
-    console.log('      Context data preserved in ~/.claude-context/');
+    console.log('Note: Context data preserved in ~/.claude-context/');
   } else {
-    console.log('      Context data removed from ~/.claude-context/');
+    console.log('Note: Context data removed from ~/.claude-context/');
   }
   console.log('');
 }
