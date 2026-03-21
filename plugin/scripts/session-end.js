@@ -1058,13 +1058,22 @@ function convertPathToDashed(projectPath) {
 // src/export/memory.ts
 var TOPIC_FILE = "context-manager-activity.md";
 var DEFAULT_MAX_LINES = 150;
+var MAX_ITEMS_PER_SESSION = 6;
 function resolveMemoryDir(projectPath) {
   const dashedPath = convertPathToDashed(projectPath);
   return join2(homedir4(), ".claude", "projects", dashedPath, "memory");
 }
-function formatObservationsForMemory(observations) {
+function formatObservationsForMemory(observations, sessions) {
   if (observations.length === 0)
     return "";
+  const sessionSummaries = /* @__PURE__ */ new Map();
+  if (sessions) {
+    for (const s of sessions) {
+      if (s.summary && s.summary.length > 10) {
+        sessionSummaries.set(s.id, s.summary);
+      }
+    }
+  }
   const byDate = /* @__PURE__ */ new Map();
   for (const obs of observations) {
     const date = obs.created_at.split("T")[0] ?? "unknown";
@@ -1076,52 +1085,100 @@ function formatObservationsForMemory(observations) {
     dateGroup.get(obs.session_id).push(obs);
   }
   const lines = [];
-  for (const [date, sessions] of byDate) {
+  for (const [date, sessionMap] of byDate) {
     lines.push(`## ${date}`);
     lines.push("");
-    for (const [sessionId, sessionObs] of sessions) {
-      const shortId = sessionId.substring(0, 8);
-      const first = sessionObs[0];
-      const last = sessionObs[sessionObs.length - 1];
-      const startTime = first.created_at.split("T")[1]?.substring(0, 5) ?? "";
-      const endTime = last.created_at.split("T")[1]?.substring(0, 5) ?? "";
-      lines.push(`### Session ${shortId} (${startTime} - ${endTime})`);
-      for (const obs of sessionObs) {
-        lines.push(`- ${formatObservationLine(obs)}`);
-      }
+    for (const [sessionId, sessionObs] of sessionMap) {
+      lines.push(formatSessionBlock(sessionId, sessionObs, sessionSummaries.get(sessionId)));
       lines.push("");
     }
   }
   return lines.join("\n");
 }
-function formatObservationLine(obs) {
-  const file = obs.files_touched[0] || "";
-  const shortFile = file ? file.split("/").slice(-2).join("/") : "";
-  switch (obs.tool_name) {
-    case "Edit":
-      return `**Edited** ${shortFile} \u2014 ${describeEdit(obs)}`;
-    case "Write":
-      return `**Created** ${shortFile}`;
-    case "Bash": {
-      if (obs.summary.includes("git commit")) {
-        const msg = obs.summary.match(/commit -m ["'](.+?)["']/)?.[1] || obs.summary.match(/"([^"]+)"/)?.[1] || "";
-        return `**Git commit** \u2014 "${msg.substring(0, 80)}"`;
+function formatSessionBlock(sessionId, observations, sessionSummary) {
+  const shortId = sessionId.substring(0, 8);
+  const heading = sessionSummary ? `### ${shortId} \u2014 ${extractSessionTitle(sessionSummary)}` : `### ${shortId}`;
+  const created = [];
+  const edited = /* @__PURE__ */ new Map();
+  const commits = [];
+  const commands = [];
+  for (const obs of observations) {
+    const file = obs.files_touched[0] || "";
+    const shortFile = file ? file.split("/").slice(-2).join("/") : "";
+    switch (obs.tool_name) {
+      case "Write":
+        created.push(shortFile);
+        break;
+      case "Edit": {
+        const desc = describeEdit(obs);
+        if (!edited.has(shortFile))
+          edited.set(shortFile, []);
+        edited.get(shortFile).push(desc);
+        break;
       }
-      if (obs.summary.includes("git push"))
-        return `**Git push** \u2014 ${obs.summary.substring(0, 80)}`;
-      if (obs.summary.includes("npm run build"))
-        return `**Build** \u2014 ${obs.summary.substring(0, 80)}`;
-      if (obs.summary.includes("npm install"))
-        return `**Install** \u2014 ${obs.summary.substring(0, 80)}`;
-      if (obs.summary.includes("npm run test") || obs.summary.includes("npm test"))
-        return `**Test** \u2014 ${obs.summary.substring(0, 80)}`;
-      return `**Ran** ${obs.summary.substring(0, 80)}`;
+      case "Bash": {
+        if (obs.summary.includes("git commit")) {
+          const msg = obs.summary.match(/commit -m ["'](.+?)["']/)?.[1] || obs.summary.match(/"([^"]+)"/)?.[1] || "";
+          if (msg)
+            commits.push(msg.substring(0, 70));
+        } else if (obs.summary.includes("git push")) {
+          commands.push("Git push");
+        } else if (obs.summary.includes("npm run build")) {
+          commands.push("Build");
+        } else if (obs.summary.includes("npm install")) {
+          commands.push("Install dependencies");
+        } else if (obs.summary.includes("npm run test") || obs.summary.includes("npm test")) {
+          commands.push("Tests");
+        }
+        break;
+      }
+      default:
+        break;
     }
-    case "Read":
-      return `**Read** ${shortFile}`;
-    default:
-      return `**${obs.tool_name}** ${obs.summary.substring(0, 80)}`;
   }
+  const items = [];
+  if (created.length > 0) {
+    if (created.length <= 3) {
+      items.push(`Created ${created.join(", ")}`);
+    } else {
+      items.push(`Created ${created.slice(0, 3).join(", ")} + ${created.length - 3} more`);
+    }
+  }
+  for (const [file, descriptions] of edited) {
+    const best = descriptions.find((d) => d.startsWith("Added") || d.startsWith("Schema")) || descriptions.find((d) => d.startsWith("Changed") || d.startsWith("Removed")) || descriptions[0] || "modified";
+    items.push(`Edited ${file} \u2014 ${best}`);
+  }
+  if (commits.length > 0) {
+    if (commits.length === 1) {
+      items.push(`Commit: "${commits[0]}"`);
+    } else {
+      items.push(`${commits.length} commits: "${commits[0]}", "${commits[1]}"${commits.length > 2 ? ` + ${commits.length - 2} more` : ""}`);
+    }
+  }
+  const uniqueCommands = [...new Set(commands)];
+  if (uniqueCommands.length > 0) {
+    items.push(uniqueCommands.join(", "));
+  }
+  const cappedItems = items.slice(0, MAX_ITEMS_PER_SESSION);
+  if (items.length > MAX_ITEMS_PER_SESSION) {
+    cappedItems.push(`+ ${items.length - MAX_ITEMS_PER_SESSION} more changes`);
+  }
+  const itemLines = cappedItems.map((item) => `- ${item}`).join("\n");
+  return `${heading}
+${itemLines}`;
+}
+function extractSessionTitle(summary) {
+  let text = summary.replace(/\*\*/g, "").replace(/`/g, "").trim();
+  const sentenceEnd = text.search(/[.!?\n]/);
+  if (sentenceEnd > 0 && sentenceEnd < 120) {
+    text = text.substring(0, sentenceEnd);
+  } else if (text.length > 80) {
+    text = text.substring(0, 80).replace(/\s+\S*$/, "");
+  }
+  if (text.match(/^(Let me|I'll|Here's the|Looking at|No response|Checking)/i)) {
+    return text.substring(0, 60);
+  }
+  return text;
 }
 function describeEdit(obs) {
   const toolInput = obs.metadata?.tool_input;
@@ -1211,7 +1268,10 @@ async function exportToAutoMemory(storage, projectPath, sessionId) {
   if (observations.length === 0) {
     return { exported: 0, filePath: null };
   }
-  const formatted = formatObservationsForMemory(observations);
+  const sessionIds = [...new Set(observations.map((o) => o.session_id))];
+  const sessions = await storage.getRecentSessions(projectPath, 50);
+  const relevantSessions = sessions.filter((s) => sessionIds.includes(s.id));
+  const formatted = formatObservationsForMemory(observations, relevantSessions);
   const { filePath } = writeActivityToMemory(projectPath, formatted);
   const ids = observations.map((o) => o.id).filter((id) => id !== void 0);
   if (ids.length > 0) {
