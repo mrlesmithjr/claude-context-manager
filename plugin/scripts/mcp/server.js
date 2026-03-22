@@ -31803,7 +31803,7 @@ function cleanSummary(summary) {
 // src/mcp/server.ts
 var server = new McpServer({
   name: "context-manager",
-  version: true ? "0.6.0" : "0.5.0"
+  version: true ? "0.6.1" : "0.5.0"
 });
 var storage = null;
 async function getStorage() {
