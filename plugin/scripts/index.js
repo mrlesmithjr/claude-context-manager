@@ -1160,8 +1160,11 @@ function formatObservationsForMemory(observations, sessions) {
     lines.push(`## ${date}`);
     lines.push("");
     for (const [sessionId, sessionObs] of sessionMap) {
-      lines.push(formatSessionBlock(sessionId, sessionObs, sessionSummaries.get(sessionId)));
-      lines.push("");
+      const block = formatSessionBlock(sessionId, sessionObs, sessionSummaries.get(sessionId));
+      if (block) {
+        lines.push(block);
+        lines.push("");
+      }
     }
   }
   return lines.join("\n");
@@ -1194,9 +1197,7 @@ function formatSessionBlock(sessionId, observations, sessionSummary) {
             commits.push(msg.substring(0, 70));
         } else if (obs.summary.includes("git push")) {
           commands.push("Git push");
-        } else if (obs.summary.includes("npm run build")) {
-          commands.push("Build");
-        } else if (obs.summary.includes("npm install")) {
+        } else if (obs.summary.includes("npm install") || obs.summary.includes("yarn add")) {
           commands.push("Install dependencies");
         } else if (obs.summary.includes("npm run test") || obs.summary.includes("npm test")) {
           commands.push("Tests");
@@ -1216,7 +1217,10 @@ function formatSessionBlock(sessionId, observations, sessionSummary) {
     }
   }
   for (const [file, descriptions] of edited) {
-    const best = descriptions.find((d) => d.startsWith("Added") || d.startsWith("Schema")) || descriptions.find((d) => d.startsWith("Changed") || d.startsWith("Removed")) || descriptions[0] || "modified";
+    const meaningful = descriptions.filter((d) => d.length > 0);
+    if (meaningful.length === 0)
+      continue;
+    const best = meaningful.find((d) => d.startsWith("Added") || d.startsWith("Schema")) || meaningful.find((d) => d.startsWith("Changed") || d.startsWith("Removed")) || meaningful[0] || "modified";
     items.push(`Edited ${file} \u2014 ${best}`);
   }
   if (commits.length > 0) {
@@ -1234,6 +1238,8 @@ function formatSessionBlock(sessionId, observations, sessionSummary) {
   if (items.length > MAX_ITEMS_PER_SESSION) {
     cappedItems.push(`+ ${items.length - MAX_ITEMS_PER_SESSION} more changes`);
   }
+  if (cappedItems.length === 0)
+    return "";
   const itemLines = cappedItems.map((item) => `- ${item}`).join("\n");
   return `${heading}
 ${itemLines}`;
@@ -1254,11 +1260,13 @@ function extractSessionTitle(summary) {
 function describeEdit(obs) {
   const toolInput = obs.metadata?.tool_input;
   if (!toolInput)
-    return "modified";
+    return "";
   const oldStr = toolInput.old_string || "";
   const newStr = toolInput.new_string || "";
   if (!oldStr && !newStr)
-    return "modified";
+    return "";
+  if (isVersionBump(oldStr, newStr))
+    return "";
   const oldLines = oldStr.split("\n").map((l) => l.trim()).filter(Boolean);
   const newLines = newStr.split("\n").map((l) => l.trim()).filter(Boolean);
   const oldSet = new Set(oldLines);
@@ -1285,15 +1293,6 @@ function describeEdit(obs) {
       return `Schema change: ${line.substring(0, 60)}`;
     }
   }
-  if (oldLines.length > 0 && newLines.length > 0 && oldLines.length === newLines.length) {
-    if (oldLines.length === 1 && newLines.length === 1) {
-      const old = oldLines[0];
-      const new_ = newLines[0];
-      if (old.length < 80 && new_.length < 80) {
-        return `Changed "${old.substring(0, 40)}" \u2192 "${new_.substring(0, 40)}"`;
-      }
-    }
-  }
   const netLines = newLines.length - oldLines.length;
   if (netLines > 5)
     return `Added ~${netLines} lines`;
@@ -1301,9 +1300,96 @@ function describeEdit(obs) {
     return `Removed ~${Math.abs(netLines)} lines`;
   if (addedLines.length > 0) {
     const hint = addedLines[0].substring(0, 60);
-    return `Changed: ${hint}`;
+    if (hint.length >= 10 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
+      return `Changed: ${hint}`;
+    }
   }
-  return "modified";
+  return "";
+}
+function isVersionBump(oldStr, newStr) {
+  const versionPattern = /["']?version["']?\s*[:=]\s*["']?\d+\.\d+\.\d+/;
+  const oldHasVersion = versionPattern.test(oldStr);
+  const newHasVersion = versionPattern.test(newStr);
+  if (oldHasVersion && newHasVersion) {
+    const normalize = (s) => s.replace(/\d+\.\d+\.\d+/g, "X.X.X").trim();
+    if (normalize(oldStr) === normalize(newStr))
+      return true;
+  }
+  return false;
+}
+function mergeSessionBlocks(existingBody, newContent) {
+  if (!existingBody && !newContent)
+    return "";
+  if (!existingBody)
+    return newContent.trimEnd();
+  if (!newContent)
+    return existingBody.trimEnd();
+  const existingBlocks = parseSessionBlocks(existingBody);
+  const newBlocks = parseSessionBlocks(newContent);
+  for (const newBlock of newBlocks) {
+    const existing = existingBlocks.find((b) => b.sessionId === newBlock.sessionId);
+    if (existing) {
+      const existingItems = new Set(existing.items.map((l) => l.trim()));
+      for (const item of newBlock.items) {
+        if (!existingItems.has(item.trim())) {
+          existing.items.push(item);
+        }
+      }
+      if (existing.items.length > MAX_ITEMS_PER_SESSION) {
+        const overflow = existing.items.length - MAX_ITEMS_PER_SESSION;
+        existing.items = existing.items.slice(0, MAX_ITEMS_PER_SESSION);
+        existing.items.push(`+ ${overflow} more changes`);
+      }
+    } else {
+      existingBlocks.push(newBlock);
+    }
+  }
+  return rebuildFromBlocks(existingBlocks);
+}
+function parseSessionBlocks(body) {
+  const blocks = [];
+  let currentDate = "";
+  let currentBlock = null;
+  for (const line of body.split("\n")) {
+    if (line.startsWith("## ")) {
+      currentDate = line.substring(3).trim();
+    } else if (line.startsWith("### ")) {
+      if (currentBlock)
+        blocks.push(currentBlock);
+      const headingText = line.substring(4).trim();
+      const sessionId = headingText.split(/[\s—]/)[0] || headingText;
+      currentBlock = {
+        date: currentDate,
+        sessionId,
+        heading: line,
+        items: []
+      };
+    } else if (line.startsWith("- ") && currentBlock) {
+      currentBlock.items.push(line);
+    }
+  }
+  if (currentBlock)
+    blocks.push(currentBlock);
+  return blocks;
+}
+function rebuildFromBlocks(blocks) {
+  const byDate = /* @__PURE__ */ new Map();
+  for (const block of blocks) {
+    if (!byDate.has(block.date))
+      byDate.set(block.date, []);
+    byDate.get(block.date).push(block);
+  }
+  const lines = [];
+  for (const [date, dateBlocks] of byDate) {
+    lines.push(`## ${date}`);
+    lines.push("");
+    for (const block of dateBlocks) {
+      lines.push(block.heading);
+      lines.push(...block.items);
+      lines.push("");
+    }
+  }
+  return lines.join("\n").trimEnd();
 }
 function writeActivityToMemory(projectPath, newContent, maxLines = DEFAULT_MAX_LINES) {
   const memoryDir = resolveMemoryDir(projectPath);
@@ -1324,7 +1410,7 @@ function writeActivityToMemory(projectPath, newContent, maxLines = DEFAULT_MAX_L
       existingBody = existing.substring(bodyMatch.index);
     }
   }
-  const fullBody = existingBody ? existingBody.trimEnd() + "\n\n" + newContent.trimEnd() : newContent.trimEnd();
+  const fullBody = mergeSessionBlocks(existingBody, newContent);
   const bodyLines = fullBody.split("\n");
   const trimmedBody = bodyLines.length > maxLines ? bodyLines.slice(bodyLines.length - maxLines).join("\n") : fullBody;
   const finalContent = header + trimmedBody + "\n";

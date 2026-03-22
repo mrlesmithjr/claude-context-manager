@@ -1630,6 +1630,18 @@ function summarizeTool(toolName, toolInput, toolResponse) {
   }
   return summary;
 }
+function isVersionBumpEdit(input) {
+  const oldStr = typeof input.old_string === "string" ? input.old_string : "";
+  const newStr = typeof input.new_string === "string" ? input.new_string : "";
+  if (!oldStr || !newStr)
+    return false;
+  const versionPattern = /["']?version["']?\s*[:=]\s*["']?\d+\.\d+\.\d+/;
+  if (versionPattern.test(oldStr) && versionPattern.test(newStr)) {
+    const normalize = (s) => s.replace(/\d+\.\d+\.\d+/g, "X.X.X").trim();
+    return normalize(oldStr) === normalize(newStr);
+  }
+  return false;
+}
 var CONFIG_FILE_PATTERNS = [
   /package\.json$/,
   /tsconfig.*\.json$/,
@@ -1664,15 +1676,27 @@ function calculateImportance(toolName, toolInput, toolResponse, filesTouched) {
   const input = toolInput && typeof toolInput === "object" ? toolInput : {};
   const command = typeof input.command === "string" ? input.command : "";
   switch (toolName) {
-    case "Edit":
+    case "Edit": {
+      const editInput = toolInput;
+      if (editInput && isVersionBumpEdit(editInput)) {
+        score = 0.4;
+      } else {
+        score = 0.8;
+      }
+      break;
+    }
     case "Write":
       score = 0.8;
       break;
     case "Bash": {
       if (/^git\s+(commit|merge|rebase|cherry-pick)\b/.test(command)) {
         score = 0.9;
-      } else if (/\b(npm\s+(run\s+)?(build|test)|cargo\s+build|make\s+|pytest|go\s+build)\b/.test(command)) {
+      } else if (/\b(npm\s+(run\s+)?test|pytest|cargo\s+test|go\s+test)\b/.test(command)) {
         score = 0.7;
+      } else if (/\b(npm\s+(run\s+)?build|cargo\s+build|make\s+|go\s+build)\b/.test(command)) {
+        score = 0.55;
+      } else if (/\bnpm\s+version\b/.test(command)) {
+        score = 0.4;
       } else if (/\b(npm\s+install|yarn\s+add|pip\s+install|cargo\s+add|go\s+get)\b/.test(command)) {
         score = 0.75;
       } else if (/^git\s+(status|log|diff|show)\b/.test(command)) {

@@ -403,6 +403,22 @@ function summarizeTool(
 }
 
 /**
+ * Check if an Edit tool input is a version bump (low signal for export)
+ */
+function isVersionBumpEdit(input: Record<string, unknown>): boolean {
+  const oldStr = typeof input.old_string === 'string' ? input.old_string : '';
+  const newStr = typeof input.new_string === 'string' ? input.new_string : '';
+  if (!oldStr || !newStr) return false;
+
+  const versionPattern = /["']?version["']?\s*[:=]\s*["']?\d+\.\d+\.\d+/;
+  if (versionPattern.test(oldStr) && versionPattern.test(newStr)) {
+    const normalize = (s: string) => s.replace(/\d+\.\d+\.\d+/g, 'X.X.X').trim();
+    return normalize(oldStr) === normalize(newStr);
+  }
+  return false;
+}
+
+/**
  * Config file patterns that get an importance boost
  */
 const CONFIG_FILE_PATTERNS = [
@@ -458,7 +474,16 @@ export function calculateImportance(
 
   // Base score by tool type
   switch (toolName) {
-    case 'Edit':
+    case 'Edit': {
+      // Demote version bump edits — they're boilerplate
+      const editInput = toolInput as Record<string, unknown> | undefined;
+      if (editInput && isVersionBumpEdit(editInput)) {
+        score = 0.40;
+      } else {
+        score = 0.80;
+      }
+      break;
+    }
     case 'Write':
       score = 0.80;
       break;
@@ -468,9 +493,17 @@ export function calculateImportance(
       if (/^git\s+(commit|merge|rebase|cherry-pick)\b/.test(command)) {
         score = 0.90;
       }
-      // Build/test results
-      else if (/\b(npm\s+(run\s+)?(build|test)|cargo\s+build|make\s+|pytest|go\s+build)\b/.test(command)) {
+      // Build/test results — test is higher signal than build
+      else if (/\b(npm\s+(run\s+)?test|pytest|cargo\s+test|go\s+test)\b/.test(command)) {
         score = 0.70;
+      }
+      // Routine builds — lower signal, these happen constantly
+      else if (/\b(npm\s+(run\s+)?build|cargo\s+build|make\s+|go\s+build)\b/.test(command)) {
+        score = 0.55;
+      }
+      // Version bumps via CLI
+      else if (/\bnpm\s+version\b/.test(command)) {
+        score = 0.40;
       }
       // Dependency changes
       else if (/\b(npm\s+install|yarn\s+add|pip\s+install|cargo\s+add|go\s+get)\b/.test(command)) {

@@ -71,8 +71,11 @@ export function formatObservationsForMemory(
     lines.push('');
 
     for (const [sessionId, sessionObs] of sessionMap) {
-      lines.push(formatSessionBlock(sessionId, sessionObs, sessionSummaries.get(sessionId)));
-      lines.push('');
+      const block = formatSessionBlock(sessionId, sessionObs, sessionSummaries.get(sessionId));
+      if (block) {
+        lines.push(block);
+        lines.push('');
+      }
     }
   }
 
@@ -122,13 +125,12 @@ function formatSessionBlock(
           if (msg) commits.push(msg.substring(0, 70));
         } else if (obs.summary.includes('git push')) {
           commands.push('Git push');
-        } else if (obs.summary.includes('npm run build')) {
-          commands.push('Build');
-        } else if (obs.summary.includes('npm install')) {
+        } else if (obs.summary.includes('npm install') || obs.summary.includes('yarn add')) {
           commands.push('Install dependencies');
         } else if (obs.summary.includes('npm run test') || obs.summary.includes('npm test')) {
           commands.push('Tests');
         }
+        // Deliberately skip: npm run build, npm version — these are routine noise
         break;
       }
       default:
@@ -148,12 +150,16 @@ function formatSessionBlock(
     }
   }
 
-  // Edited files — show best description per file, deduplicated
+  // Edited files — show best description per file, skip low-signal edits
   for (const [file, descriptions] of edited) {
+    // Filter out empty descriptions (low-signal edits like version bumps)
+    const meaningful = descriptions.filter(d => d.length > 0);
+    if (meaningful.length === 0) continue; // Skip this file entirely
+
     // Pick the most informative description (prefer Added/Schema over generic)
-    const best = descriptions.find(d => d.startsWith('Added') || d.startsWith('Schema'))
-      || descriptions.find(d => d.startsWith('Changed') || d.startsWith('Removed'))
-      || descriptions[0]
+    const best = meaningful.find(d => d.startsWith('Added') || d.startsWith('Schema'))
+      || meaningful.find(d => d.startsWith('Changed') || d.startsWith('Removed'))
+      || meaningful[0]
       || 'modified';
     items.push(`Edited ${file} — ${best}`);
   }
@@ -178,6 +184,9 @@ function formatSessionBlock(
   if (items.length > MAX_ITEMS_PER_SESSION) {
     cappedItems.push(`+ ${items.length - MAX_ITEMS_PER_SESSION} more changes`);
   }
+
+  // If all items were filtered out, skip this session entirely
+  if (cappedItems.length === 0) return '';
 
   const itemLines = cappedItems.map(item => `- ${item}`).join('\n');
   return `${heading}\n${itemLines}`;
@@ -212,15 +221,21 @@ function extractSessionTitle(summary: string): string {
 /**
  * Describe an Edit observation by analyzing the old_string/new_string diff
  * in the metadata to produce a meaningful summary of what changed.
+ *
+ * Returns empty string for edits that are too low-signal to export
+ * (e.g., version bumps, trivial whitespace, identical-looking truncated strings).
  */
 function describeEdit(obs: Observation): string {
   const toolInput = obs.metadata?.tool_input as Record<string, unknown> | undefined;
-  if (!toolInput) return 'modified';
+  if (!toolInput) return '';
 
   const oldStr = (toolInput.old_string as string) || '';
   const newStr = (toolInput.new_string as string) || '';
 
-  if (!oldStr && !newStr) return 'modified';
+  if (!oldStr && !newStr) return '';
+
+  // Skip version bump edits — low signal
+  if (isVersionBump(oldStr, newStr)) return '';
 
   const oldLines = oldStr.split('\n').map(l => l.trim()).filter(Boolean);
   const newLines = newStr.split('\n').map(l => l.trim()).filter(Boolean);
@@ -259,27 +274,142 @@ function describeEdit(obs: Observation): string {
     }
   }
 
-  // Check for renames/replacements
-  if (oldLines.length > 0 && newLines.length > 0 && oldLines.length === newLines.length) {
-    if (oldLines.length === 1 && newLines.length === 1) {
-      const old = oldLines[0]!;
-      const new_ = newLines[0]!;
-      if (old.length < 80 && new_.length < 80) {
-        return `Changed "${old.substring(0, 40)}" → "${new_.substring(0, 40)}"`;
-      }
-    }
-  }
-
-  // Summarize by size of change
+  // Summarize by size of change (skip tiny diffs that produce noise)
   const netLines = newLines.length - oldLines.length;
   if (netLines > 5) return `Added ~${netLines} lines`;
   if (netLines < -5) return `Removed ~${Math.abs(netLines)} lines`;
+
+  // For small diffs, only report if added lines have meaningful content
   if (addedLines.length > 0) {
     const hint = addedLines[0]!.substring(0, 60);
-    return `Changed: ${hint}`;
+    // Skip if the hint is too short or looks like punctuation/formatting noise
+    if (hint.length >= 10 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
+      return `Changed: ${hint}`;
+    }
   }
 
-  return 'modified';
+  // Low-signal edit — return empty to skip in export
+  return '';
+}
+
+/**
+ * Check if an edit is just a version bump (e.g., "0.5.0" → "0.5.1")
+ */
+function isVersionBump(oldStr: string, newStr: string): boolean {
+  // Single-line version changes in JSON or similar
+  const versionPattern = /["']?version["']?\s*[:=]\s*["']?\d+\.\d+\.\d+/;
+  const oldHasVersion = versionPattern.test(oldStr);
+  const newHasVersion = versionPattern.test(newStr);
+
+  if (oldHasVersion && newHasVersion) {
+    // If the only meaningful difference is the version number, it's a bump
+    const normalize = (s: string) => s.replace(/\d+\.\d+\.\d+/g, 'X.X.X').trim();
+    if (normalize(oldStr) === normalize(newStr)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Merge new content into existing body, combining blocks for the same session ID.
+ * Prevents duplicate session headings when the same session exports multiple times
+ * (e.g., across restarts).
+ */
+function mergeSessionBlocks(existingBody: string, newContent: string): string {
+  if (!existingBody && !newContent) return '';
+  if (!existingBody) return newContent.trimEnd();
+  if (!newContent) return existingBody.trimEnd();
+
+  // Parse existing body into blocks: { heading, sessionId, lines }
+  const existingBlocks = parseSessionBlocks(existingBody);
+  const newBlocks = parseSessionBlocks(newContent);
+
+  // Merge new blocks into existing — append items to matching session blocks
+  for (const newBlock of newBlocks) {
+    const existing = existingBlocks.find(b => b.sessionId === newBlock.sessionId);
+    if (existing) {
+      // Append new items, deduplicating
+      const existingItems = new Set(existing.items.map(l => l.trim()));
+      for (const item of newBlock.items) {
+        if (!existingItems.has(item.trim())) {
+          existing.items.push(item);
+        }
+      }
+      // Cap items per session
+      if (existing.items.length > MAX_ITEMS_PER_SESSION) {
+        const overflow = existing.items.length - MAX_ITEMS_PER_SESSION;
+        existing.items = existing.items.slice(0, MAX_ITEMS_PER_SESSION);
+        existing.items.push(`+ ${overflow} more changes`);
+      }
+    } else {
+      existingBlocks.push(newBlock);
+    }
+  }
+
+  // Rebuild output grouped by date
+  return rebuildFromBlocks(existingBlocks);
+}
+
+interface SessionBlock {
+  date: string;
+  sessionId: string;
+  heading: string;
+  items: string[];
+}
+
+/**
+ * Parse markdown body into session blocks.
+ */
+function parseSessionBlocks(body: string): SessionBlock[] {
+  const blocks: SessionBlock[] = [];
+  let currentDate = '';
+  let currentBlock: SessionBlock | null = null;
+
+  for (const line of body.split('\n')) {
+    if (line.startsWith('## ')) {
+      currentDate = line.substring(3).trim();
+    } else if (line.startsWith('### ')) {
+      if (currentBlock) blocks.push(currentBlock);
+      // Extract session ID (first 8 chars after ###)
+      const headingText = line.substring(4).trim();
+      const sessionId = headingText.split(/[\s—]/)[0] || headingText;
+      currentBlock = {
+        date: currentDate,
+        sessionId,
+        heading: line,
+        items: [],
+      };
+    } else if (line.startsWith('- ') && currentBlock) {
+      currentBlock.items.push(line);
+    }
+  }
+  if (currentBlock) blocks.push(currentBlock);
+
+  return blocks;
+}
+
+/**
+ * Rebuild markdown from parsed session blocks, grouped by date.
+ */
+function rebuildFromBlocks(blocks: SessionBlock[]): string {
+  const byDate = new Map<string, SessionBlock[]>();
+  for (const block of blocks) {
+    if (!byDate.has(block.date)) byDate.set(block.date, []);
+    byDate.get(block.date)!.push(block);
+  }
+
+  const lines: string[] = [];
+  for (const [date, dateBlocks] of byDate) {
+    lines.push(`## ${date}`);
+    lines.push('');
+    for (const block of dateBlocks) {
+      lines.push(block.heading);
+      lines.push(...block.items);
+      lines.push('');
+    }
+  }
+
+  return lines.join('\n').trimEnd();
 }
 
 /**
@@ -315,10 +445,8 @@ export function writeActivityToMemory(
     }
   }
 
-  // Combine existing body + new content
-  const fullBody = existingBody
-    ? existingBody.trimEnd() + '\n\n' + newContent.trimEnd()
-    : newContent.trimEnd();
+  // Merge same-session blocks before combining
+  const fullBody = mergeSessionBlocks(existingBody, newContent);
 
   // Trim oldest entries if over line limit
   const bodyLines = fullBody.split('\n');
