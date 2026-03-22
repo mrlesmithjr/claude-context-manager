@@ -257,6 +257,35 @@ export interface ContextStorage {
   getUnembeddedObservations(limit?: number, project?: string): Promise<Observation[]>;
 
   /**
+   * Save a session-level embedding
+   * @param sessionId - Session ID
+   * @param embedding - Float32Array of embedding values (384-dim)
+   * @param enrichedText - The enriched text that was embedded (stored for debugging)
+   */
+  saveSessionEmbedding(sessionId: string, embedding: Float32Array, enrichedText: string): Promise<void>;
+
+  /**
+   * Search sessions by vector similarity
+   * @param embedding - Query embedding (384-dim Float32Array)
+   * @param project - Project path (optional, for project-scoped search)
+   * @param topK - Maximum results to return (default: 10)
+   */
+  vectorSearchSessions(embedding: Float32Array, project?: string, topK?: number): Promise<Session[]>;
+
+  /**
+   * Get sessions that don't have embeddings yet (complete sessions only)
+   * @param limit - Maximum number to return (default: 50)
+   * @param project - Project path (optional)
+   */
+  getUnembeddedSessions(limit?: number, project?: string): Promise<Session[]>;
+
+  /**
+   * Count sessions missing embeddings
+   * @param project - Project path (optional)
+   */
+  countUnembeddedSessions(project?: string): number;
+
+  /**
    * Close storage connection
    */
   close(): void;

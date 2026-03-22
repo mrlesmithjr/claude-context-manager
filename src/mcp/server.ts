@@ -17,7 +17,8 @@ import {
   formatObservationsForMemory,
 } from '../export/memory.js';
 import { getEmbeddingService } from '../embedding/service.js';
-import type { Observation, Stats } from '../storage/interface.js';
+import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
+import type { Observation, Session, Stats } from '../storage/interface.js';
 
 // Version injected by esbuild
 declare const PLUGIN_VERSION: string;
@@ -67,7 +68,7 @@ interface VectorStats {
   embedding_status: string;
 }
 
-function formatStats(stats: Stats, project?: string, vectorStats?: VectorStats): string {
+function formatStats(stats: Stats, project?: string, vectorStats?: VectorStats, sessionEmbeddingStats?: { embedded: number; pending: number }): string {
   const lines: string[] = [];
 
   lines.push('Context Manager Statistics');
@@ -131,10 +132,20 @@ function formatStats(stats: Stats, project?: string, vectorStats?: VectorStats):
     lines.push('=== Vector Search ===');
     lines.push(`  Enabled: ${vectorStats.vector_search_enabled ? 'yes' : 'no'}`);
     if (vectorStats.vector_search_enabled) {
+      lines.push('  --- Observations ---');
       const total = vectorStats.embedded_count + vectorStats.unembedded_count;
       const pct = total > 0 ? Math.round((vectorStats.embedded_count / total) * 100) : 0;
       lines.push(`  Embedded: ${vectorStats.embedded_count.toLocaleString()} / ${total.toLocaleString()} (${pct}%)`);
       lines.push(`  Pending: ${vectorStats.unembedded_count.toLocaleString()}`);
+
+      if (sessionEmbeddingStats) {
+        const sessTotal = sessionEmbeddingStats.embedded + sessionEmbeddingStats.pending;
+        const sessPct = sessTotal > 0 ? Math.round((sessionEmbeddingStats.embedded / sessTotal) * 100) : 0;
+        lines.push('  --- Sessions (enriched) ---');
+        lines.push(`  Embedded: ${sessionEmbeddingStats.embedded.toLocaleString()} / ${sessTotal.toLocaleString()} (${sessPct}%)`);
+        lines.push(`  Pending: ${sessionEmbeddingStats.pending.toLocaleString()}`);
+      }
+
       lines.push(`  Model Status: ${vectorStats.embedding_status}`);
     }
   }
@@ -171,12 +182,38 @@ server.tool(
       };
     }
 
-    // FTS5 returned nothing — try semantic search as fallback
+    // FTS5 returned nothing — try session-level semantic search as fallback
     if (db.isVectorSearchEnabled()) {
       const embeddingService = getEmbeddingService();
       const queryEmbedding = await embeddingService.embed(query);
 
       if (queryEmbedding) {
+        // Try session-level search first (enriched, higher quality)
+        const sessionResults = await db.vectorSearchSessions(queryEmbedding, project, 10);
+        if (sessionResults.length > 0) {
+          const lines: string[] = [];
+          for (const session of sessionResults) {
+            const date = new Date(session.started_at);
+            const shortId = session.id.substring(0, 8);
+            const summaryPreview = session.summary
+              ? session.summary.substring(0, 200).replace(/\n/g, ' ')
+              : 'No summary';
+            lines.push(`[${date.toISOString()}] Session ${shortId} (${session.project})`);
+            lines.push(`  ${summaryPreview}`);
+            lines.push('');
+          }
+
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `No exact keyword matches for "${query}", but found ${sessionResults.length} semantically similar sessions:\n\n${lines.join('\n')}`,
+              },
+            ],
+          };
+        }
+
+        // Fall back to observation-level
         const semanticResults = await db.vectorSearch(queryEmbedding, project, 10);
         if (semanticResults.length > 0) {
           return {
@@ -260,11 +297,22 @@ server.tool(
       vectorStats.embedded_count = stats.total_observations - vectorStats.unembedded_count;
     }
 
+    // Session embedding stats
+    let sessionEmbeddingStats: { embedded: number; pending: number } | undefined;
+    if (vecEnabled) {
+      const pendingSessions = db.countUnembeddedSessions(project);
+      const totalCompleteSessions = await db.countSessions(project, 'complete');
+      sessionEmbeddingStats = {
+        embedded: totalCompleteSessions - pendingSessions,
+        pending: pendingSessions,
+      };
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: formatStats(stats, project, vectorStats),
+          text: formatStats(stats, project, vectorStats, sessionEmbeddingStats),
         },
       ],
     };
@@ -364,7 +412,7 @@ server.tool(
 
 server.tool(
   'context_semantic_search',
-  'Search past Claude Code session activity using semantic similarity. Finds conceptually related observations even when exact keywords differ. Requires embeddings to be generated first via context_embed.',
+  'Search past Claude Code sessions using semantic similarity. Finds conceptually related work even when exact keywords differ. Searches session-level embeddings (enriched with user prompts + actions + outcomes) by default, with fallback to observation-level.',
   {
     query: z.string().describe('Natural language query describing what you are looking for'),
     project: z
@@ -376,8 +424,13 @@ server.tool(
       .optional()
       .default(10)
       .describe('Maximum number of results to return (default: 10)'),
+    scope: z
+      .enum(['sessions', 'observations'])
+      .optional()
+      .default('sessions')
+      .describe('Search scope: "sessions" (default, enriched) or "observations" (legacy, per-tool)'),
   },
-  async ({ query, project, top_k }) => {
+  async ({ query, project, top_k, scope }) => {
     const db = await getStorage();
 
     if (!db.isVectorSearchEnabled()) {
@@ -406,6 +459,60 @@ server.tool(
       };
     }
 
+    if (scope === 'sessions') {
+      // Session-level semantic search (enriched text)
+      const sessions = await db.vectorSearchSessions(queryEmbedding, project, top_k);
+
+      if (sessions.length > 0) {
+        const lines: string[] = [];
+        for (const session of sessions) {
+          const date = new Date(session.started_at);
+          const shortId = session.id.substring(0, 8);
+          const summaryPreview = session.summary
+            ? session.summary.substring(0, 200).replace(/\n/g, ' ')
+            : 'No summary';
+          lines.push(`[${date.toISOString()}] Session ${shortId} (${session.project})`);
+          lines.push(`  ${summaryPreview}`);
+
+          // Fetch key observations for this session
+          const obs = await db.getSessionObservations(session.id);
+          const highValue = obs
+            .filter(o => o.importance === 'high')
+            .slice(0, 3);
+          for (const o of highValue) {
+            const fileInfo = o.files_touched.length > 0
+              ? ` (${o.files_touched.map(f => f.split('/').pop()).join(', ')})`
+              : '';
+            lines.push(`    - ${o.tool_name}: ${o.summary.substring(0, 80)}${fileInfo}`);
+          }
+          lines.push('');
+        }
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Found ${sessions.length} semantically similar sessions for "${query}":\n\n${lines.join('\n')}`,
+            },
+          ],
+        };
+      }
+
+      // No session results — fall through to observation search
+      const observations = await db.vectorSearch(queryEmbedding, project, top_k);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: observations.length > 0
+              ? `No session embeddings found, falling back to observation search.\nFound ${observations.length} semantically similar observations for "${query}":\n\n${formatObservations(observations)}`
+              : `No embedded sessions or observations found${project ? ` for ${project}` : ''}. Run context_embed first to generate embeddings.`,
+          },
+        ],
+      };
+    }
+
+    // Legacy observation-level search
     const observations = await db.vectorSearch(queryEmbedding, project, top_k);
     return {
       content: [
@@ -516,6 +623,35 @@ server.tool(
       }
     }
 
+    // --- Session Embeddings ---
+    let sessionEmbedded = 0;
+    let sessionErrors = 0;
+
+    const unembeddedSessions = await db.getUnembeddedSessions(limit, project);
+
+    for (const session of unembeddedSessions) {
+      try {
+        const prompts = await db.getSessionPrompts(session.id);
+        const observations = await db.getSessionObservations(session.id);
+
+        const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+        if (enrichedText.length < 20) {
+          // Skip sessions with too little content
+          continue;
+        }
+
+        const sessionEmb = await embeddingService.embed(enrichedText);
+        if (sessionEmb) {
+          await db.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
+          sessionEmbedded++;
+        } else {
+          sessionErrors++;
+        }
+      } catch {
+        sessionErrors++;
+      }
+    }
+
     const lines: string[] = [];
     const { didAutoInstall } = embeddingService.getStatus();
     if (didAutoInstall) {
@@ -524,6 +660,12 @@ server.tool(
     lines.push(`Embedded ${embedded} observations.`);
     if (errors > 0) {
       lines.push(`${errors} observations failed to embed.`);
+    }
+    if (sessionEmbedded > 0) {
+      lines.push(`Embedded ${sessionEmbedded} sessions (enriched text).`);
+    }
+    if (sessionErrors > 0) {
+      lines.push(`${sessionErrors} sessions failed to embed.`);
     }
     const remaining = unembedded.length - embedded;
     if (remaining > 0 && unembedded.length === limit) {
@@ -611,6 +753,40 @@ async function backgroundEmbed(): Promise<void> {
 
     if (totalEmbedded > 0) {
       console.error(`[context-manager-mcp] Background embedding complete: ${totalEmbedded} observations embedded`);
+    }
+
+    // --- Session embeddings ---
+    const pendingSessions = db.countUnembeddedSessions();
+    if (pendingSessions > 0) {
+      console.error(`[context-manager-mcp] Background session embedding: ${pendingSessions} sessions pending`);
+
+      let totalSessionEmbedded = 0;
+      const sessionBatch = await db.getUnembeddedSessions(50);
+
+      for (const session of sessionBatch) {
+        try {
+          const prompts = await db.getSessionPrompts(session.id);
+          const observations = await db.getSessionObservations(session.id);
+
+          const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+          if (enrichedText.length < 20) continue;
+
+          const sessionEmb = await embeddingService.embed(enrichedText);
+          if (sessionEmb) {
+            await db.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
+            totalSessionEmbedded++;
+          }
+        } catch {
+          // skip individual failures
+        }
+
+        // Brief pause between sessions
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      if (totalSessionEmbedded > 0) {
+        console.error(`[context-manager-mcp] Background session embedding complete: ${totalSessionEmbedded} sessions embedded`);
+      }
     }
   } catch (err) {
     // Background task should never crash the server

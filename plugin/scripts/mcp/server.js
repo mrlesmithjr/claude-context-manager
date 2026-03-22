@@ -30254,6 +30254,7 @@ var SQLiteStorage = class {
     this.migrateAddImportanceColumns();
     this.migrateAddExportedAtColumn();
     this.migrateAddVectorSearch();
+    this.migrateAddSessionVectorSearch();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -31006,6 +31007,176 @@ var SQLiteStorage = class {
     const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
     return row.count;
   }
+  /**
+   * Migration: add embedding column and vec0 virtual table for session-level vector search.
+   * Sessions get enriched text embeddings (user prompts + actions + summary).
+   */
+  migrateAddSessionVectorSearch() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("embedding")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN embedding BLOB`);
+    }
+    if (!columnNames.has("enriched_text")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN enriched_text TEXT`);
+    }
+    if (!this.vecEnabled)
+      return;
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS vec_sessions USING vec0(
+          session_id TEXT PRIMARY KEY,
+          embedding float[384]
+        )
+      `);
+    } catch {
+      try {
+        this.db.exec(`
+          CREATE VIRTUAL TABLE IF NOT EXISTS vec_sessions USING vec0(
+            session_rowid INTEGER PRIMARY KEY,
+            embedding float[384]
+          )
+        `);
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS vec_sessions_map (
+            rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT UNIQUE NOT NULL
+          )
+        `);
+      } catch {
+      }
+    }
+  }
+  async saveSessionEmbedding(sessionId, embedding, enrichedText) {
+    if (!this.vecEnabled) {
+      throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
+    }
+    const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+    const saveTransaction = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE sessions SET embedding = ?, enriched_text = ? WHERE id = ?`
+      ).run(embeddingBuf, enrichedText, sessionId);
+      try {
+        this.db.prepare(
+          `INSERT OR REPLACE INTO vec_sessions (session_id, embedding) VALUES (?, ?)`
+        ).run(sessionId, embeddingBuf);
+      } catch {
+        this.db.prepare(
+          `INSERT OR IGNORE INTO vec_sessions_map (session_id) VALUES (?)`
+        ).run(sessionId);
+        const mapRow = this.db.prepare(
+          `SELECT rowid FROM vec_sessions_map WHERE session_id = ?`
+        ).get(sessionId);
+        if (mapRow) {
+          this.db.prepare(
+            `INSERT OR REPLACE INTO vec_sessions (session_rowid, embedding) VALUES (CAST(? AS INTEGER), ?)`
+          ).run(mapRow.rowid, embeddingBuf);
+        }
+      }
+    });
+    saveTransaction();
+  }
+  async vectorSearchSessions(embedding, project, topK = 10) {
+    if (!this.vecEnabled) {
+      throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
+    }
+    const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+    let rows;
+    try {
+      let sql;
+      let params;
+      if (project) {
+        sql = `
+          SELECT s.*, v.distance
+          FROM vec_sessions v
+          INNER JOIN sessions s ON s.id = v.session_id
+          WHERE v.embedding MATCH ? AND k = ?
+            AND s.project LIKE ?
+          ORDER BY v.distance ASC
+        `;
+        params = [embeddingBuf, topK, project + "%"];
+      } else {
+        sql = `
+          SELECT s.*, v.distance
+          FROM vec_sessions v
+          INNER JOIN sessions s ON s.id = v.session_id
+          WHERE v.embedding MATCH ? AND k = ?
+          ORDER BY v.distance ASC
+        `;
+        params = [embeddingBuf, topK];
+      }
+      rows = this.db.prepare(sql).all(...params);
+    } catch {
+      let sql;
+      let params;
+      if (project) {
+        sql = `
+          SELECT s.*, v.distance
+          FROM vec_sessions v
+          INNER JOIN vec_sessions_map m ON m.rowid = v.session_rowid
+          INNER JOIN sessions s ON s.id = m.session_id
+          WHERE v.embedding MATCH ? AND k = ?
+            AND s.project LIKE ?
+          ORDER BY v.distance ASC
+        `;
+        params = [embeddingBuf, topK, project + "%"];
+      } else {
+        sql = `
+          SELECT s.*, v.distance
+          FROM vec_sessions v
+          INNER JOIN vec_sessions_map m ON m.rowid = v.session_rowid
+          INNER JOIN sessions s ON s.id = m.session_id
+          WHERE v.embedding MATCH ? AND k = ?
+          ORDER BY v.distance ASC
+        `;
+        params = [embeddingBuf, topK];
+      }
+      rows = this.db.prepare(sql).all(...params);
+    }
+    return rows.map((row) => ({
+      id: row.id,
+      project: row.project,
+      started_at: row.started_at,
+      ended_at: row.ended_at || void 0,
+      summary: row.summary || void 0,
+      status: row.status
+    }));
+  }
+  countUnembeddedSessions(project) {
+    const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete'`;
+    const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
+    return row.count;
+  }
+  async getUnembeddedSessions(limit = 50, project) {
+    let sql;
+    let params;
+    if (project) {
+      sql = `
+        SELECT * FROM sessions
+        WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?
+        ORDER BY started_at DESC
+        LIMIT ?
+      `;
+      params = [project + "%", limit];
+    } else {
+      sql = `
+        SELECT * FROM sessions
+        WHERE embedding IS NULL AND status = 'complete'
+        ORDER BY started_at DESC
+        LIMIT ?
+      `;
+      params = [limit];
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => ({
+      id: row.id,
+      project: row.project,
+      started_at: row.started_at,
+      ended_at: row.ended_at || void 0,
+      summary: row.summary || void 0,
+      status: row.status
+    }));
+  }
   async getUnembeddedObservations(limit = 100, project) {
     let sql;
     let params;
@@ -31429,10 +31600,124 @@ function getEmbeddingService() {
   return instance;
 }
 
+// src/embedding/enrichment.ts
+var MAX_TEXT_LENGTH = 2e3;
+function buildSessionEmbeddingText(prompts, observations, sessionSummary) {
+  const parts = [];
+  const promptText = buildPromptSection(prompts);
+  if (promptText)
+    parts.push(promptText);
+  const actionText = buildActionSection(observations);
+  if (actionText)
+    parts.push(actionText);
+  const filesText = buildFilesSection(observations);
+  if (filesText)
+    parts.push(filesText);
+  if (sessionSummary) {
+    const cleaned = cleanSummary(sessionSummary);
+    if (cleaned)
+      parts.push(`Outcome: ${cleaned}`);
+  }
+  const text = parts.join("\n");
+  return text.length > MAX_TEXT_LENGTH ? text.substring(0, MAX_TEXT_LENGTH) : text;
+}
+function buildPromptSection(prompts) {
+  if (prompts.length === 0)
+    return "";
+  const substantive = prompts.map((p) => p.prompt_text.trim()).filter((t) => t.length > 10).slice(0, 5);
+  if (substantive.length === 0)
+    return "";
+  const truncated = substantive.map(
+    (p) => p.length > 200 ? p.substring(0, 200) : p
+  );
+  return `User goals: ${truncated.join(". ")}`;
+}
+function buildActionSection(observations) {
+  const highValue = observations.filter((obs) => {
+    if (["Read", "Grep", "Glob"].includes(obs.tool_name))
+      return false;
+    if (obs.importance === "low")
+      return false;
+    return true;
+  });
+  if (highValue.length === 0)
+    return "";
+  const actions = highValue.slice(0, 10).map((obs) => {
+    return describeAction(obs);
+  });
+  return `Actions: ${actions.join(". ")}`;
+}
+function describeAction(obs) {
+  const file2 = obs.files_touched[0];
+  const shortFile = file2 ? file2.split("/").pop() : void 0;
+  switch (obs.tool_name) {
+    case "Edit": {
+      const toolInput = obs.metadata?.tool_input;
+      const oldStr = toolInput?.old_string || "";
+      const newStr = toolInput?.new_string || "";
+      if (oldStr && newStr && shortFile) {
+        const oldFirst = oldStr.split("\n")[0]?.substring(0, 60) || "";
+        const newFirst = newStr.split("\n")[0]?.substring(0, 60) || "";
+        return `Edited ${shortFile}: "${oldFirst}" \u2192 "${newFirst}"`;
+      }
+      return shortFile ? `Edited ${shortFile}` : obs.summary;
+    }
+    case "Write":
+      return shortFile ? `Created ${shortFile}` : obs.summary;
+    case "Bash": {
+      const toolInput = obs.metadata?.tool_input;
+      const command = toolInput?.command || "";
+      if (command.includes("git commit")) {
+        const msg = command.match(/commit -m ["'](.+?)["']/)?.[1] || command.match(/"([^"]+)"/)?.[1] || "";
+        return msg ? `Git commit: "${msg.substring(0, 80)}"` : "Git commit";
+      }
+      if (command.includes("git push"))
+        return "Git push";
+      if (command.includes("npm run build"))
+        return "Build";
+      if (command.includes("npm run test") || command.includes("npm test"))
+        return "Ran tests";
+      if (command.includes("npm install") || command.includes("npm add"))
+        return "Installed dependencies";
+      if (command.includes("npm version"))
+        return "Version bump";
+      return command.length > 80 ? command.substring(0, 80) : command;
+    }
+    default:
+      return obs.summary.length > 80 ? obs.summary.substring(0, 80) : obs.summary;
+  }
+}
+function buildFilesSection(observations) {
+  const allFiles = /* @__PURE__ */ new Set();
+  for (const obs of observations) {
+    for (const file2 of obs.files_touched) {
+      const basename = file2.split("/").pop();
+      if (basename)
+        allFiles.add(basename);
+    }
+  }
+  if (allFiles.size === 0)
+    return "";
+  const fileList = [...allFiles].slice(0, 15).join(", ");
+  return `Files: ${fileList}`;
+}
+function cleanSummary(summary) {
+  let text = summary.replace(/\*\*/g, "").replace(/`/g, "").replace(/#{1,6}\s*/g, "").trim();
+  if (text.length > 500) {
+    const sentenceEnd = text.substring(400, 500).search(/[.!?]\s/);
+    if (sentenceEnd > 0) {
+      text = text.substring(0, 400 + sentenceEnd + 1);
+    } else {
+      text = text.substring(0, 500);
+    }
+  }
+  return text;
+}
+
 // src/mcp/server.ts
 var server = new McpServer({
   name: "context-manager",
-  version: true ? "0.5.12" : "0.5.0"
+  version: true ? "0.6.0" : "0.5.0"
 });
 var storage = null;
 async function getStorage() {
@@ -31456,7 +31741,7 @@ function formatObservations(observations) {
   }
   return lines.join("\n");
 }
-function formatStats(stats, project, vectorStats) {
+function formatStats(stats, project, vectorStats, sessionEmbeddingStats) {
   const lines = [];
   lines.push("Context Manager Statistics");
   lines.push("");
@@ -31511,10 +31796,18 @@ function formatStats(stats, project, vectorStats) {
     lines.push("=== Vector Search ===");
     lines.push(`  Enabled: ${vectorStats.vector_search_enabled ? "yes" : "no"}`);
     if (vectorStats.vector_search_enabled) {
+      lines.push("  --- Observations ---");
       const total = vectorStats.embedded_count + vectorStats.unembedded_count;
       const pct = total > 0 ? Math.round(vectorStats.embedded_count / total * 100) : 0;
       lines.push(`  Embedded: ${vectorStats.embedded_count.toLocaleString()} / ${total.toLocaleString()} (${pct}%)`);
       lines.push(`  Pending: ${vectorStats.unembedded_count.toLocaleString()}`);
+      if (sessionEmbeddingStats) {
+        const sessTotal = sessionEmbeddingStats.embedded + sessionEmbeddingStats.pending;
+        const sessPct = sessTotal > 0 ? Math.round(sessionEmbeddingStats.embedded / sessTotal * 100) : 0;
+        lines.push("  --- Sessions (enriched) ---");
+        lines.push(`  Embedded: ${sessionEmbeddingStats.embedded.toLocaleString()} / ${sessTotal.toLocaleString()} (${sessPct}%)`);
+        lines.push(`  Pending: ${sessionEmbeddingStats.pending.toLocaleString()}`);
+      }
       lines.push(`  Model Status: ${vectorStats.embedding_status}`);
     }
   }
@@ -31548,6 +31841,28 @@ ${formatObservations(observations)}`
       const embeddingService = getEmbeddingService();
       const queryEmbedding = await embeddingService.embed(query);
       if (queryEmbedding) {
+        const sessionResults = await db.vectorSearchSessions(queryEmbedding, project, 10);
+        if (sessionResults.length > 0) {
+          const lines = [];
+          for (const session of sessionResults) {
+            const date5 = new Date(session.started_at);
+            const shortId = session.id.substring(0, 8);
+            const summaryPreview = session.summary ? session.summary.substring(0, 200).replace(/\n/g, " ") : "No summary";
+            lines.push(`[${date5.toISOString()}] Session ${shortId} (${session.project})`);
+            lines.push(`  ${summaryPreview}`);
+            lines.push("");
+          }
+          return {
+            content: [
+              {
+                type: "text",
+                text: `No exact keyword matches for "${query}", but found ${sessionResults.length} semantically similar sessions:
+
+${lines.join("\n")}`
+              }
+            ]
+          };
+        }
         const semanticResults = await db.vectorSearch(queryEmbedding, project, 10);
         if (semanticResults.length > 0) {
           return {
@@ -31618,11 +31933,20 @@ server.tool(
       vectorStats.unembedded_count = db.countUnembedded(project);
       vectorStats.embedded_count = stats.total_observations - vectorStats.unembedded_count;
     }
+    let sessionEmbeddingStats;
+    if (vecEnabled) {
+      const pendingSessions = db.countUnembeddedSessions(project);
+      const totalCompleteSessions = await db.countSessions(project, "complete");
+      sessionEmbeddingStats = {
+        embedded: totalCompleteSessions - pendingSessions,
+        pending: pendingSessions
+      };
+    }
     return {
       content: [
         {
           type: "text",
-          text: formatStats(stats, project, vectorStats)
+          text: formatStats(stats, project, vectorStats, sessionEmbeddingStats)
         }
       ]
     };
@@ -31710,13 +32034,14 @@ server.tool(
 );
 server.tool(
   "context_semantic_search",
-  "Search past Claude Code session activity using semantic similarity. Finds conceptually related observations even when exact keywords differ. Requires embeddings to be generated first via context_embed.",
+  "Search past Claude Code sessions using semantic similarity. Finds conceptually related work even when exact keywords differ. Searches session-level embeddings (enriched with user prompts + actions + outcomes) by default, with fallback to observation-level.",
   {
     query: external_exports3.string().describe("Natural language query describing what you are looking for"),
     project: external_exports3.string().optional().describe("Project path to scope search. Omit to search all projects."),
-    top_k: external_exports3.number().optional().default(10).describe("Maximum number of results to return (default: 10)")
+    top_k: external_exports3.number().optional().default(10).describe("Maximum number of results to return (default: 10)"),
+    scope: external_exports3.enum(["sessions", "observations"]).optional().default("sessions").describe('Search scope: "sessions" (default, enriched) or "observations" (legacy, per-tool)')
   },
-  async ({ query, project, top_k }) => {
+  async ({ query, project, top_k, scope }) => {
     const db = await getStorage();
     if (!db.isVectorSearchEnabled()) {
       return {
@@ -31739,6 +32064,48 @@ server.tool(
             text: `Embedding model not available (status: ${status}).${error48 ? ` ${error48}` : ""}
 
 FTS5 keyword search via context_search is still available.`
+          }
+        ]
+      };
+    }
+    if (scope === "sessions") {
+      const sessions = await db.vectorSearchSessions(queryEmbedding, project, top_k);
+      if (sessions.length > 0) {
+        const lines = [];
+        for (const session of sessions) {
+          const date5 = new Date(session.started_at);
+          const shortId = session.id.substring(0, 8);
+          const summaryPreview = session.summary ? session.summary.substring(0, 200).replace(/\n/g, " ") : "No summary";
+          lines.push(`[${date5.toISOString()}] Session ${shortId} (${session.project})`);
+          lines.push(`  ${summaryPreview}`);
+          const obs = await db.getSessionObservations(session.id);
+          const highValue = obs.filter((o) => o.importance === "high").slice(0, 3);
+          for (const o of highValue) {
+            const fileInfo = o.files_touched.length > 0 ? ` (${o.files_touched.map((f) => f.split("/").pop()).join(", ")})` : "";
+            lines.push(`    - ${o.tool_name}: ${o.summary.substring(0, 80)}${fileInfo}`);
+          }
+          lines.push("");
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Found ${sessions.length} semantically similar sessions for "${query}":
+
+${lines.join("\n")}`
+            }
+          ]
+        };
+      }
+      const observations2 = await db.vectorSearch(queryEmbedding, project, top_k);
+      return {
+        content: [
+          {
+            type: "text",
+            text: observations2.length > 0 ? `No session embeddings found, falling back to observation search.
+Found ${observations2.length} semantically similar observations for "${query}":
+
+${formatObservations(observations2)}` : `No embedded sessions or observations found${project ? ` for ${project}` : ""}. Run context_embed first to generate embeddings.`
           }
         ]
       };
@@ -31831,6 +32198,28 @@ server.tool(
         }
       }
     }
+    let sessionEmbedded = 0;
+    let sessionErrors = 0;
+    const unembeddedSessions = await db.getUnembeddedSessions(limit, project);
+    for (const session of unembeddedSessions) {
+      try {
+        const prompts = await db.getSessionPrompts(session.id);
+        const observations = await db.getSessionObservations(session.id);
+        const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+        if (enrichedText.length < 20) {
+          continue;
+        }
+        const sessionEmb = await embeddingService.embed(enrichedText);
+        if (sessionEmb) {
+          await db.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
+          sessionEmbedded++;
+        } else {
+          sessionErrors++;
+        }
+      } catch {
+        sessionErrors++;
+      }
+    }
     const lines = [];
     const { didAutoInstall } = embeddingService.getStatus();
     if (didAutoInstall) {
@@ -31839,6 +32228,12 @@ server.tool(
     lines.push(`Embedded ${embedded} observations.`);
     if (errors > 0) {
       lines.push(`${errors} observations failed to embed.`);
+    }
+    if (sessionEmbedded > 0) {
+      lines.push(`Embedded ${sessionEmbedded} sessions (enriched text).`);
+    }
+    if (sessionErrors > 0) {
+      lines.push(`${sessionErrors} sessions failed to embed.`);
     }
     const remaining = unembedded.length - embedded;
     if (remaining > 0 && unembedded.length === limit) {
@@ -31903,6 +32298,31 @@ async function backgroundEmbed() {
     }
     if (totalEmbedded > 0) {
       console.error(`[context-manager-mcp] Background embedding complete: ${totalEmbedded} observations embedded`);
+    }
+    const pendingSessions = db.countUnembeddedSessions();
+    if (pendingSessions > 0) {
+      console.error(`[context-manager-mcp] Background session embedding: ${pendingSessions} sessions pending`);
+      let totalSessionEmbedded = 0;
+      const sessionBatch = await db.getUnembeddedSessions(50);
+      for (const session of sessionBatch) {
+        try {
+          const prompts = await db.getSessionPrompts(session.id);
+          const observations = await db.getSessionObservations(session.id);
+          const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+          if (enrichedText.length < 20)
+            continue;
+          const sessionEmb = await embeddingService.embed(enrichedText);
+          if (sessionEmb) {
+            await db.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
+            totalSessionEmbedded++;
+          }
+        } catch {
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (totalSessionEmbedded > 0) {
+        console.error(`[context-manager-mcp] Background session embedding complete: ${totalSessionEmbedded} sessions embedded`);
+      }
     }
   } catch (err) {
     console.error("[context-manager-mcp] Background embedding error:", err);

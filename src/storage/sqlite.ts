@@ -218,6 +218,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add vector search support
     this.migrateAddVectorSearch();
+
+    // Migration: add session-level vector search
+    this.migrateAddSessionVectorSearch();
   }
 
   /**
@@ -1243,6 +1246,219 @@ export class SQLiteStorage implements ContextStorage {
       : this.db.prepare(sql).get() as { count: number };
 
     return row.count;
+  }
+
+  /**
+   * Migration: add embedding column and vec0 virtual table for session-level vector search.
+   * Sessions get enriched text embeddings (user prompts + actions + summary).
+   */
+  private migrateAddSessionVectorSearch(): void {
+    const columns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('embedding')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN embedding BLOB`);
+    }
+    if (!columnNames.has('enriched_text')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN enriched_text TEXT`);
+    }
+
+    if (!this.vecEnabled) return;
+
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS vec_sessions USING vec0(
+          session_id TEXT PRIMARY KEY,
+          embedding float[384]
+        )
+      `);
+    } catch {
+      // vec0 may not support TEXT primary keys — fall back to integer mapping
+      try {
+        this.db.exec(`
+          CREATE VIRTUAL TABLE IF NOT EXISTS vec_sessions USING vec0(
+            session_rowid INTEGER PRIMARY KEY,
+            embedding float[384]
+          )
+        `);
+        // Create a mapping table for text session IDs to integer rowids
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS vec_sessions_map (
+            rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT UNIQUE NOT NULL
+          )
+        `);
+      } catch {
+        // If both fail, session vector search just won't be available
+        // Observation-level vector search still works
+      }
+    }
+  }
+
+  async saveSessionEmbedding(sessionId: string, embedding: Float32Array, enrichedText: string): Promise<void> {
+    if (!this.vecEnabled) {
+      throw new Error('Vector search is not enabled (sqlite-vec not loaded)');
+    }
+
+    const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+
+    const saveTransaction = this.db.transaction(() => {
+      // Save embedding + enriched text on the sessions row
+      this.db.prepare(
+        `UPDATE sessions SET embedding = ?, enriched_text = ? WHERE id = ?`
+      ).run(embeddingBuf, enrichedText, sessionId);
+
+      // Try text PK first (vec_sessions with TEXT PRIMARY KEY)
+      try {
+        this.db.prepare(
+          `INSERT OR REPLACE INTO vec_sessions (session_id, embedding) VALUES (?, ?)`
+        ).run(sessionId, embeddingBuf);
+      } catch {
+        // Fall back to integer mapping approach
+        this.db.prepare(
+          `INSERT OR IGNORE INTO vec_sessions_map (session_id) VALUES (?)`
+        ).run(sessionId);
+        const mapRow = this.db.prepare(
+          `SELECT rowid FROM vec_sessions_map WHERE session_id = ?`
+        ).get(sessionId) as { rowid: number } | undefined;
+        if (mapRow) {
+          this.db.prepare(
+            `INSERT OR REPLACE INTO vec_sessions (session_rowid, embedding) VALUES (CAST(? AS INTEGER), ?)`
+          ).run(mapRow.rowid, embeddingBuf);
+        }
+      }
+    });
+
+    saveTransaction();
+  }
+
+  async vectorSearchSessions(embedding: Float32Array, project?: string, topK: number = 10): Promise<Session[]> {
+    if (!this.vecEnabled) {
+      throw new Error('Vector search is not enabled (sqlite-vec not loaded)');
+    }
+
+    const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+
+    // Try text PK approach first
+    let rows: Array<Record<string, unknown>>;
+    try {
+      let sql: string;
+      let params: unknown[];
+
+      if (project) {
+        sql = `
+          SELECT s.*, v.distance
+          FROM vec_sessions v
+          INNER JOIN sessions s ON s.id = v.session_id
+          WHERE v.embedding MATCH ? AND k = ?
+            AND s.project LIKE ?
+          ORDER BY v.distance ASC
+        `;
+        params = [embeddingBuf, topK, project + '%'];
+      } else {
+        sql = `
+          SELECT s.*, v.distance
+          FROM vec_sessions v
+          INNER JOIN sessions s ON s.id = v.session_id
+          WHERE v.embedding MATCH ? AND k = ?
+          ORDER BY v.distance ASC
+        `;
+        params = [embeddingBuf, topK];
+      }
+
+      rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    } catch {
+      // Fall back to integer mapping approach
+      let sql: string;
+      let params: unknown[];
+
+      if (project) {
+        sql = `
+          SELECT s.*, v.distance
+          FROM vec_sessions v
+          INNER JOIN vec_sessions_map m ON m.rowid = v.session_rowid
+          INNER JOIN sessions s ON s.id = m.session_id
+          WHERE v.embedding MATCH ? AND k = ?
+            AND s.project LIKE ?
+          ORDER BY v.distance ASC
+        `;
+        params = [embeddingBuf, topK, project + '%'];
+      } else {
+        sql = `
+          SELECT s.*, v.distance
+          FROM vec_sessions v
+          INNER JOIN vec_sessions_map m ON m.rowid = v.session_rowid
+          INNER JOIN sessions s ON s.id = m.session_id
+          WHERE v.embedding MATCH ? AND k = ?
+          ORDER BY v.distance ASC
+        `;
+        params = [embeddingBuf, topK];
+      }
+
+      rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    }
+
+    return rows.map(row => ({
+      id: row.id as string,
+      project: row.project as string,
+      started_at: row.started_at as string,
+      ended_at: (row.ended_at as string) || undefined,
+      summary: (row.summary as string) || undefined,
+      status: row.status as 'active' | 'complete',
+    }));
+  }
+
+  countUnembeddedSessions(project?: string): number {
+    const sql = project
+      ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?`
+      : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete'`;
+
+    const row = project
+      ? this.db.prepare(sql).get(project + '%') as { count: number }
+      : this.db.prepare(sql).get() as { count: number };
+
+    return row.count;
+  }
+
+  async getUnembeddedSessions(limit: number = 50, project?: string): Promise<Session[]> {
+    let sql: string;
+    let params: unknown[];
+
+    if (project) {
+      sql = `
+        SELECT * FROM sessions
+        WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?
+        ORDER BY started_at DESC
+        LIMIT ?
+      `;
+      params = [project + '%', limit];
+    } else {
+      sql = `
+        SELECT * FROM sessions
+        WHERE embedding IS NULL AND status = 'complete'
+        ORDER BY started_at DESC
+        LIMIT ?
+      `;
+      params = [limit];
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as Array<{
+      id: string;
+      project: string;
+      started_at: string;
+      ended_at: string | null;
+      summary: string | null;
+      status: 'active' | 'complete';
+    }>;
+
+    return rows.map(row => ({
+      id: row.id,
+      project: row.project,
+      started_at: row.started_at,
+      ended_at: row.ended_at || undefined,
+      summary: row.summary || undefined,
+      status: row.status,
+    }));
   }
 
   async getUnembeddedObservations(limit: number = 100, project?: string): Promise<Observation[]> {
