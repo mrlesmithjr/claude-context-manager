@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: March 21, 2026
+**Last Updated**: March 22, 2026
 
 ---
 
@@ -49,7 +49,7 @@ npm run plugin:uninstall:all  # Remove all data
 - `context_stats` - Show statistics (includes vector search status)
 - `context_list` - List recent observations
 - `context_search` - Search observations (FTS5 keyword)
-- `context_semantic_search` - Search by meaning (vector similarity)
+- `context_semantic_search` - Search sessions by meaning (enriched vector similarity)
 - `context_embed` - Generate vector embeddings for semantic search
 - `context_vacuum` - Clean up old data
 - `context_export` - Export to auto-memory
@@ -136,6 +136,7 @@ claude-context-manager/
 |   +-- capture/
 |   |   +-- processor.ts       # Process tool outputs
 |   +-- embedding/
+|   |   +-- enrichment.ts      # Session enrichment text builder
 |   |   +-- service.ts         # Vector embedding service (HF transformers)
 |   +-- export/
 |   |   +-- memory.ts          # Auto-memory export pipeline
@@ -217,10 +218,16 @@ claude-context-manager/
 - SessionStart injects a minimal status hint (~30 tokens) instead of raw observation lists
 - Complements Claude Code's built-in auto-memory rather than competing with it
 
-### 8. Vector Embedding Search (v0.5.5)
+### 8. Vector Embedding Search (v0.5.5, enriched in v0.6.0)
 - sqlite-vec extension loaded at database open (graceful fallback if unavailable)
-- `embedding BLOB` column on observations + `vec_observations` vec0 virtual table (384-dim)
+- **Observation embeddings**: `embedding BLOB` column on observations + `vec_observations` vec0 virtual table (384-dim)
+- **Session embeddings** (v0.6.0): `embedding BLOB` + `enriched_text TEXT` on sessions + `vec_sessions` vec0 virtual table
+  - Enriched text assembled from user prompts + high-value observations + session summary (~200-500 tokens)
+  - Provides much higher semantic signal than per-observation embeddings
+  - `context_semantic_search` defaults to session scope with observation fallback
 - Embeddings generated on-demand via `context_embed` MCP tool (NOT at capture time — avoids hook latency)
+- Background embedding runs automatically on MCP server startup for new observations and sessions
+- First-time setup: run `context_embed` once to auto-install dependencies and bootstrap
 - `@huggingface/transformers` is an optional dependency — all other features work without it
 - Model: `Xenova/all-MiniLM-L6-v2` (~80MB, cached to `~/.cache/huggingface/`)
 

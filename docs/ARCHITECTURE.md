@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: March 5, 2026
+**Last Updated**: March 22, 2026
 
 ---
 
@@ -32,11 +32,12 @@ SQLite was chosen deliberately over alternatives like HTTP-backed services (Redi
 | Cold start latency | <5ms (file open) | Connection overhead | Connection + model load |
 
 **Trade-offs accepted:**
-- No vector/semantic search (mitigated by FTS5 keyword search and importance scoring)
 - No AI-powered extraction (mitigated by rule-based summarization and importance classification)
 - Single-machine only (acceptable — Claude Code is a local CLI tool)
 
-**Contrast with claude-mem:** The reference project uses ChromaDB + Agent SDK HTTP service, enabling vector embeddings and AI extraction. That's more powerful but requires Python, ChromaDB, and a running daemon. SQLite trades retrieval intelligence for operational simplicity.
+**Vector search (added v0.5.5, enriched v0.6.0):** sqlite-vec extends SQLite with vector similarity search, keeping the single-file architecture. Session-level embeddings are generated from enriched text (user prompts + high-value actions + session summary) using a local ONNX model — no external APIs or services required.
+
+**Contrast with claude-mem:** The reference project uses ChromaDB + Agent SDK HTTP service, enabling AI-powered extraction via Anthropic API calls. That's more powerful for per-observation summarization but requires Python, ChromaDB, Bun, and a running daemon. We achieve similar semantic search quality at the session level through data assembly (no AI needed) because user prompts and session summaries already contain natural language.
 
 ---
 
@@ -673,4 +674,4 @@ These tools solve different problems and could work alongside context-manager:
 
 ---
 
-**Last Updated**: March 5, 2026
+**Last Updated**: March 22, 2026

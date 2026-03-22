@@ -3,7 +3,7 @@
 Automatic session history and searchable context for Claude Code. Captures every tool interaction in SQLite with full-text search, exports high-value observations to Claude Code's auto-memory, and provides a web dashboard.
 
 **Status**: ACTIVE
-**Last Updated**: March 21, 2026
+**Last Updated**: March 22, 2026
 
 ---
 
@@ -96,7 +96,7 @@ Anytime:
 | **Auto-Memory Export** | High-importance observations exported to Claude Code's auto-memory topic files at session end |
 | **Auto-Compaction** | Old observations compressed into summaries during vacuum (`Read x4: file1, file2, ...`) |
 | **Full-Text Search** | SQLite FTS5 enables fast keyword search |
-| **Semantic Search** | Vector embeddings via sqlite-vec find conceptually related observations |
+| **Semantic Search** | Session-level vector embeddings (enriched with prompts, actions, outcomes) via sqlite-vec |
 | **Web Dashboard** | Browse sessions, search observations, view analytics |
 | **Hierarchical Visibility** | Parent directories see child project contexts |
 | **Token Budget** | Configurable limit on injected context size with diversity caps |
@@ -123,8 +123,11 @@ Stop ------------------------------>                ----> ~/.claude/projects/
                                                            context-manager-
 MCP Tools:                                                 activity.md
   context_search -------> FTS5 keyword search
-  context_semantic_search -> Vector similarity search
+                           (auto-falls back to semantic)
+  context_semantic_search -> Session vector search
+                              (enriched: prompts+actions+summary)
   context_embed ---------> Generate embeddings
+                             (observations + sessions)
 ```
 
 Direct SQLite access - no background service required.
@@ -299,9 +302,9 @@ Once installed, these tools are available to Claude Code via MCP:
 |------|-------------|
 | `context_stats` | Show statistics for current project |
 | `context_list` | List recent observations |
-| `context_search` | Search observations (keyword, FTS5) |
-| `context_semantic_search` | Search observations by meaning (vector similarity) |
-| `context_embed` | Generate vector embeddings for semantic search |
+| `context_search` | Search observations (keyword, FTS5, auto-falls back to semantic) |
+| `context_semantic_search` | Search sessions by meaning (vector similarity, enriched text) |
+| `context_embed` | Generate vector embeddings for observations and sessions |
 | `context_vacuum` | Clean up old data |
 | `context_export` | Export to auto-memory |
 
@@ -355,28 +358,50 @@ npm run import -- \
 
 ### Semantic Search (Vector Embeddings)
 
-Semantic search finds conceptually related observations even when exact keywords don't match. It uses local vector embeddings — no external APIs required.
-
-**Usage:**
-
-1. Generate embeddings (first run auto-installs dependencies and downloads the model — takes a few minutes):
-   ```
-   # In Claude Code, use the MCP tool:
-   context_embed
-   ```
-
-2. Search by meaning:
-   ```
-   # In Claude Code:
-   context_semantic_search "authentication flow changes"
-   ```
+Semantic search finds conceptually related sessions even when exact keywords don't match. It uses local vector embeddings — no external APIs required.
 
 **How it works:**
-- `context_embed` auto-installs `@huggingface/transformers` + `onnxruntime-node` on first use (~265MB one-time download)
-- The embedding model (`Xenova/all-MiniLM-L6-v2`, 384 dimensions, ~80MB) is downloaded and cached on first use
-- `context_semantic_search` embeds your query and finds the most similar observations via sqlite-vec
-- FTS5 keyword search (`context_search`) remains available and works independently
-- All existing features work normally even if embedding setup hasn't been run
+
+At the end of each session, the plugin captures a session summary. In the background, the MCP server assembles **enriched text** for each session by combining:
+- **User prompts** (what you asked — highest signal for intent)
+- **High-value actions** (edits, writes, commits — not reads/greps)
+- **Session summary** (the outcome)
+
+This enriched text (~200-500 tokens per session) is then embedded using a local model and stored for similarity search. This means searching for "database migration fix" will find sessions where you worked on that topic, even if you never used those exact words.
+
+**First-time setup:**
+
+Run `context_embed` once to bootstrap — this auto-installs dependencies and generates embeddings for existing sessions:
+
+```
+# In Claude Code, use the MCP tool:
+context_embed
+```
+
+The first run:
+1. Auto-installs `@huggingface/transformers` + `onnxruntime-node` (~265MB one-time download)
+2. Downloads the embedding model (`Xenova/all-MiniLM-L6-v2`, 384 dimensions, ~80MB, cached to `~/.cache/huggingface/`)
+3. Embeds all existing observations and sessions
+
+**After first-time setup, everything is automatic:**
+- New observations and sessions are embedded in the background when the MCP server starts
+- No manual `context_embed` calls needed for ongoing use
+- `context_search` automatically falls back to semantic search when keyword search finds nothing
+
+**Search by meaning:**
+```
+# In Claude Code:
+context_semantic_search "authentication flow changes"
+
+# Search sessions (default) or observations (legacy):
+context_semantic_search "database fix" --scope sessions
+context_semantic_search "database fix" --scope observations
+```
+
+**Key points:**
+- FTS5 keyword search (`context_search`) always works independently — embeddings are optional
+- All features work normally even if embedding setup hasn't been run
+- All processing is local — no external APIs, no data leaves your machine
 
 ### CLI Alias (Optional)
 
@@ -551,8 +576,7 @@ This plugin captures **everything automatically** and exports the important part
 - Predictable, deterministic behavior
 
 **Choose claude-mem if you want:**
-- AI-powered summarization
-- MCP tool integration
+- AI-powered summarization (uses Anthropic API)
 - AST-based code navigation
 
 ---
