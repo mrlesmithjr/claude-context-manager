@@ -31777,9 +31777,9 @@ function buildFilesSection(observations) {
   const allFiles = /* @__PURE__ */ new Set();
   for (const obs of observations) {
     for (const file2 of obs.files_touched) {
-      const basename = file2.split("/").pop();
-      if (basename)
-        allFiles.add(basename);
+      const basename2 = file2.split("/").pop();
+      if (basename2)
+        allFiles.add(basename2);
     }
   }
   if (allFiles.size === 0)
@@ -31800,10 +31800,462 @@ function cleanSummary(summary) {
   return text;
 }
 
+// src/memory/audit.ts
+import { readdirSync, statSync, readFileSync as readFileSync2, existsSync as existsSync3 } from "fs";
+import { join as join3 } from "path";
+import { homedir as homedir3 } from "os";
+var EXCLUDED_FILES = /* @__PURE__ */ new Set(["MEMORY.md", "context-manager-activity.md"]);
+var MEMORY_FILE_PATTERN = /\.md$/;
+function parseFrontmatter(content) {
+  const defaults = { name: "", description: "", type: "unknown" };
+  if (!content.startsWith("---")) {
+    return defaults;
+  }
+  const endIndex = content.indexOf("\n---", 3);
+  if (endIndex === -1) {
+    return defaults;
+  }
+  const frontmatter = content.substring(3, endIndex);
+  const result = { ...defaults };
+  for (const line of frontmatter.split("\n")) {
+    const colonIdx = line.indexOf(":");
+    if (colonIdx === -1)
+      continue;
+    const key = line.substring(0, colonIdx).trim();
+    const value = line.substring(colonIdx + 1).trim();
+    if (key === "name") {
+      result.name = value;
+    } else if (key === "description") {
+      result.description = value;
+    } else if (key === "type") {
+      const candidate = value;
+      if (candidate === "user" || candidate === "feedback" || candidate === "project" || candidate === "reference") {
+        result.type = candidate;
+      }
+    }
+  }
+  return result;
+}
+function scanMemoryDirectory(projectDir, dashedPath, isCurrentProject) {
+  const memoryDir = join3(projectDir, "memory");
+  const stats = {
+    projectDir,
+    dashedPath,
+    memoryDir,
+    fileCount: 0,
+    byType: { user: 0, feedback: 0, project: 0, reference: 0, unknown: 0 },
+    mostRecentModified: null,
+    isCurrent: isCurrentProject,
+    files: []
+  };
+  if (!existsSync3(memoryDir)) {
+    return stats;
+  }
+  let entries;
+  try {
+    entries = readdirSync(memoryDir);
+  } catch {
+    return stats;
+  }
+  for (const filename of entries) {
+    if (!MEMORY_FILE_PATTERN.test(filename))
+      continue;
+    if (EXCLUDED_FILES.has(filename))
+      continue;
+    const filePath = join3(memoryDir, filename);
+    let fileStat;
+    try {
+      fileStat = statSync(filePath);
+    } catch {
+      continue;
+    }
+    let content = "";
+    try {
+      content = readFileSync2(filePath, "utf-8");
+    } catch {
+    }
+    const { name, description, type } = parseFrontmatter(content);
+    const modifiedAt = fileStat.mtime;
+    stats.fileCount++;
+    stats.byType[type]++;
+    if (stats.mostRecentModified === null || modifiedAt > stats.mostRecentModified) {
+      stats.mostRecentModified = modifiedAt;
+    }
+    stats.files.push({
+      filename,
+      name: name || filename.replace(/\.md$/, ""),
+      description,
+      type,
+      modifiedAt
+    });
+  }
+  return stats;
+}
+function auditMemoryDirectories(projectPath) {
+  const dashedPrefix = convertPathToDashed(projectPath);
+  const claudeProjectsDir = join3(homedir3(), ".claude", "projects");
+  let allEntries;
+  try {
+    allEntries = readdirSync(claudeProjectsDir);
+  } catch {
+    return {
+      project: projectPath,
+      dashedPrefix,
+      current: null,
+      orphans: [],
+      totalOrphanedFiles: 0,
+      recommendation: "Could not read ~/.claude/projects/ directory."
+    };
+  }
+  const current = [];
+  const orphans = [];
+  for (const entry of allEntries) {
+    if (!entry.startsWith(dashedPrefix))
+      continue;
+    const fullProjectDir = join3(claudeProjectsDir, entry);
+    let entryStat;
+    try {
+      entryStat = statSync(fullProjectDir);
+    } catch {
+      continue;
+    }
+    if (!entryStat.isDirectory())
+      continue;
+    const remainder = entry.substring(dashedPrefix.length);
+    const isExactMatch = remainder === "";
+    const isChildMatch = remainder.startsWith("-");
+    if (!isExactMatch && !isChildMatch)
+      continue;
+    const memoryDir = join3(fullProjectDir, "memory");
+    if (!existsSync3(memoryDir))
+      continue;
+    const dirStats = scanMemoryDirectory(fullProjectDir, entry, isExactMatch);
+    if (isExactMatch) {
+      current.push(dirStats);
+    } else {
+      orphans.push(dirStats);
+    }
+  }
+  const currentStats = current[0] ?? null;
+  const totalOrphanedFiles = orphans.reduce((sum, o) => sum + o.fileCount, 0);
+  let recommendation;
+  if (orphans.length === 0) {
+    recommendation = "No orphaned memory directories found.";
+  } else {
+    const dirWord = orphans.length === 1 ? "directory" : "directories";
+    recommendation = `${totalOrphanedFiles} ${totalOrphanedFiles === 1 ? "memory" : "memories"} across ${orphans.length} orphaned ${dirWord} could be consolidated into the current project.`;
+  }
+  return {
+    project: projectPath,
+    dashedPrefix,
+    current: currentStats,
+    orphans,
+    totalOrphanedFiles,
+    recommendation
+  };
+}
+function formatAuditReport(report) {
+  const lines = [];
+  lines.push("Memory Audit Report");
+  lines.push("");
+  lines.push(`Project: ${report.project}`);
+  lines.push(`Dashed prefix: ${report.dashedPrefix}`);
+  lines.push("");
+  lines.push("=== Current Project ===");
+  if (!report.current || report.current.fileCount === 0) {
+    lines.push("  No memory files found at the current launch point.");
+  } else {
+    const c = report.current;
+    lines.push(`  Directory: ${c.dashedPath}`);
+    lines.push(`  Memory files: ${c.fileCount}`);
+    lines.push(formatTypeBreakdown(c.byType, "  "));
+    if (c.mostRecentModified) {
+      lines.push(`  Most recent: ${c.mostRecentModified.toISOString()}`);
+    }
+  }
+  lines.push("");
+  lines.push("=== Orphaned Directories ===");
+  if (report.orphans.length === 0) {
+    lines.push("  None found.");
+  } else {
+    for (const o of report.orphans) {
+      lines.push(`  ${o.dashedPath}`);
+      lines.push(`    Memory files: ${o.fileCount}`);
+      lines.push(formatTypeBreakdown(o.byType, "    "));
+      if (o.mostRecentModified) {
+        lines.push(`    Most recent: ${o.mostRecentModified.toISOString()}`);
+      }
+    }
+  }
+  lines.push("");
+  lines.push("=== Summary ===");
+  lines.push(`  Total orphaned files: ${report.totalOrphanedFiles}`);
+  lines.push(`  Recommendation: ${report.recommendation}`);
+  if (report.totalOrphanedFiles > 0) {
+    lines.push("");
+    lines.push("  Run context_memory_consolidate to migrate orphaned memories.");
+  }
+  return lines.join("\n");
+}
+function formatTypeBreakdown(byType, indent) {
+  const parts = [];
+  for (const [type, count] of Object.entries(byType)) {
+    if (count > 0)
+      parts.push(`${type}: ${count}`);
+  }
+  return parts.length > 0 ? `${indent}Types: ${parts.join(", ")}` : "";
+}
+
+// src/memory/consolidate.ts
+import {
+  copyFileSync,
+  mkdirSync as mkdirSync4,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync3,
+  writeFileSync as writeFileSync3,
+  existsSync as existsSync4
+} from "fs";
+import { join as join4 } from "path";
+import { homedir as homedir4 } from "os";
+var EXCLUDED_FILES2 = /* @__PURE__ */ new Set(["MEMORY.md", "context-manager-activity.md"]);
+var STALE_THRESHOLD_DAYS = 90;
+function isStale(modifiedAt) {
+  const ageMs = Date.now() - modifiedAt.getTime();
+  const ageDays = ageMs / (1e3 * 60 * 60 * 24);
+  return ageDays > STALE_THRESHOLD_DAYS;
+}
+function parseFrontmatterForIndex(content, filename) {
+  const defaults = {
+    name: filename.replace(/\.md$/, ""),
+    description: "",
+    type: "unknown"
+  };
+  if (!content.startsWith("---"))
+    return defaults;
+  const endIndex = content.indexOf("\n---", 3);
+  if (endIndex === -1)
+    return defaults;
+  const frontmatter = content.substring(3, endIndex);
+  const result = { ...defaults };
+  for (const line of frontmatter.split("\n")) {
+    const colonIdx = line.indexOf(":");
+    if (colonIdx === -1)
+      continue;
+    const key = line.substring(0, colonIdx).trim();
+    const value = line.substring(colonIdx + 1).trim();
+    if (key === "name" && value) {
+      result.name = value;
+    } else if (key === "description" && value) {
+      result.description = value;
+    } else if (key === "type") {
+      if (value === "user" || value === "feedback" || value === "project" || value === "reference") {
+        result.type = value;
+      }
+    }
+  }
+  return result;
+}
+function capitalize(s) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function rebuildMemoryIndex(memoryDir, projectPath) {
+  let entries;
+  try {
+    entries = readdirSync2(memoryDir);
+  } catch {
+    return;
+  }
+  const byType = {
+    user: [],
+    feedback: [],
+    project: [],
+    reference: [],
+    unknown: []
+  };
+  for (const filename of entries) {
+    if (!filename.endsWith(".md"))
+      continue;
+    if (EXCLUDED_FILES2.has(filename))
+      continue;
+    const filePath = join4(memoryDir, filename);
+    let content = "";
+    try {
+      content = readFileSync3(filePath, "utf-8");
+    } catch {
+      continue;
+    }
+    const { name, description, type } = parseFrontmatterForIndex(content, filename);
+    byType[type].push({ filename, name, description });
+  }
+  const lines = [];
+  const parts = projectPath.replace(/\/$/, "").split("/");
+  const title = parts[parts.length - 1] ?? "Project";
+  lines.push(`# Memory - ${title}`);
+  lines.push("");
+  const sectionOrder = ["user", "reference", "feedback", "project", "unknown"];
+  for (const type of sectionOrder) {
+    const files = byType[type];
+    if (!files || files.length === 0)
+      continue;
+    const heading = type === "unknown" ? "Other" : capitalize(type);
+    lines.push(`## ${heading}`);
+    for (const file2 of files) {
+      const desc = file2.description ? ` \u2014 ${file2.description}` : "";
+      lines.push(`- [${file2.name}](${file2.filename})${desc}`);
+    }
+    lines.push("");
+  }
+  const indexContent = lines.join("\n").trimEnd() + "\n";
+  writeFileSync3(join4(memoryDir, "MEMORY.md"), indexContent);
+}
+function consolidateMemories(projectPath, dryRun = true, includeStale = false) {
+  const auditReport = auditMemoryDirectories(projectPath);
+  const parentDashedPath = convertPathToDashed(projectPath);
+  const claudeProjectsDir = join4(homedir4(), ".claude", "projects");
+  const parentMemoryDir = join4(claudeProjectsDir, parentDashedPath, "memory");
+  const existingInParent = /* @__PURE__ */ new Set();
+  if (existsSync4(parentMemoryDir)) {
+    try {
+      for (const f of readdirSync2(parentMemoryDir)) {
+        existingInParent.add(f);
+      }
+    } catch {
+    }
+  }
+  const migrated = [];
+  const skipped = [];
+  for (const orphan of auditReport.orphans) {
+    for (const file2 of orphan.files) {
+      if (EXCLUDED_FILES2.has(file2.filename)) {
+        skipped.push({
+          filename: file2.filename,
+          sourceDir: orphan.dashedPath,
+          reason: "excluded"
+        });
+        continue;
+      }
+      if (existingInParent.has(file2.filename)) {
+        skipped.push({
+          filename: file2.filename,
+          sourceDir: orphan.dashedPath,
+          reason: "duplicate"
+        });
+        continue;
+      }
+      if (!includeStale && file2.type === "project" && isStale(file2.modifiedAt)) {
+        skipped.push({
+          filename: file2.filename,
+          sourceDir: orphan.dashedPath,
+          reason: "stale"
+        });
+        continue;
+      }
+      const candidate = {
+        sourceDir: orphan.dashedPath,
+        sourcePath: join4(orphan.memoryDir, file2.filename),
+        filename: file2.filename,
+        name: file2.name,
+        description: file2.description,
+        type: file2.type,
+        modifiedAt: file2.modifiedAt
+      };
+      migrated.push(candidate);
+      existingInParent.add(file2.filename);
+    }
+  }
+  let parentTotalAfter = (auditReport.current?.fileCount ?? 0) + migrated.length;
+  if (!dryRun && migrated.length > 0) {
+    mkdirSync4(parentMemoryDir, { recursive: true });
+    for (const candidate of migrated) {
+      try {
+        copyFileSync(candidate.sourcePath, join4(parentMemoryDir, candidate.filename));
+      } catch (err) {
+        process.stderr.write(
+          `[context-memory-consolidate] Failed to copy ${candidate.filename}: ${String(err)}
+`
+        );
+      }
+    }
+    rebuildMemoryIndex(parentMemoryDir, projectPath);
+    try {
+      const allFiles = readdirSync2(parentMemoryDir);
+      parentTotalAfter = allFiles.filter(
+        (f) => f.endsWith(".md") && !EXCLUDED_FILES2.has(f)
+      ).length;
+    } catch {
+    }
+  }
+  const migratedWord = migrated.length === 1 ? "file" : "files";
+  const dirWord = auditReport.orphans.length === 1 ? "directory" : "directories";
+  const dryRunNote = dryRun ? " (dry run \u2014 no changes made)" : "";
+  let summary;
+  if (migrated.length === 0) {
+    const skipNote = skipped.length > 0 ? ` ${skipped.length} files skipped (duplicates/stale/excluded).` : "";
+    summary = `No files to migrate${dryRunNote}.${skipNote}`;
+  } else if (dryRun) {
+    summary = `Would migrate ${migrated.length} ${migratedWord} from ${auditReport.orphans.length} ${dirWord}. Parent would have ${parentTotalAfter} total memories.`;
+  } else {
+    summary = `Migrated ${migrated.length} ${migratedWord} from ${auditReport.orphans.length} ${dirWord}. Parent now has ${parentTotalAfter} total memories.`;
+  }
+  if (skipped.length > 0 && migrated.length > 0) {
+    const skipCounts = { excluded: 0, duplicate: 0, stale: 0 };
+    for (const s of skipped)
+      skipCounts[s.reason]++;
+    const skipParts = [];
+    if (skipCounts.duplicate > 0)
+      skipParts.push(`${skipCounts.duplicate} duplicates`);
+    if (skipCounts.stale > 0)
+      skipParts.push(`${skipCounts.stale} stale`);
+    if (skipCounts.excluded > 0)
+      skipParts.push(`${skipCounts.excluded} excluded`);
+    summary += ` Skipped: ${skipParts.join(", ")}.`;
+  }
+  return {
+    project: projectPath,
+    dryRun,
+    migrated,
+    skipped,
+    totalSourceDirs: auditReport.orphans.length,
+    parentTotalAfter,
+    summary
+  };
+}
+function formatConsolidationReport(report) {
+  const lines = [];
+  lines.push(report.dryRun ? "Memory Consolidation (Dry Run)" : "Memory Consolidation");
+  lines.push("");
+  lines.push(`Project: ${report.project}`);
+  lines.push("");
+  if (report.migrated.length > 0) {
+    const heading = report.dryRun ? "=== Would Migrate ===" : "=== Migrated ===";
+    lines.push(heading);
+    for (const m of report.migrated) {
+      const desc = m.description ? ` \u2014 ${m.description}` : "";
+      lines.push(`  [${m.type}] ${m.filename}${desc}`);
+      lines.push(`    Source: ${m.sourceDir}`);
+    }
+    lines.push("");
+  }
+  if (report.skipped.length > 0) {
+    lines.push("=== Skipped ===");
+    for (const s of report.skipped) {
+      lines.push(`  ${s.filename} (${s.reason}) from ${s.sourceDir}`);
+    }
+    lines.push("");
+  }
+  lines.push("=== Summary ===");
+  lines.push(`  ${report.summary}`);
+  if (!report.dryRun && report.migrated.length > 0) {
+    lines.push("");
+    lines.push("  MEMORY.md index rebuilt in parent directory.");
+  }
+  return lines.join("\n");
+}
+
 // src/mcp/server.ts
 var server = new McpServer({
   name: "context-manager",
-  version: true ? "0.6.1" : "0.5.0"
+  version: true ? "0.6.3" : "0.5.0"
 });
 var storage = null;
 async function getStorage() {
@@ -32333,6 +32785,74 @@ server.tool(
         }
       ]
     };
+  }
+);
+server.tool(
+  "context_memory_audit",
+  "Scan ~/.claude/projects/ for memory directories related to a project path. Identifies orphaned child directories whose memories become invisible when the launch directory changes to a parent path.",
+  {
+    project: external_exports3.string().describe(
+      'The project path to audit (e.g., "/Users/you/Projects/MyProject"). All child directories under this path will be scanned for orphaned memory files.'
+    )
+  },
+  async ({ project }) => {
+    try {
+      const report = auditMemoryDirectories(project);
+      return {
+        content: [
+          {
+            type: "text",
+            text: formatAuditReport(report)
+          }
+        ]
+      };
+    } catch (error48) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error auditing memory directories: ${String(error48)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "context_memory_consolidate",
+  "Migrate memory files from child project paths to a parent path, then rebuild the parent MEMORY.md index. Run context_memory_audit first to preview what will be migrated.",
+  {
+    project: external_exports3.string().describe(
+      'The parent project path to consolidate into (e.g., "/Users/you/Projects/MyProject").'
+    ),
+    dry_run: external_exports3.boolean().optional().default(true).describe(
+      "Preview what would happen without making changes (default: true). Set to false to actually migrate files."
+    ),
+    include_stale: external_exports3.boolean().optional().default(false).describe(
+      "Include project-type memories older than 90 days (default: false). These are normally skipped as likely stale session notes."
+    )
+  },
+  async ({ project, dry_run, include_stale }) => {
+    try {
+      const report = consolidateMemories(project, dry_run, include_stale);
+      return {
+        content: [
+          {
+            type: "text",
+            text: formatConsolidationReport(report)
+          }
+        ]
+      };
+    } catch (error48) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error consolidating memory files: ${String(error48)}`
+          }
+        ]
+      };
+    }
   }
 );
 async function backgroundEmbed() {

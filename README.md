@@ -3,7 +3,7 @@
 Automatic session history and searchable context for Claude Code. Captures every tool interaction in SQLite with full-text search, exports high-value observations to Claude Code's auto-memory, and provides a web dashboard.
 
 **Status**: ACTIVE
-**Last Updated**: March 22, 2026
+**Last Updated**: April 3, 2026
 
 ---
 
@@ -104,6 +104,8 @@ Anytime:
 | **Local Storage** | All data stays on your machine - no external APIs |
 | **Session Summaries** | Stop hook captures session summaries |
 | **Transcript Import** | Import historical sessions from backups |
+| **Memory Audit** | Detect orphaned memory directories when launch points change |
+| **Memory Consolidation** | Migrate orphaned memories to parent with dedup and index rebuild |
 
 ---
 
@@ -307,6 +309,8 @@ Once installed, these tools are available to Claude Code via MCP:
 | `context_embed` | Generate vector embeddings for observations and sessions |
 | `context_vacuum` | Clean up old data |
 | `context_export` | Export to auto-memory |
+| `context_memory_audit` | Scan for orphaned memory directories when launch point changes |
+| `context_memory_consolidate` | Migrate orphaned memories to parent project (dry-run by default) |
 
 ### CLI Commands
 
@@ -402,6 +406,37 @@ context_semantic_search "database fix" --scope observations
 - FTS5 keyword search (`context_search`) always works independently — embeddings are optional
 - All features work normally even if embedding setup hasn't been run
 - All processing is local — no external APIs, no data leaves your machine
+
+### Memory Audit & Consolidation
+
+When you change your launch directory (e.g., from `~/Obsidian/Personal/Finance/` to `~/Obsidian/Personal/`), Claude Code's memory files in `~/.claude/projects/` become orphaned — they're scoped to the old path and invisible from the new one. The context manager's observation database handles this automatically via prefix matching, but memory files need explicit migration.
+
+**Audit orphaned memories:**
+```
+# In Claude Code, use the MCP tool:
+context_memory_audit project="/Users/you/Obsidian/Personal"
+```
+
+This scans `~/.claude/projects/` for all directories matching the prefix and reports:
+- Current project memory stats
+- Orphaned child directories with file counts by type (user, feedback, project, reference)
+- Recommendation for consolidation
+
+**Consolidate memories (dry-run first):**
+```
+# Preview what would be migrated:
+context_memory_consolidate project="/Users/you/Obsidian/Personal"
+
+# Actually migrate:
+context_memory_consolidate project="/Users/you/Obsidian/Personal" dry_run=false
+```
+
+Consolidation:
+- Copies memory files from orphaned child directories to the parent
+- Deduplicates by filename (skips files that already exist in parent)
+- Skips `context-manager-activity.md` (observation DB handles this via prefix matching)
+- Optionally skips stale project-type memories (>90 days, set `include_stale=true` to include)
+- Rebuilds the parent `MEMORY.md` index grouped by type
 
 ### CLI Alias (Optional)
 

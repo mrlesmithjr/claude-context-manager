@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: March 22, 2026
+**Last Updated**: April 3, 2026
 
 ---
 
@@ -53,6 +53,8 @@ npm run plugin:uninstall:all  # Remove all data
 - `context_embed` - Generate vector embeddings for semantic search
 - `context_vacuum` - Clean up old data
 - `context_export` - Export to auto-memory
+- `context_memory_audit` - Scan for orphaned memory directories when launch point changes
+- `context_memory_consolidate` - Migrate orphaned memories to parent project (dry-run by default)
 
 ### Web Dashboard
 ```bash
@@ -140,6 +142,10 @@ claude-context-manager/
 |   |   +-- service.ts         # Vector embedding service (HF transformers)
 |   +-- export/
 |   |   +-- memory.ts          # Auto-memory export pipeline
+|   +-- memory/
+|   |   +-- audit.ts           # Memory directory audit (orphan detection)
+|   |   +-- consolidate.ts     # Memory consolidation (migration + index rebuild)
+|   |   +-- index.ts           # Exports
 |   +-- inject/
 |   |   +-- builder.ts         # Build context for injection (deprecated)
 |   +-- storage/

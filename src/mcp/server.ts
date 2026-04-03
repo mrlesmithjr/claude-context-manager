@@ -18,6 +18,8 @@ import {
 } from '../export/memory.js';
 import { getEmbeddingService } from '../embedding/service.js';
 import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
+import { auditMemoryDirectories, formatAuditReport } from '../memory/audit.js';
+import { consolidateMemories, formatConsolidationReport } from '../memory/consolidate.js';
 import type { Observation, Session, Stats } from '../storage/interface.js';
 
 // Version injected by esbuild
@@ -680,6 +682,90 @@ server.tool(
         },
       ],
     };
+  }
+);
+
+// --- Memory Audit & Consolidation Tools ---
+
+server.tool(
+  'context_memory_audit',
+  'Scan ~/.claude/projects/ for memory directories related to a project path. Identifies orphaned child directories whose memories become invisible when the launch directory changes to a parent path.',
+  {
+    project: z
+      .string()
+      .describe(
+        'The project path to audit (e.g., "/Users/you/Projects/MyProject"). All child directories under this path will be scanned for orphaned memory files.'
+      ),
+  },
+  async ({ project }) => {
+    try {
+      const report = auditMemoryDirectories(project);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: formatAuditReport(report),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Error auditing memory directories: ${String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+server.tool(
+  'context_memory_consolidate',
+  'Migrate memory files from child project paths to a parent path, then rebuild the parent MEMORY.md index. Run context_memory_audit first to preview what will be migrated.',
+  {
+    project: z
+      .string()
+      .describe(
+        'The parent project path to consolidate into (e.g., "/Users/you/Projects/MyProject").'
+      ),
+    dry_run: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe(
+        'Preview what would happen without making changes (default: true). Set to false to actually migrate files.'
+      ),
+    include_stale: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe(
+        'Include project-type memories older than 90 days (default: false). These are normally skipped as likely stale session notes.'
+      ),
+  },
+  async ({ project, dry_run, include_stale }) => {
+    try {
+      const report = consolidateMemories(project, dry_run, include_stale);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: formatConsolidationReport(report),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Error consolidating memory files: ${String(error)}`,
+          },
+        ],
+      };
+    }
   }
 );
 
