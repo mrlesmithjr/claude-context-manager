@@ -595,11 +595,11 @@ var SQLiteStorage = class {
       sql = `
         SELECT p.* FROM user_prompts p
         INNER JOIN user_prompts_fts ON p.id = user_prompts_fts.rowid
-        WHERE user_prompts_fts MATCH ? AND p.project = ?
+        WHERE user_prompts_fts MATCH ? AND p.project LIKE ?
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
-      params = [query, project];
+      params = [query, project + "%"];
     } else {
       sql = `
         SELECT p.* FROM user_prompts p

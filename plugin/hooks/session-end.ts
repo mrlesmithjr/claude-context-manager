@@ -22,6 +22,8 @@ import { SQLiteStorage } from '../../src/storage/sqlite.js';
 import { validateStopInput } from '../../src/utils/validation.js';
 import { createDebugLogger } from '../../src/utils/logger.js';
 import { exportToAutoMemory } from '../../src/export/memory.js';
+import { estimateTokens } from '../../src/utils/sanitize.js';
+import type { Observation, ImportanceLevel } from '../../src/storage/interface.js';
 import * as fs from 'fs';
 
 const debugLog = createDebugLogger('stop-hook-debug.log');
@@ -116,6 +118,223 @@ function extractSummaryFromTranscript(transcriptPath: string): string | undefine
   }
 }
 
+/**
+ * High-signal content patterns in assistant responses.
+ * These indicate synthesized knowledge worth indexing.
+ */
+const HIGH_SIGNAL_PATTERNS = {
+  /** Markdown tables — structured comparisons, recommendations, specs */
+  hasTable: (text: string): boolean => {
+    const lines = text.split('\n');
+    let tableRows = 0;
+    for (const line of lines) {
+      if (line.includes('|') && line.trim().startsWith('|')) {
+        tableRows++;
+        if (tableRows >= 3) return true; // header + separator + at least 1 data row
+      }
+    }
+    return false;
+  },
+
+  /** Decision/recommendation language */
+  hasRecommendation: (text: string): boolean => {
+    const lower = text.toLowerCase();
+    const patterns = [
+      'recommend', 'my take', 'i\'d go with', 'best option',
+      'here\'s what you need', 'you should', 'the winner',
+      'updated recommendation', 'revised', 'landing on',
+      'option 1', 'option 2', 'comparison',
+    ];
+    return patterns.some(p => lower.includes(p));
+  },
+
+  /** Price/cost analysis */
+  hasPriceAnalysis: (text: string): boolean => {
+    const pricePattern = /\$\d+[\d,.]*.*\$\d+[\d,.]*|\btotal\b.*\$\d+/i;
+    return pricePattern.test(text);
+  },
+
+  /** User fact statements (short, declarative) */
+  hasUserFact: (text: string): boolean => {
+    const lower = text.toLowerCase();
+    return (
+      lower.includes('you don\'t have') ||
+      lower.includes('you don\'t own') ||
+      lower.includes('you confirmed') ||
+      lower.includes('you mentioned') ||
+      lower.includes('you said')
+    );
+  },
+};
+
+/**
+ * Score an assistant text block for signal quality.
+ * Returns 0.0-1.0 (0 = skip, higher = more valuable).
+ */
+function scoreAssistantBlock(text: string): number {
+  // Skip very short or very long blocks (tool orchestration or raw dumps)
+  if (text.length < 100 || text.length > 15000) return 0;
+
+  // Skip blocks that are purely tool orchestration
+  const lower = text.toLowerCase();
+  if (lower.startsWith('let me ') && text.length < 200) return 0;
+  if (lower.startsWith('i\'ll ') && text.length < 200) return 0;
+  if (lower.includes('let me check') && text.length < 200) return 0;
+  if (lower.includes('let me search') && text.length < 200) return 0;
+
+  let score = 0;
+
+  if (HIGH_SIGNAL_PATTERNS.hasTable(text)) score += 0.4;
+  if (HIGH_SIGNAL_PATTERNS.hasRecommendation(text)) score += 0.3;
+  if (HIGH_SIGNAL_PATTERNS.hasPriceAnalysis(text)) score += 0.2;
+  if (HIGH_SIGNAL_PATTERNS.hasUserFact(text)) score += 0.2;
+
+  // Bonus for structured content (headers, bullet lists)
+  const headerCount = (text.match(/^#{1,3}\s/gm) || []).length;
+  const bulletCount = (text.match(/^[-*]\s/gm) || []).length;
+  if (headerCount >= 2) score += 0.1;
+  if (bulletCount >= 3) score += 0.1;
+
+  return Math.min(1.0, score);
+}
+
+/**
+ * Compress an assistant text block into a concise summary for storage.
+ * Extracts the key information (tables, decisions, facts) and discards filler.
+ */
+function compressAssistantBlock(text: string): string {
+  const lines = text.split('\n');
+  const kept: string[] = [];
+  let totalLen = 0;
+  const MAX_SUMMARY = 600; // ~150 tokens
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Always keep: table rows, headers, bullet points with data
+    const isTable = trimmed.startsWith('|') && trimmed.includes('|');
+    const isHeader = /^#{1,3}\s/.test(trimmed);
+    const isBullet = /^[-*]\s/.test(trimmed);
+    const hasMoney = /\$\d+/.test(trimmed);
+    const isDecision = /\b(recommend|total|option|best|winner|you don't)\b/i.test(trimmed);
+
+    // Skip table separator rows
+    if (isTable && /^\|[\s-:|]+\|$/.test(trimmed)) {
+      kept.push(trimmed);
+      continue;
+    }
+
+    if (isTable || isHeader || (isBullet && (hasMoney || trimmed.length > 20)) || isDecision || hasMoney) {
+      if (totalLen + trimmed.length > MAX_SUMMARY) break;
+      kept.push(trimmed);
+      totalLen += trimmed.length;
+    }
+  }
+
+  return kept.join('\n');
+}
+
+/**
+ * Extract high-signal conversation insights from all assistant messages.
+ * Returns observations ready to be saved.
+ */
+function extractConversationInsights(
+  transcriptPath: string,
+  sessionId: string,
+  project: string
+): Array<Omit<Observation, 'id'>> {
+  const insights: Array<Omit<Observation, 'id'>> = [];
+
+  try {
+    if (!fs.existsSync(transcriptPath)) return insights;
+
+    const content = fs.readFileSync(transcriptPath, 'utf8');
+    const lines = content.trim().split('\n').filter(line => line.trim());
+
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line) as TranscriptMessage;
+        if (msg.type !== 'assistant' || msg.message?.role !== 'assistant') continue;
+
+        // Extract text from assistant message
+        let text = '';
+        const msgContent = msg.message.content;
+        if (typeof msgContent === 'string') {
+          text = msgContent;
+        } else if (Array.isArray(msgContent)) {
+          text = msgContent
+            .filter(block => block.type === 'text' && block.text)
+            .map(block => block.text!)
+            .join('\n');
+        }
+
+        if (!text) continue;
+
+        // Score the block
+        const score = scoreAssistantBlock(text);
+        if (score < 0.3) continue; // Skip low-signal blocks
+
+        // Compress into summary
+        const compressed = compressAssistantBlock(text);
+        if (compressed.length < 30) continue; // Not enough signal after compression
+
+        // Build a one-line summary from the first header or first meaningful line
+        let summary = 'Conversation insight';
+        const firstHeader = text.match(/^#{1,3}\s+(.+)$/m);
+        if (firstHeader?.[1]) {
+          summary = firstHeader[1].substring(0, 100);
+        } else {
+          // Use first non-empty, non-short line
+          const firstLine = text.split('\n').find(l => l.trim().length > 20);
+          if (firstLine) {
+            summary = firstLine.trim().substring(0, 100);
+          }
+        }
+
+        const tokenEstimate = estimateTokens(`${summary}\n${compressed}`);
+
+        // Map score to importance
+        let importance: ImportanceLevel;
+        if (score >= 0.5) importance = 'high';
+        else if (score >= 0.3) importance = 'medium';
+        else importance = 'low';
+
+        insights.push({
+          session_id: sessionId,
+          project,
+          tool_name: 'Conversation',
+          summary,
+          files_touched: [],
+          metadata: {
+            stored_output: compressed,
+            output_stats: {
+              original_length: text.length,
+              line_count: text.split('\n').length,
+              truncated: compressed.length < text.length,
+            },
+          },
+          token_estimate: tokenEstimate,
+          importance,
+          importance_score: Math.round(score * 100) / 100,
+          created_at: new Date().toISOString(),
+        });
+      } catch {
+        // Skip malformed lines
+        continue;
+      }
+    }
+
+    // Cap at 10 insights per session to bound token budget
+    // Sort by score descending, keep top 10
+    insights.sort((a, b) => b.importance_score - a.importance_score);
+    return insights.slice(0, 10);
+  } catch (error) {
+    debugLog('CONVERSATION_EXTRACT_ERROR', { error: String(error) });
+    return [];
+  }
+}
+
 async function readStdin(): Promise<string> {
   return new Promise((resolve) => {
     let data = '';
@@ -165,6 +384,27 @@ async function main() {
 
     // Initialize storage
     await storage.initialize();
+
+    // Extract and save conversation insights before ending session
+    if (input.transcript_path) {
+      try {
+        const insights = extractConversationInsights(
+          input.transcript_path,
+          input.session_id,
+          input.cwd
+        );
+        for (const insight of insights) {
+          await storage.save(insight);
+        }
+        if (insights.length > 0) {
+          debugLog('CONVERSATION_INSIGHTS', { count: insights.length });
+          console.error(`[context-manager] Extracted ${insights.length} conversation insights`);
+        }
+      } catch (insightError) {
+        debugLog('CONVERSATION_INSIGHT_ERROR', { error: String(insightError) });
+        console.error('[context-manager] Conversation insight extraction failed:', insightError);
+      }
+    }
 
     // End session with summary
     await storage.endSession(input.session_id, summary);

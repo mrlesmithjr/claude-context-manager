@@ -30684,11 +30684,11 @@ var SQLiteStorage = class {
       sql = `
         SELECT p.* FROM user_prompts p
         INNER JOIN user_prompts_fts ON p.id = user_prompts_fts.rowid
-        WHERE user_prompts_fts MATCH ? AND p.project = ?
+        WHERE user_prompts_fts MATCH ? AND p.project LIKE ?
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
-      params = [query, project];
+      params = [query, project + "%"];
     } else {
       sql = `
         SELECT p.* FROM user_prompts p
@@ -32279,6 +32279,15 @@ function formatObservations(observations) {
   }
   return lines.join("\n");
 }
+function formatPrompts(prompts) {
+  const lines = [];
+  for (const p of prompts) {
+    const date5 = new Date(p.created_at);
+    const preview = p.prompt_text.length > 200 ? p.prompt_text.substring(0, 200) + "..." : p.prompt_text;
+    lines.push(`[${date5.toISOString()}] User: ${preview}`);
+  }
+  return lines.join("\n");
+}
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats) {
   const lines = [];
   lines.push("Context Manager Statistics");
@@ -32353,7 +32362,7 @@ function formatStats(stats, project, vectorStats, sessionEmbeddingStats) {
 }
 server.tool(
   "context_search",
-  "Search past Claude Code session activity. Uses keyword search (FTS5) first, then automatically falls back to semantic similarity search if no keyword matches are found and embeddings are available.",
+  "Search past Claude Code session activity. Searches both tool observations and user prompts using keyword search (FTS5) first, then automatically falls back to semantic similarity search if no keyword matches are found and embeddings are available.",
   {
     query: external_exports3.string().describe("Search query (keywords, file names, tool names, natural language, etc.)"),
     project: external_exports3.string().optional().describe(
@@ -32363,14 +32372,24 @@ server.tool(
   async ({ query, project }) => {
     const db = await getStorage();
     const observations = await db.search(query, project);
-    if (observations.length > 0) {
+    const prompts = await db.searchPrompts(query, project);
+    if (observations.length > 0 || prompts.length > 0) {
+      const sections = [];
+      if (observations.length > 0) {
+        sections.push(`Found ${observations.length} observations matching "${query}" (keyword search):
+
+${formatObservations(observations)}`);
+      }
+      if (prompts.length > 0) {
+        sections.push(`Found ${prompts.length} user prompts matching "${query}":
+
+${formatPrompts(prompts)}`);
+      }
       return {
         content: [
           {
             type: "text",
-            text: `Found ${observations.length} observations matching "${query}" (keyword search):
-
-${formatObservations(observations)}`
+            text: sections.join("\n\n")
           }
         ]
       };

@@ -20,7 +20,7 @@ import { getEmbeddingService } from '../embedding/service.js';
 import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
 import { auditMemoryDirectories, formatAuditReport } from '../memory/audit.js';
 import { consolidateMemories, formatConsolidationReport } from '../memory/consolidate.js';
-import type { Observation, Session, Stats } from '../storage/interface.js';
+import type { Observation, Session, Stats, UserPrompt } from '../storage/interface.js';
 
 // Version injected by esbuild
 declare const PLUGIN_VERSION: string;
@@ -56,6 +56,21 @@ function formatObservations(observations: Observation[]): string {
     lines.push(
       `[${date.toISOString()}] ${obs.tool_name}: ${obs.summary}${fileInfo}`
     );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Format user prompts for tool output
+ */
+function formatPrompts(prompts: UserPrompt[]): string {
+  const lines: string[] = [];
+  for (const p of prompts) {
+    const date = new Date(p.created_at);
+    const preview = p.prompt_text.length > 200
+      ? p.prompt_text.substring(0, 200) + '...'
+      : p.prompt_text;
+    lines.push(`[${date.toISOString()}] User: ${preview}`);
   }
   return lines.join('\n');
 }
@@ -159,7 +174,7 @@ function formatStats(stats: Stats, project?: string, vectorStats?: VectorStats, 
 
 server.tool(
   'context_search',
-  'Search past Claude Code session activity. Uses keyword search (FTS5) first, then automatically falls back to semantic similarity search if no keyword matches are found and embeddings are available.',
+  'Search past Claude Code session activity. Searches both tool observations and user prompts using keyword search (FTS5) first, then automatically falls back to semantic similarity search if no keyword matches are found and embeddings are available.',
   {
     query: z.string().describe('Search query (keywords, file names, tool names, natural language, etc.)'),
     project: z
@@ -172,13 +187,24 @@ server.tool(
   async ({ query, project }) => {
     const db = await getStorage();
     const observations = await db.search(query, project);
+    const prompts = await db.searchPrompts(query, project);
 
-    if (observations.length > 0) {
+    if (observations.length > 0 || prompts.length > 0) {
+      const sections: string[] = [];
+
+      if (observations.length > 0) {
+        sections.push(`Found ${observations.length} observations matching "${query}" (keyword search):\n\n${formatObservations(observations)}`);
+      }
+
+      if (prompts.length > 0) {
+        sections.push(`Found ${prompts.length} user prompts matching "${query}":\n\n${formatPrompts(prompts)}`);
+      }
+
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Found ${observations.length} observations matching "${query}" (keyword search):\n\n${formatObservations(observations)}`,
+            text: sections.join('\n\n'),
           },
         ],
       };
