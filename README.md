@@ -3,7 +3,7 @@
 Automatic session history and searchable context for Claude Code. Captures every tool interaction in SQLite with full-text search, exports high-value observations to Claude Code's auto-memory, and provides a web dashboard.
 
 **Status**: ACTIVE
-**Last Updated**: April 3, 2026
+**Last Updated**: April 4, 2026
 
 ---
 
@@ -55,6 +55,7 @@ During your session:
 |  - Edits made (importance: high)        |
 |  - Errors flagged (boosted +0.25)       |
 |  - Low-value tools filtered out         |
+|  - User prompts indexed (FTS5)          |
 +-----------------------------------------+
                     |
                     v (stored in SQLite with importance scores)
@@ -67,6 +68,8 @@ Session end:
 |    ~/.claude/projects/<path>/memory/    |
 |    context-manager-activity.md          |
 |  - Session summary saved                |
+|  - Conversation insights extracted      |
+|    (tables, recommendations, decisions) |
 +-----------------------------------------+
 
 Next session:
@@ -95,7 +98,7 @@ Anytime:
 | **Importance Scoring** | Each observation scored 0.0-1.0 and classified as high/medium/low importance |
 | **Auto-Memory Export** | High-importance observations exported to Claude Code's auto-memory topic files at session end |
 | **Auto-Compaction** | Old observations compressed into summaries during vacuum (`Read x4: file1, file2, ...`) |
-| **Full-Text Search** | SQLite FTS5 enables fast keyword search |
+| **Full-Text Search** | SQLite FTS5 across observations and user prompts |
 | **Semantic Search** | Session-level vector embeddings (enriched with prompts, actions, outcomes) via sqlite-vec |
 | **Web Dashboard** | Browse sessions, search observations, view analytics |
 | **Hierarchical Visibility** | Parent directories see child project contexts |
@@ -103,6 +106,7 @@ Anytime:
 | **Privacy Tags** | `<private>` tag excludes sensitive content |
 | **Local Storage** | All data stays on your machine - no external APIs |
 | **Session Summaries** | Stop hook captures session summaries |
+| **Conversation Insights** | Stop hook extracts high-signal assistant responses (tables, recommendations, decisions) as searchable observations |
 | **Transcript Import** | Import historical sessions from backups |
 | **Memory Audit** | Detect orphaned memory directories when launch points change |
 | **Memory Consolidation** | Migrate orphaned memories to parent with dedup and index rebuild |
@@ -121,11 +125,13 @@ PostToolUse -----------------------> context.db
   (capture tools)
 
 Stop ------------------------------>                ----> ~/.claude/projects/
-  (save summary + export)                                  <path>/memory/
+  (save summary + conversation                             <path>/memory/
+   insights + export)
                                                            context-manager-
 MCP Tools:                                                 activity.md
   context_search -------> FTS5 keyword search
-                           (auto-falls back to semantic)
+                           (observations + user prompts,
+                            auto-falls back to semantic)
   context_semantic_search -> Session vector search
                               (enriched: prompts+actions+summary)
   context_embed ---------> Generate embeddings
@@ -304,7 +310,7 @@ Once installed, these tools are available to Claude Code via MCP:
 |------|-------------|
 | `context_stats` | Show statistics for current project |
 | `context_list` | List recent observations |
-| `context_search` | Search observations (keyword, FTS5, auto-falls back to semantic) |
+| `context_search` | Search observations and user prompts (FTS5 keyword, auto-falls back to semantic) |
 | `context_semantic_search` | Search sessions by meaning (vector similarity, enriched text) |
 | `context_embed` | Generate vector embeddings for observations and sessions |
 | `context_vacuum` | Clean up old data |
@@ -500,7 +506,9 @@ The plugin registers hooks via the Claude Code marketplace plugin system:
 | `SessionStart` | Create session, inject status hint | 10s | `startup\|clear\|compact` |
 | `UserPromptSubmit` | Capture user prompts | 5s | - |
 | `PostToolUse` | Capture tool interactions | 5s | `*` |
-| `Stop` | Save summary + export to auto-memory | 10s | - |
+| `Stop` | Save summary, extract conversation insights, export to auto-memory | 10s | - |
+
+The Stop hook scans the transcript for high-signal assistant responses (markdown tables, recommendations, price comparisons, user fact confirmations) and saves them as `Conversation` observations. This ensures synthesized knowledge — not just tool invocations — is searchable in future sessions.
 
 Hook definitions are in `plugin/hooks/hooks.json`. When you install the plugin via `/plugin install`, Claude Code automatically registers these hooks and executes the corresponding scripts in `plugin/scripts/`.
 

@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: March 22, 2026
+**Last Updated**: April 4, 2026
 
 ---
 
@@ -74,7 +74,15 @@ Claude Code plugins can register hooks for lifecycle events. We use three:
 
 #### Stop Hook (`session-end.ts`)
 - **Trigger**: When Claude Code session ends normally
-- **Purpose**: Save session summary + export high-importance observations to auto-memory
+- **Purpose**: Extract conversation insights, save session summary, export to auto-memory
+- **Conversation Insights** (v0.6.4): Scans all assistant text blocks in the transcript for high-signal content:
+  - Markdown tables (comparisons, specs, pricing)
+  - Recommendation/decision language
+  - Price/cost analysis
+  - User fact confirmations ("you don't have...", "you confirmed...")
+  - Structured content (headers, bullet lists with data)
+  - Each qualifying block is scored (0.0-1.0), compressed to ~150 tokens, and saved as a `Conversation` observation
+  - Top 10 blocks per session (by score) to bound token budget
 - **Export**: Writes to `~/.claude/projects/<path>/memory/context-manager-activity.md`
 - **Response Format**:
   ```json
@@ -209,7 +217,7 @@ CREATE INDEX idx_observations_session ON observations(session_id);
 CREATE INDEX idx_observations_project_score
   ON observations(project, importance_score DESC, created_at DESC);
 
--- FTS5 virtual table for full-text search
+-- FTS5 virtual tables for full-text search
 CREATE VIRTUAL TABLE observations_fts USING fts5(
   summary,
   files_touched,
@@ -217,6 +225,14 @@ CREATE VIRTUAL TABLE observations_fts USING fts5(
   content=observations,
   content_rowid=id
 );
+
+CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
+  prompt_text,
+  content=user_prompts,
+  content_rowid=id
+);
+
+-- context_search queries BOTH tables, merging results
 
 -- Triggers to keep FTS in sync
 CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
@@ -312,8 +328,14 @@ Claude Code session ends
 | Stop Hook                     |
 | (session-end.ts)              |
 +-------------------------------+
-| 1. End session with summary   |
-| 2. Export to auto-memory      |
+| 1. Extract conversation       |
+|    insights from transcript   |
+|    (tables, recommendations,  |
+|    decisions, user facts)     |
+| 2. Save as Conversation obs   |
+|    (top 10 by score)          |
+| 3. End session with summary   |
+| 4. Export to auto-memory      |
 +-------------------------------+
          |
          v (direct SQLite)
@@ -674,4 +696,4 @@ These tools solve different problems and could work alongside context-manager:
 
 ---
 
-**Last Updated**: March 22, 2026
+**Last Updated**: April 4, 2026

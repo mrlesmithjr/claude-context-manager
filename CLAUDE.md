@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: April 3, 2026
+**Last Updated**: April 4, 2026
 
 ---
 
@@ -48,7 +48,7 @@ npm run plugin:uninstall:all  # Remove all data
 ### MCP Tools (available after install)
 - `context_stats` - Show statistics (includes vector search status)
 - `context_list` - List recent observations
-- `context_search` - Search observations (FTS5 keyword)
+- `context_search` - Search observations and user prompts (FTS5 keyword)
 - `context_semantic_search` - Search sessions by meaning (enriched vector similarity)
 - `context_embed` - Generate vector embeddings for semantic search
 - `context_vacuum` - Clean up old data
@@ -84,7 +84,8 @@ Direct SQLite access - no background HTTP service required.
 +-------------------------------------------------------------+
 |  SessionStart Hook    ->  Create session, minimal status hint |
 |  PostToolUse Hook     ->  Capture tool interactions           |
-|  Stop Hook            ->  Save summary + export to auto-memory|
+|  Stop Hook            ->  Save summary + conversation insights |
+|                           + export to auto-memory             |
 +-------------------------------------------------------------+
                               |
                               v
@@ -95,6 +96,7 @@ Direct SQLite access - no background HTTP service required.
 |  observations         ->  Tool interactions                  |
 |  sessions             ->  Session metadata + summaries       |
 |  observations_fts     ->  Full-text search index             |
+|  user_prompts         ->  User messages (FTS5-indexed)       |
 +-------------------------------------------------------------+
 ```
 
@@ -216,6 +218,13 @@ claude-context-manager/
 - Base scores by tool type: Edit/Write (0.80), git commit (0.90), Read (0.30), Grep (0.25)
 - Adjustments: errors (+0.25), config files (+0.15), test files (+0.10), lock files (-0.30)
 - Scored at capture time (no post-hoc reprocessing needed)
+
+### 5a. Conversation Insight Extraction (v0.6.4)
+- At session end, the Stop hook scans all assistant text blocks in the transcript
+- Scores each block for high-signal patterns: markdown tables, recommendations, price comparisons, user fact confirmations
+- Top 10 blocks (by score) saved as `Conversation` observations with compressed summaries (~150 tokens each)
+- This captures synthesized knowledge (comparisons, decisions, recommendations) that previously only existed in raw conversation and was lost between sessions
+- Compression extracts tables, headers, bullet points with data, and decision language — discards filler text
 
 ### 6. Auto-Memory Export (v0.4.0)
 - High-importance observations (score >= 0.65) exported to `~/.claude/projects/<path>/memory/context-manager-activity.md`
@@ -361,7 +370,7 @@ The plugin uses the Claude Code marketplace plugin system to register hooks.
 | `SessionStart` | Create session, inject status hint | 10s | `startup\|clear\|compact` |
 | `UserPromptSubmit` | Capture user prompts | 5s | - |
 | `PostToolUse` | Capture tool interactions | 5s | `*` |
-| `Stop` | Save summary + export to auto-memory | 10s | - |
+| `Stop` | Save summary, extract conversation insights, export to auto-memory | 10s | - |
 
 **Installation mechanism:**
 - Hook definitions: `plugin/hooks/hooks.json`
