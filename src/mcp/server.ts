@@ -28,6 +28,9 @@ declare const PLUGIN_VERSION: string;
 const server = new McpServer({
   name: 'context-manager',
   version: typeof PLUGIN_VERSION !== 'undefined' ? PLUGIN_VERSION : '0.5.0',
+  instructions:
+    'Check context_list at session start to load relevant prior context. ' +
+    'Use context_search for targeted lookups and context_semantic_search for broader discovery.',
 });
 
 let storage: SQLiteStorage | null = null;
