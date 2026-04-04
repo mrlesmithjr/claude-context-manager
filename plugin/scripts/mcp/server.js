@@ -32253,10 +32253,15 @@ function formatConsolidationReport(report) {
 }
 
 // src/mcp/server.ts
-var server = new McpServer({
-  name: "context-manager",
-  version: true ? "0.6.4" : "0.5.0"
-});
+var server = new McpServer(
+  {
+    name: "context-manager",
+    version: true ? "0.6.5" : "0.5.0"
+  },
+  {
+    instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery."
+  }
+);
 var storage = null;
 async function getStorage() {
   if (!storage) {
