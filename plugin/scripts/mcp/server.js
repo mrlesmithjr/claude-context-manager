@@ -32255,7 +32255,7 @@ function formatConsolidationReport(report) {
 // src/mcp/server.ts
 var server = new McpServer({
   name: "context-manager",
-  version: true ? "0.6.3" : "0.5.0"
+  version: true ? "0.6.4" : "0.5.0"
 });
 var storage = null;
 async function getStorage() {
