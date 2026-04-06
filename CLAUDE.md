@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: April 4, 2026
+**Last Updated**: April 6, 2026
 
 ---
 
@@ -251,6 +251,31 @@ claude-context-manager/
 - Groups by session + tool, only compact groups of 3+
 - Never compacts high-importance observations
 - Format: `"Read x4: file1.ts, file2.ts, ..."` (~15 tokens vs ~80)
+
+### 10. Surprise Scoring (v0.7.0)
+- File encounter frequency tracked in `file_encounter_counts` table (per file + project + tool)
+- At capture time, importance_score is adjusted based on novelty:
+  - First encounter: +0.15, encounters 2-3: +0.05, 11+: -0.10
+  - Total cap: [-0.15, +0.20] to prevent dominating base score
+- Novel files surface above routine reads of the same files
+- Counts persist across sessions (lifetime project awareness)
+
+### 11. Observation Relationships (v0.7.0)
+- `observation_relationships` table links observations passively at capture time
+- Two relationship types inferred automatically:
+  - `followed_by` — sequential observations in the same session
+  - `same_file` — observations touching the same file (within 24h, same project)
+- `ON DELETE CASCADE` ensures cleanup during compaction/vacuum
+- `getRelatedObservations()` enables bidirectional graph traversal
+- `context_search` enriches top results with related observations
+
+### 12. Retrieval Routing (v0.7.0)
+- `context_search` auto-classifies queries and picks the optimal search strategy:
+  - **keyword** (1-2 words, file names, identifiers) → FTS5 only (fast path)
+  - **semantic** (5+ words, natural language questions) → vector search (sessions then observations)
+  - **hybrid** (3-4 words, mixed) → both FTS5 + vector, merged with Reciprocal Rank Fusion (k=60)
+- Graceful degradation: if embeddings unavailable, all strategies fall back to keyword
+- Search method included in output for transparency
 
 ---
 

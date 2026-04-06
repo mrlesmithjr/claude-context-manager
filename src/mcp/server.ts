@@ -177,11 +177,79 @@ function formatStats(stats: Stats, project?: string, vectorStats?: VectorStats, 
   return lines.join('\n');
 }
 
+// --- Retrieval Routing ---
+
+type QueryStrategy = 'keyword' | 'semantic' | 'hybrid';
+
+/**
+ * Classify a search query to pick the optimal retrieval strategy.
+ * Short/specific → keyword (fast), natural language → semantic, mixed → hybrid.
+ */
+function classifyQuery(query: string): QueryStrategy {
+  const words = query.trim().split(/\s+/);
+
+  // Short queries: file names, identifiers, tool names → keyword
+  if (words.length <= 2) {
+    return 'keyword';
+  }
+
+  // Natural language questions → semantic
+  const nlStarters = [
+    'how', 'why', 'what', 'when', 'where', 'which',
+    'explain', 'describe', 'show me', 'similar to',
+  ];
+  const lower = query.toLowerCase();
+  if (words.length >= 5 && nlStarters.some(s => lower.startsWith(s) || lower.includes(` ${s} `))) {
+    return 'semantic';
+  }
+
+  // Medium-length queries → hybrid (both keyword + vector, merged with RRF)
+  if (words.length >= 3) {
+    return 'hybrid';
+  }
+
+  return 'keyword';
+}
+
+/**
+ * Merge two ranked result lists using Reciprocal Rank Fusion.
+ * Standard approach for combining results from different retrieval systems.
+ * k=60 is the standard value from the original RRF paper.
+ */
+function mergeWithRRF(
+  ftsResults: Observation[],
+  vecResults: Observation[],
+  k: number = 60,
+): Observation[] {
+  const scores = new Map<number, number>();
+  const obsMap = new Map<number, Observation>();
+
+  for (let i = 0; i < ftsResults.length; i++) {
+    const obs = ftsResults[i]!;
+    const id = obs.id!;
+    obsMap.set(id, obs);
+    scores.set(id, (scores.get(id) || 0) + 1 / (k + i + 1));
+  }
+
+  for (let i = 0; i < vecResults.length; i++) {
+    const obs = vecResults[i]!;
+    const id = obs.id!;
+    obsMap.set(id, obs);
+    scores.set(id, (scores.get(id) || 0) + 1 / (k + i + 1));
+  }
+
+  return [...scores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([id]) => obsMap.get(id)!)
+    .filter(Boolean);
+}
+
 // --- Tool Definitions ---
 
 server.tool(
   'context_search',
-  'Search past Claude Code session activity. Searches both tool observations and user prompts using keyword search (FTS5) first, then automatically falls back to semantic similarity search if no keyword matches are found and embeddings are available.',
+  'Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations.',
   {
     query: z.string().describe('Search query (keywords, file names, tool names, natural language, etc.)'),
     project: z
@@ -193,81 +261,120 @@ server.tool(
   },
   async ({ query, project }) => {
     const db = await getStorage();
-    const observations = await db.search(query, project);
+    const strategy = classifyQuery(query);
+
+    let observations: Observation[] = [];
+    let searchMethod = '';
+    let sessionResults: Session[] = [];
+
+    if (strategy === 'keyword') {
+      observations = await db.search(query, project);
+      searchMethod = 'keyword';
+    } else if (strategy === 'semantic') {
+      // Try semantic search; fall back to keyword if embeddings unavailable
+      if (db.isVectorSearchEnabled()) {
+        const embeddingService = getEmbeddingService();
+        const queryEmbedding = await embeddingService.embed(query);
+        if (queryEmbedding) {
+          // Try session-level first (enriched, higher quality)
+          sessionResults = await db.vectorSearchSessions(queryEmbedding, project, 10);
+          if (sessionResults.length === 0) {
+            observations = await db.vectorSearch(queryEmbedding, project, 20);
+          }
+          searchMethod = 'semantic';
+        } else {
+          observations = await db.search(query, project);
+          searchMethod = 'keyword (embedding unavailable)';
+        }
+      } else {
+        observations = await db.search(query, project);
+        searchMethod = 'keyword (vector search unavailable)';
+      }
+    } else {
+      // hybrid: run FTS5 + vector, merge with RRF
+      const ftsResults = await db.search(query, project);
+
+      if (db.isVectorSearchEnabled()) {
+        const embeddingService = getEmbeddingService();
+        const queryEmbedding = await embeddingService.embed(query);
+        if (queryEmbedding) {
+          const vecResults = await db.vectorSearch(queryEmbedding, project, 20);
+          observations = mergeWithRRF(ftsResults, vecResults);
+          searchMethod = 'hybrid (RRF)';
+        } else {
+          observations = ftsResults;
+          searchMethod = 'keyword (embedding unavailable)';
+        }
+      } else {
+        observations = ftsResults;
+        searchMethod = 'keyword (vector search unavailable)';
+      }
+    }
+
+    // Always search prompts (keyword-based, fast)
     const prompts = await db.searchPrompts(query, project);
 
-    if (observations.length > 0 || prompts.length > 0) {
-      const sections: string[] = [];
+    // Build response sections
+    const sections: string[] = [];
 
-      if (observations.length > 0) {
-        sections.push(`Found ${observations.length} observations matching "${query}" (keyword search):\n\n${formatObservations(observations)}`);
+    // Session-level results (from semantic strategy)
+    if (sessionResults.length > 0) {
+      const lines: string[] = [];
+      for (const session of sessionResults) {
+        const date = new Date(session.started_at);
+        const shortId = session.id.substring(0, 8);
+        const summaryPreview = session.summary
+          ? session.summary.substring(0, 200).replace(/\n/g, ' ')
+          : 'No summary';
+        lines.push(`[${date.toISOString()}] Session ${shortId} (${session.project})`);
+        lines.push(`  ${summaryPreview}`);
+        lines.push('');
       }
+      sections.push(`Found ${sessionResults.length} semantically similar sessions (${searchMethod}):\n\n${lines.join('\n')}`);
+    }
 
-      if (prompts.length > 0) {
-        sections.push(`Found ${prompts.length} user prompts matching "${query}":\n\n${formatPrompts(prompts)}`);
+    // Observation results
+    if (observations.length > 0) {
+      sections.push(`Found ${observations.length} observations (${searchMethod}):\n\n${formatObservations(observations)}`);
+
+      // Enrich top 3 results with related observations
+      const topResults = observations.slice(0, 3).filter(o => o.id != null);
+      const relatedIds = new Set(observations.map(o => o.id));
+      const relatedObs: Observation[] = [];
+      for (const obs of topResults) {
+        const related = db.getRelatedObservations(obs.id!);
+        for (const r of related) {
+          if (r.id != null && !relatedIds.has(r.id)) {
+            relatedIds.add(r.id);
+            relatedObs.push(r);
+          }
+        }
       }
+      if (relatedObs.length > 0) {
+        sections.push(`Related observations:\n\n${formatObservations(relatedObs.slice(0, 10))}`);
+      }
+    }
 
+    if (prompts.length > 0) {
+      sections.push(`Found ${prompts.length} user prompts matching "${query}":\n\n${formatPrompts(prompts)}`);
+    }
+
+    if (sections.length === 0) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: sections.join('\n\n'),
+            text: `No observations found matching "${query}" (${searchMethod}).`,
           },
         ],
       };
-    }
-
-    // FTS5 returned nothing — try session-level semantic search as fallback
-    if (db.isVectorSearchEnabled()) {
-      const embeddingService = getEmbeddingService();
-      const queryEmbedding = await embeddingService.embed(query);
-
-      if (queryEmbedding) {
-        // Try session-level search first (enriched, higher quality)
-        const sessionResults = await db.vectorSearchSessions(queryEmbedding, project, 10);
-        if (sessionResults.length > 0) {
-          const lines: string[] = [];
-          for (const session of sessionResults) {
-            const date = new Date(session.started_at);
-            const shortId = session.id.substring(0, 8);
-            const summaryPreview = session.summary
-              ? session.summary.substring(0, 200).replace(/\n/g, ' ')
-              : 'No summary';
-            lines.push(`[${date.toISOString()}] Session ${shortId} (${session.project})`);
-            lines.push(`  ${summaryPreview}`);
-            lines.push('');
-          }
-
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `No exact keyword matches for "${query}", but found ${sessionResults.length} semantically similar sessions:\n\n${lines.join('\n')}`,
-              },
-            ],
-          };
-        }
-
-        // Fall back to observation-level
-        const semanticResults = await db.vectorSearch(queryEmbedding, project, 10);
-        if (semanticResults.length > 0) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `No exact keyword matches for "${query}", but found ${semanticResults.length} semantically similar observations:\n\n${formatObservations(semanticResults)}`,
-              },
-            ],
-          };
-        }
-      }
     }
 
     return {
       content: [
         {
           type: 'text' as const,
-          text: `No observations found matching "${query}".`,
+          text: sections.join('\n\n'),
         },
       ],
     };

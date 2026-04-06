@@ -85,7 +85,24 @@ async function main() {
       tool_response: input.tool_response,
     });
 
-    // Save observation
+    // Surprise scoring: boost novel file encounters, decay frequent ones
+    if (observation.files_touched.length > 0) {
+      let surpriseAdj = 0;
+      for (const file of observation.files_touched) {
+        const count = storage.incrementFileEncounter(file, input.cwd, input.tool_name);
+        if (count === 1) surpriseAdj += 0.15;
+        else if (count <= 3) surpriseAdj += 0.05;
+        else if (count > 10) surpriseAdj -= 0.10;
+      }
+      surpriseAdj = Math.max(-0.15, Math.min(0.20, surpriseAdj));
+      if (surpriseAdj !== 0) {
+        const adjusted = Math.max(0, Math.min(1, observation.importance_score + surpriseAdj));
+        observation.importance_score = Math.round(adjusted * 100) / 100;
+        observation.importance = adjusted >= 0.65 ? 'high' : adjusted >= 0.35 ? 'medium' : 'low';
+      }
+    }
+
+    // Save observation (also infers relationships)
     await storage.save(observation);
 
     await writeResponse({ status: 'captured' });

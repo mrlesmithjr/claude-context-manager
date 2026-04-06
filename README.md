@@ -3,7 +3,7 @@
 Automatic session history and searchable context for Claude Code. Captures every tool interaction in SQLite with full-text search, exports high-value observations to Claude Code's auto-memory, and provides a web dashboard.
 
 **Status**: ACTIVE
-**Last Updated**: April 4, 2026
+**Last Updated**: April 6, 2026
 
 ---
 
@@ -54,8 +54,11 @@ During your session:
 |  - Commands run                         |
 |  - Edits made (importance: high)        |
 |  - Errors flagged (boosted +0.25)       |
+|  - Surprise scoring (novel files +0.15) |
 |  - Low-value tools filtered out         |
 |  - User prompts indexed (FTS5)          |
+|  - Relationships inferred automatically |
+|    (same_file, followed_by)             |
 +-----------------------------------------+
                     |
                     v (stored in SQLite with importance scores)
@@ -96,6 +99,9 @@ Anytime:
 | **Automatic Capture** | PostToolUse hook captures every tool interaction |
 | **Smart Filtering** | Skips low-value tools (cat, ls, node_modules reads, broad globs) at capture time |
 | **Importance Scoring** | Each observation scored 0.0-1.0 and classified as high/medium/low importance |
+| **Surprise Scoring** | First-time file encounters boosted, frequently-seen files decayed — novel work surfaces above routine |
+| **Observation Relationships** | Observations automatically linked by shared files (`same_file`) and temporal sequence (`followed_by`) — search results enriched with related context |
+| **Retrieval Routing** | Queries auto-classified as keyword/semantic/hybrid — short terms use FTS5, natural language uses vectors, mixed queries merged with Reciprocal Rank Fusion |
 | **Auto-Memory Export** | High-importance observations exported to Claude Code's auto-memory topic files at session end |
 | **Auto-Compaction** | Old observations compressed into summaries during vacuum (`Read x4: file1, file2, ...`) |
 | **Full-Text Search** | SQLite FTS5 across observations and user prompts |
@@ -129,9 +135,10 @@ Stop ------------------------------>                ----> ~/.claude/projects/
    insights + export)
                                                            context-manager-
 MCP Tools:                                                 activity.md
-  context_search -------> FTS5 keyword search
-                           (observations + user prompts,
-                            auto-falls back to semantic)
+  context_search -------> Auto-routed search:
+                           keyword (FTS5) | semantic (vectors)
+                           | hybrid (RRF merge of both)
+                           + related observations enrichment
   context_semantic_search -> Session vector search
                               (enriched: prompts+actions+summary)
   context_embed ---------> Generate embeddings

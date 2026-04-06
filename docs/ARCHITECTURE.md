@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: April 4, 2026
+**Last Updated**: April 6, 2026
 
 ---
 
@@ -120,7 +120,7 @@ export interface Observation {
 export interface ContextStorage {
   // Core operations (hooks)
   initialize(): Promise<void>;
-  save(obs: Observation): Promise<void>;
+  save(obs: Observation): Promise<number | undefined>;  // Returns inserted ID, undefined if deduped
   getRecent(project: string, limit: number): Promise<Observation[]>;
   getWithinBudget(project: string, tokenBudget: number): Promise<Observation[]>;
   getRelevantCandidates(project: string, limit?: number): Promise<Observation[]>;
@@ -148,6 +148,12 @@ export interface ContextStorage {
   // Auto-memory export
   getUnexportedHighImportance(project: string, sessionId?: string, minScore?: number): Promise<Observation[]>;
   markExported(ids: number[]): Promise<void>;
+
+  // Surprise scoring (v0.7.0)
+  incrementFileEncounter(filePath: string, project: string, toolName: string): number;
+
+  // Observation relationships (v0.7.0)
+  getRelatedObservations(observationId: number, types?: RelationshipType[], limit?: number): Observation[];
 
   // Maintenance
   vacuum(olderThanDays?: number): Promise<{ observations; sessions; compacted; compacted_originals }>;
@@ -232,6 +238,32 @@ CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
   content_rowid=id
 );
 
+-- File encounter counts for surprise scoring (v0.7.0)
+CREATE TABLE file_encounter_counts (
+  file_path TEXT NOT NULL,
+  project TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  encounter_count INTEGER DEFAULT 0,
+  last_seen TEXT NOT NULL,
+  PRIMARY KEY (file_path, project, tool_name)
+);
+
+-- Observation relationships for linking related observations (v0.7.0)
+CREATE TABLE observation_relationships (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id INTEGER NOT NULL,
+  target_id INTEGER NOT NULL,
+  relationship TEXT NOT NULL,  -- 'same_file' | 'followed_by'
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (source_id) REFERENCES observations(id) ON DELETE CASCADE,
+  FOREIGN KEY (target_id) REFERENCES observations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_obs_rel_source ON observation_relationships(source_id);
+CREATE INDEX idx_obs_rel_target ON observation_relationships(target_id);
+CREATE UNIQUE INDEX idx_obs_rel_unique
+  ON observation_relationships(source_id, target_id, relationship);
+
 -- context_search queries BOTH tables, merging results
 
 -- Triggers to keep FTS in sync
@@ -280,6 +312,21 @@ Claude Code executes tool
 |    (calculateImportance)|
 +-------------------------+
          |
+         v
++-------------------------+
+| Surprise Scoring        |
+| (capture-tool.ts)       |
++-------------------------+
+| For each file touched:  |
+| - Increment encounter   |
+|   count in DB           |
+| - Adjust importance:    |
+|   1st time: +0.15       |
+|   2-3 times: +0.05      |
+|   11+ times: -0.10      |
+| - Cap: [-0.15, +0.20]   |
++-------------------------+
+         |
          v (direct SQLite)
 +-------------------------+
 | SQLiteStorage           |
@@ -289,6 +336,12 @@ Claude Code executes tool
 |    importance +          |
 |    importance_score      |
 | 3. FTS trigger fires    |
+| 4. Infer relationships: |
+|    - followed_by (prev  |
+|      obs in session)    |
+|    - same_file (recent  |
+|      obs touching same  |
+|      files, 24h window) |
 +-------------------------+
 ```
 
@@ -414,11 +467,24 @@ Every captured observation is classified with an importance level and numeric sc
 | Grep | 0.25 | Search/exploration |
 | Glob | 0.20 | File listing |
 
-**Adjustments:**
+**Adjustments (base):**
 - Error/failure in response: +0.25
 - Config files (package.json, tsconfig, Dockerfile, etc.): +0.15
 - Test files: +0.10
 - Lock files / generated code: -0.30
+
+**Surprise adjustment (v0.7.0):**
+After base scoring, the capture hook adjusts based on file novelty via `file_encounter_counts`:
+
+| File encounter count | Adjustment | Rationale |
+|---|---|---|
+| 1 (first time) | +0.15 | Novel file, boost visibility |
+| 2-3 | +0.05 | Still relatively new |
+| 4-10 | 0.00 | Normal, no adjustment |
+| 11+ | -0.10 | Frequently seen, reduce noise |
+| **Total cap** | [-0.15, +0.20] | Prevent dominating base score |
+
+Encounter counts are tracked per (file_path, project, tool_name) triple and persist across sessions.
 
 **Levels:** score >= 0.65 = high, >= 0.35 = medium, < 0.35 = low
 
@@ -450,6 +516,45 @@ Old observations (>7 days) are compressed into summaries during `vacuum()`. Impl
 - Never compacts high-importance observations
 - Compacted format: `"Read x4: file1.ts, file2.ts, file3.ts, file4.ts"` (~15 tokens vs ~80)
 - Original observations are deleted after compaction
+
+### Observation Relationships (v0.7.0)
+
+Observations are automatically linked at capture time via `inferRelationships()` in `sqlite.ts`. Two relationship types are inferred:
+
+**`followed_by`**: Links the immediately preceding observation in the same session to the new one. Provides temporal sequence for "what happened before/after this?"
+
+**`same_file`**: When a new observation touches files, recent observations (last 24h, same project, LIMIT 5 per file) that also touch those files are linked. Enables "what else affected this file?"
+
+**Storage**: `observation_relationships` table with `ON DELETE CASCADE` foreign keys — relationships auto-clean during compaction and vacuum.
+
+**Retrieval**: `getRelatedObservations()` does bidirectional graph traversal (source→target and target→source). `context_search` enriches top 3 results with up to 10 related observations, deduplicated against primary results.
+
+### Retrieval Routing (v0.7.0)
+
+`context_search` auto-classifies queries and routes to the optimal search strategy:
+
+```
+Query arrives
+     |
+     v
++---------------------+
+| classifyQuery()     |
+| (word count + NL    |
+|  indicator heuristic)|
++---------------------+
+     |
+     +--> keyword (1-2 words) ---------> FTS5 only (fast path)
+     |
+     +--> semantic (5+ words, NL) -----> vectorSearchSessions → vectorSearch
+     |
+     +--> hybrid (3-4 words, mixed) ---> FTS5 + vectorSearch → mergeWithRRF(k=60)
+```
+
+**Reciprocal Rank Fusion (RRF)**: Standard approach for merging ranked lists from different retrieval systems. Each result's score = Σ 1/(k + rank) across all lists where it appears. k=60 is the standard value from the original paper. Results sorted by fused score, top 20 returned.
+
+**Graceful degradation**: If embeddings are unavailable (model not loaded, sqlite-vec not present), semantic and hybrid both fall back to keyword-only search.
+
+**Enrichment**: After primary results, top 3 observations are enriched with related observations via `getRelatedObservations()`, deduplicated against primary results.
 
 ---
 
@@ -654,8 +759,8 @@ Potential enhancements for future consideration. Prioritized by estimated value.
 |---------|-------------|-------------|
 | ~~**Confidence Scoring**~~ | ~~Track pattern usefulness (0.0→1.0)~~ **IMPLEMENTED** as importance scoring (0.0-1.0 scale with high/medium/low levels) | ELF |
 | **Outcome Tracking** | Store success/failure of actions to learn what approaches work | ELF |
-| **Pheromone Trails / Hotspots** | Track file activity to identify problem clusters ("this file is often touched during debugging") | ELF |
-| **Semantic/Vector Search** | Embeddings for conceptually similar observations | claude-mem (ChromaDB) |
+| ~~**Pheromone Trails / Hotspots**~~ | ~~Track file activity to identify problem clusters~~ **IMPLEMENTED** as surprise scoring via `file_encounter_counts` — tracks per-file encounter frequency and adjusts importance (v0.7.0) | ELF |
+| ~~**Semantic/Vector Search**~~ | ~~Embeddings for conceptually similar observations~~ **IMPLEMENTED** as session-level vector embeddings with retrieval routing (keyword/semantic/hybrid with RRF) | claude-mem (ChromaDB), Daem0n-MCP |
 | ~~**Export**~~ | ~~Export observations as markdown/JSON~~ **IMPLEMENTED** as auto-memory export to topic files (v0.4.0) | - |
 
 ### Lower Priority
@@ -696,4 +801,4 @@ These tools solve different problems and could work alongside context-manager:
 
 ---
 
-**Last Updated**: April 4, 2026
+**Last Updated**: April 6, 2026

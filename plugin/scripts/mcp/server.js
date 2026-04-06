@@ -30255,6 +30255,8 @@ var SQLiteStorage = class {
     this.migrateAddExportedAtColumn();
     this.migrateAddVectorSearch();
     this.migrateAddSessionVectorSearch();
+    this.migrateAddFileEncounterCounts();
+    this.migrateAddObservationRelationships();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -30365,7 +30367,7 @@ var SQLiteStorage = class {
     const checkKey = crossSession ? observation.project : observation.session_id;
     const result = duplicateCheck.get(checkKey, prefixLen, summaryPrefix, windowStart);
     if (result.count > 0) {
-      return;
+      return void 0;
     }
     const stmt = this.db.prepare(`
       INSERT INTO observations (
@@ -30374,7 +30376,7 @@ var SQLiteStorage = class {
         importance, importance_score, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    stmt.run(
+    const info = stmt.run(
       observation.session_id,
       observation.project,
       observation.package || null,
@@ -30387,6 +30389,9 @@ var SQLiteStorage = class {
       observation.importance_score ?? 0.5,
       observation.created_at
     );
+    const insertedId = Number(info.lastInsertRowid);
+    this.inferRelationships(insertedId, observation);
+    return insertedId;
   }
   async getRecent(project, limit) {
     const stmt = this.db.prepare(`
@@ -31047,6 +31052,43 @@ var SQLiteStorage = class {
       }
     }
   }
+  /**
+   * Migration: add file_encounter_counts table for surprise scoring.
+   */
+  migrateAddFileEncounterCounts() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS file_encounter_counts (
+        file_path TEXT NOT NULL,
+        project TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        encounter_count INTEGER DEFAULT 0,
+        last_seen TEXT NOT NULL,
+        PRIMARY KEY (file_path, project, tool_name)
+      )
+    `);
+  }
+  /**
+   * Migration: add observation_relationships table for linking related observations.
+   */
+  migrateAddObservationRelationships() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS observation_relationships (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER NOT NULL,
+        target_id INTEGER NOT NULL,
+        relationship TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (source_id) REFERENCES observations(id) ON DELETE CASCADE,
+        FOREIGN KEY (target_id) REFERENCES observations(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_obs_rel_source ON observation_relationships(source_id)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_obs_rel_target ON observation_relationships(target_id)`);
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_obs_rel_unique
+      ON observation_relationships(source_id, target_id, relationship)
+    `);
+  }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
       throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
@@ -31196,6 +31238,95 @@ var SQLiteStorage = class {
         LIMIT ?
       `;
       params = [limit];
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
+  }
+  /**
+   * Increment file encounter count and return the new count.
+   * Uses upsert for atomic increment — sub-millisecond on primary key lookup.
+   */
+  incrementFileEncounter(filePath, project, toolName) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    this.db.prepare(`
+      INSERT INTO file_encounter_counts (file_path, project, tool_name, encounter_count, last_seen)
+      VALUES (?, ?, ?, 1, ?)
+      ON CONFLICT(file_path, project, tool_name)
+      DO UPDATE SET encounter_count = encounter_count + 1, last_seen = ?
+    `).run(filePath, project, toolName, now, now);
+    const row = this.db.prepare(`
+      SELECT encounter_count FROM file_encounter_counts
+      WHERE file_path = ? AND project = ? AND tool_name = ?
+    `).get(filePath, project, toolName);
+    return row?.encounter_count ?? 1;
+  }
+  /**
+   * Infer and store relationships for a newly inserted observation.
+   * Called from save() after INSERT — keeps relationship inference passive.
+   */
+  inferRelationships(observationId, observation) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const previous = this.db.prepare(`
+      SELECT id FROM observations
+      WHERE session_id = ? AND id != ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(observation.session_id, observationId);
+    if (previous) {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO observation_relationships (source_id, target_id, relationship, created_at)
+        VALUES (?, ?, 'followed_by', ?)
+      `).run(previous.id, observationId, now);
+    }
+    if (observation.files_touched.length > 0) {
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1e3).toISOString();
+      for (const file2 of observation.files_touched) {
+        const likePattern = `%${file2.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+        const matches = this.db.prepare(`
+          SELECT id FROM observations
+          WHERE project = ? AND id != ?
+            AND files_touched LIKE ? ESCAPE '\\'
+            AND created_at > ?
+          ORDER BY created_at DESC
+          LIMIT 5
+        `).all(observation.project, observationId, likePattern, cutoff);
+        for (const match of matches) {
+          this.db.prepare(`
+            INSERT OR IGNORE INTO observation_relationships (source_id, target_id, relationship, created_at)
+            VALUES (?, ?, 'same_file', ?)
+          `).run(match.id, observationId, now);
+        }
+      }
+    }
+  }
+  /**
+   * Get observations related to a given observation via inferred relationships.
+   */
+  getRelatedObservations(observationId, types, limit = 10) {
+    let sql;
+    let params;
+    if (types && types.length > 0) {
+      const placeholders = types.map(() => "?").join(", ");
+      sql = `
+        SELECT DISTINCT o.* FROM observations o
+        INNER JOIN observation_relationships r
+          ON (o.id = r.source_id AND r.target_id = ?)
+          OR (o.id = r.target_id AND r.source_id = ?)
+        WHERE r.relationship IN (${placeholders})
+        ORDER BY o.created_at DESC
+        LIMIT ?
+      `;
+      params = [observationId, observationId, ...types, limit];
+    } else {
+      sql = `
+        SELECT DISTINCT o.* FROM observations o
+        INNER JOIN observation_relationships r
+          ON (o.id = r.source_id AND r.target_id = ?)
+          OR (o.id = r.target_id AND r.source_id = ?)
+        ORDER BY o.created_at DESC
+        LIMIT ?
+      `;
+      params = [observationId, observationId, limit];
     }
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
@@ -32256,7 +32387,7 @@ function formatConsolidationReport(report) {
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.6.6" : "0.5.0"
+    version: true ? "0.7.0" : "0.5.0"
   },
   {
     instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery."
@@ -32365,9 +32496,52 @@ function formatStats(stats, project, vectorStats, sessionEmbeddingStats) {
   }
   return lines.join("\n");
 }
+function classifyQuery(query) {
+  const words = query.trim().split(/\s+/);
+  if (words.length <= 2) {
+    return "keyword";
+  }
+  const nlStarters = [
+    "how",
+    "why",
+    "what",
+    "when",
+    "where",
+    "which",
+    "explain",
+    "describe",
+    "show me",
+    "similar to"
+  ];
+  const lower = query.toLowerCase();
+  if (words.length >= 5 && nlStarters.some((s) => lower.startsWith(s) || lower.includes(` ${s} `))) {
+    return "semantic";
+  }
+  if (words.length >= 3) {
+    return "hybrid";
+  }
+  return "keyword";
+}
+function mergeWithRRF(ftsResults, vecResults, k = 60) {
+  const scores = /* @__PURE__ */ new Map();
+  const obsMap = /* @__PURE__ */ new Map();
+  for (let i = 0; i < ftsResults.length; i++) {
+    const obs = ftsResults[i];
+    const id = obs.id;
+    obsMap.set(id, obs);
+    scores.set(id, (scores.get(id) || 0) + 1 / (k + i + 1));
+  }
+  for (let i = 0; i < vecResults.length; i++) {
+    const obs = vecResults[i];
+    const id = obs.id;
+    obsMap.set(id, obs);
+    scores.set(id, (scores.get(id) || 0) + 1 / (k + i + 1));
+  }
+  return [...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([id]) => obsMap.get(id)).filter(Boolean);
+}
 server.tool(
   "context_search",
-  "Search past Claude Code session activity. Searches both tool observations and user prompts using keyword search (FTS5) first, then automatically falls back to semantic similarity search if no keyword matches are found and embeddings are available.",
+  "Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations.",
   {
     query: external_exports3.string().describe("Search query (keywords, file names, tool names, natural language, etc.)"),
     project: external_exports3.string().optional().describe(
@@ -32376,75 +32550,107 @@ server.tool(
   },
   async ({ query, project }) => {
     const db = await getStorage();
-    const observations = await db.search(query, project);
+    const strategy = classifyQuery(query);
+    let observations = [];
+    let searchMethod = "";
+    let sessionResults = [];
+    if (strategy === "keyword") {
+      observations = await db.search(query, project);
+      searchMethod = "keyword";
+    } else if (strategy === "semantic") {
+      if (db.isVectorSearchEnabled()) {
+        const embeddingService = getEmbeddingService();
+        const queryEmbedding = await embeddingService.embed(query);
+        if (queryEmbedding) {
+          sessionResults = await db.vectorSearchSessions(queryEmbedding, project, 10);
+          if (sessionResults.length === 0) {
+            observations = await db.vectorSearch(queryEmbedding, project, 20);
+          }
+          searchMethod = "semantic";
+        } else {
+          observations = await db.search(query, project);
+          searchMethod = "keyword (embedding unavailable)";
+        }
+      } else {
+        observations = await db.search(query, project);
+        searchMethod = "keyword (vector search unavailable)";
+      }
+    } else {
+      const ftsResults = await db.search(query, project);
+      if (db.isVectorSearchEnabled()) {
+        const embeddingService = getEmbeddingService();
+        const queryEmbedding = await embeddingService.embed(query);
+        if (queryEmbedding) {
+          const vecResults = await db.vectorSearch(queryEmbedding, project, 20);
+          observations = mergeWithRRF(ftsResults, vecResults);
+          searchMethod = "hybrid (RRF)";
+        } else {
+          observations = ftsResults;
+          searchMethod = "keyword (embedding unavailable)";
+        }
+      } else {
+        observations = ftsResults;
+        searchMethod = "keyword (vector search unavailable)";
+      }
+    }
     const prompts = await db.searchPrompts(query, project);
-    if (observations.length > 0 || prompts.length > 0) {
-      const sections = [];
-      if (observations.length > 0) {
-        sections.push(`Found ${observations.length} observations matching "${query}" (keyword search):
+    const sections = [];
+    if (sessionResults.length > 0) {
+      const lines = [];
+      for (const session of sessionResults) {
+        const date5 = new Date(session.started_at);
+        const shortId = session.id.substring(0, 8);
+        const summaryPreview = session.summary ? session.summary.substring(0, 200).replace(/\n/g, " ") : "No summary";
+        lines.push(`[${date5.toISOString()}] Session ${shortId} (${session.project})`);
+        lines.push(`  ${summaryPreview}`);
+        lines.push("");
+      }
+      sections.push(`Found ${sessionResults.length} semantically similar sessions (${searchMethod}):
+
+${lines.join("\n")}`);
+    }
+    if (observations.length > 0) {
+      sections.push(`Found ${observations.length} observations (${searchMethod}):
 
 ${formatObservations(observations)}`);
+      const topResults = observations.slice(0, 3).filter((o) => o.id != null);
+      const relatedIds = new Set(observations.map((o) => o.id));
+      const relatedObs = [];
+      for (const obs of topResults) {
+        const related = db.getRelatedObservations(obs.id);
+        for (const r of related) {
+          if (r.id != null && !relatedIds.has(r.id)) {
+            relatedIds.add(r.id);
+            relatedObs.push(r);
+          }
+        }
       }
-      if (prompts.length > 0) {
-        sections.push(`Found ${prompts.length} user prompts matching "${query}":
+      if (relatedObs.length > 0) {
+        sections.push(`Related observations:
+
+${formatObservations(relatedObs.slice(0, 10))}`);
+      }
+    }
+    if (prompts.length > 0) {
+      sections.push(`Found ${prompts.length} user prompts matching "${query}":
 
 ${formatPrompts(prompts)}`);
-      }
+    }
+    if (sections.length === 0) {
       return {
         content: [
           {
             type: "text",
-            text: sections.join("\n\n")
+            text: `No observations found matching "${query}" (${searchMethod}).`
           }
         ]
       };
-    }
-    if (db.isVectorSearchEnabled()) {
-      const embeddingService = getEmbeddingService();
-      const queryEmbedding = await embeddingService.embed(query);
-      if (queryEmbedding) {
-        const sessionResults = await db.vectorSearchSessions(queryEmbedding, project, 10);
-        if (sessionResults.length > 0) {
-          const lines = [];
-          for (const session of sessionResults) {
-            const date5 = new Date(session.started_at);
-            const shortId = session.id.substring(0, 8);
-            const summaryPreview = session.summary ? session.summary.substring(0, 200).replace(/\n/g, " ") : "No summary";
-            lines.push(`[${date5.toISOString()}] Session ${shortId} (${session.project})`);
-            lines.push(`  ${summaryPreview}`);
-            lines.push("");
-          }
-          return {
-            content: [
-              {
-                type: "text",
-                text: `No exact keyword matches for "${query}", but found ${sessionResults.length} semantically similar sessions:
-
-${lines.join("\n")}`
-              }
-            ]
-          };
-        }
-        const semanticResults = await db.vectorSearch(queryEmbedding, project, 10);
-        if (semanticResults.length > 0) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `No exact keyword matches for "${query}", but found ${semanticResults.length} semantically similar observations:
-
-${formatObservations(semanticResults)}`
-              }
-            ]
-          };
-        }
-      }
     }
     return {
       content: [
         {
           type: "text",
-          text: `No observations found matching "${query}".`
+          text: sections.join("\n\n")
         }
       ]
     };

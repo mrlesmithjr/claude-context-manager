@@ -17,6 +17,7 @@ import type {
   ContextStorage,
   Observation,
   ImportanceLevel,
+  RelationshipType,
   Session,
   Stats,
   UserPrompt,
@@ -221,6 +222,12 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add session-level vector search
     this.migrateAddSessionVectorSearch();
+
+    // Migration: add file encounter counts for surprise scoring
+    this.migrateAddFileEncounterCounts();
+
+    // Migration: add observation relationships
+    this.migrateAddObservationRelationships();
   }
 
   /**
@@ -304,7 +311,7 @@ export class SQLiteStorage implements ContextStorage {
     };
   }
 
-  async save(observation: Omit<Observation, 'id'>): Promise<void> {
+  async save(observation: Omit<Observation, 'id'>): Promise<number | undefined> {
     // Deduplication: skip if very similar observation exists recently
     // CROSS-SESSION deduplication within same project (not just same session)
     // Window varies by command type based on data analysis:
@@ -363,7 +370,7 @@ export class SQLiteStorage implements ContextStorage {
 
     if (result.count > 0) {
       // Skip duplicate - already have a similar observation recently
-      return;
+      return undefined;
     }
 
     const stmt = this.db.prepare(`
@@ -374,7 +381,7 @@ export class SQLiteStorage implements ContextStorage {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    stmt.run(
+    const info = stmt.run(
       observation.session_id,
       observation.project,
       observation.package || null,
@@ -387,6 +394,13 @@ export class SQLiteStorage implements ContextStorage {
       observation.importance_score ?? 0.5,
       observation.created_at
     );
+
+    const insertedId = Number(info.lastInsertRowid);
+
+    // Infer relationships for the newly inserted observation
+    this.inferRelationships(insertedId, observation);
+
+    return insertedId;
   }
 
   async getRecent(project: string, limit: number): Promise<Observation[]> {
@@ -1295,6 +1309,45 @@ export class SQLiteStorage implements ContextStorage {
     }
   }
 
+  /**
+   * Migration: add file_encounter_counts table for surprise scoring.
+   */
+  private migrateAddFileEncounterCounts(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS file_encounter_counts (
+        file_path TEXT NOT NULL,
+        project TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        encounter_count INTEGER DEFAULT 0,
+        last_seen TEXT NOT NULL,
+        PRIMARY KEY (file_path, project, tool_name)
+      )
+    `);
+  }
+
+  /**
+   * Migration: add observation_relationships table for linking related observations.
+   */
+  private migrateAddObservationRelationships(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS observation_relationships (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER NOT NULL,
+        target_id INTEGER NOT NULL,
+        relationship TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (source_id) REFERENCES observations(id) ON DELETE CASCADE,
+        FOREIGN KEY (target_id) REFERENCES observations(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_obs_rel_source ON observation_relationships(source_id)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_obs_rel_target ON observation_relationships(target_id)`);
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_obs_rel_unique
+      ON observation_relationships(source_id, target_id, relationship)
+    `);
+  }
+
   async saveSessionEmbedding(sessionId: string, embedding: Float32Array, enrichedText: string): Promise<void> {
     if (!this.vecEnabled) {
       throw new Error('Vector search is not enabled (sqlite-vec not loaded)');
@@ -1481,6 +1534,110 @@ export class SQLiteStorage implements ContextStorage {
         LIMIT ?
       `;
       params = [limit];
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
+  }
+
+  /**
+   * Increment file encounter count and return the new count.
+   * Uses upsert for atomic increment — sub-millisecond on primary key lookup.
+   */
+  incrementFileEncounter(filePath: string, project: string, toolName: string): number {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO file_encounter_counts (file_path, project, tool_name, encounter_count, last_seen)
+      VALUES (?, ?, ?, 1, ?)
+      ON CONFLICT(file_path, project, tool_name)
+      DO UPDATE SET encounter_count = encounter_count + 1, last_seen = ?
+    `).run(filePath, project, toolName, now, now);
+
+    const row = this.db.prepare(`
+      SELECT encounter_count FROM file_encounter_counts
+      WHERE file_path = ? AND project = ? AND tool_name = ?
+    `).get(filePath, project, toolName) as { encounter_count: number } | undefined;
+
+    return row?.encounter_count ?? 1;
+  }
+
+  /**
+   * Infer and store relationships for a newly inserted observation.
+   * Called from save() after INSERT — keeps relationship inference passive.
+   */
+  private inferRelationships(observationId: number, observation: Omit<Observation, 'id'>): void {
+    const now = new Date().toISOString();
+
+    // 1. followed_by: link to the immediately preceding observation in this session
+    const previous = this.db.prepare(`
+      SELECT id FROM observations
+      WHERE session_id = ? AND id != ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(observation.session_id, observationId) as { id: number } | undefined;
+
+    if (previous) {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO observation_relationships (source_id, target_id, relationship, created_at)
+        VALUES (?, ?, 'followed_by', ?)
+      `).run(previous.id, observationId, now);
+    }
+
+    // 2. same_file: link to recent observations that touch the same files
+    if (observation.files_touched.length > 0) {
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+      for (const file of observation.files_touched) {
+        // Escape the file path for LIKE pattern (the file is stored in a JSON array)
+        const likePattern = `%${file.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
+        const matches = this.db.prepare(`
+          SELECT id FROM observations
+          WHERE project = ? AND id != ?
+            AND files_touched LIKE ? ESCAPE '\\'
+            AND created_at > ?
+          ORDER BY created_at DESC
+          LIMIT 5
+        `).all(observation.project, observationId, likePattern, cutoff) as Array<{ id: number }>;
+
+        for (const match of matches) {
+          this.db.prepare(`
+            INSERT OR IGNORE INTO observation_relationships (source_id, target_id, relationship, created_at)
+            VALUES (?, ?, 'same_file', ?)
+          `).run(match.id, observationId, now);
+        }
+      }
+    }
+  }
+
+  /**
+   * Get observations related to a given observation via inferred relationships.
+   */
+  getRelatedObservations(observationId: number, types?: RelationshipType[], limit: number = 10): Observation[] {
+    let sql: string;
+    let params: unknown[];
+
+    if (types && types.length > 0) {
+      const placeholders = types.map(() => '?').join(', ');
+      sql = `
+        SELECT DISTINCT o.* FROM observations o
+        INNER JOIN observation_relationships r
+          ON (o.id = r.source_id AND r.target_id = ?)
+          OR (o.id = r.target_id AND r.source_id = ?)
+        WHERE r.relationship IN (${placeholders})
+        ORDER BY o.created_at DESC
+        LIMIT ?
+      `;
+      params = [observationId, observationId, ...types, limit];
+    } else {
+      sql = `
+        SELECT DISTINCT o.* FROM observations o
+        INNER JOIN observation_relationships r
+          ON (o.id = r.source_id AND r.target_id = ?)
+          OR (o.id = r.target_id AND r.source_id = ?)
+        ORDER BY o.created_at DESC
+        LIMIT ?
+      `;
+      params = [observationId, observationId, limit];
     }
 
     const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;

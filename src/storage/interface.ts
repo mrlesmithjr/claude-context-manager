@@ -6,6 +6,7 @@
  */
 
 export type ImportanceLevel = 'high' | 'medium' | 'low';
+export type RelationshipType = 'same_file' | 'followed_by';
 
 export interface Observation {
   id?: number;
@@ -85,8 +86,9 @@ export interface ContextStorage {
 
   /**
    * Save an observation
+   * @returns The inserted observation ID, or undefined if deduplicated
    */
-  save(observation: Omit<Observation, 'id'>): Promise<void>;
+  save(observation: Omit<Observation, 'id'>): Promise<number | undefined>;
 
   /**
    * Get recent observations for a project
@@ -284,6 +286,20 @@ export interface ContextStorage {
    * @param project - Project path (optional)
    */
   countUnembeddedSessions(project?: string): number;
+
+  /**
+   * Increment file encounter count and return the new count.
+   * Used for surprise scoring — first encounters get boosted importance.
+   */
+  incrementFileEncounter(filePath: string, project: string, toolName: string): number;
+
+  /**
+   * Get observations related to a given observation via inferred relationships.
+   * @param observationId - The observation to find relations for
+   * @param types - Filter by relationship types (optional)
+   * @param limit - Maximum results (default: 10)
+   */
+  getRelatedObservations(observationId: number, types?: RelationshipType[], limit?: number): Observation[];
 
   /**
    * Close storage connection
