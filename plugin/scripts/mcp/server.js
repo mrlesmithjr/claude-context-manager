@@ -32388,7 +32388,7 @@ function formatConsolidationReport(report) {
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.7.0" : "0.5.0"
+    version: true ? "0.7.1" : "0.5.0"
   },
   {
     instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery."
