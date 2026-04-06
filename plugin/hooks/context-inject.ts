@@ -40,6 +40,19 @@ async function readStdin(): Promise<string> {
   });
 }
 
+/** Write JSON to stdout and wait for it to flush before continuing. */
+function writeResponse(data: Record<string, unknown>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const ok = process.stdout.write(JSON.stringify(data) + '\n');
+    if (ok) {
+      resolve();
+    } else {
+      process.stdout.once('drain', resolve);
+      process.stdout.once('error', reject);
+    }
+  });
+}
+
 /**
  * Check for version mismatch between source and installed plugin
  * Returns a warning message if versions differ, empty string otherwise
@@ -129,21 +142,21 @@ async function main() {
     console.error(`[context-manager] ${count} observations tracked, activity exported to auto-memory`);
 
     // Return context using hookSpecificOutput format (compatible with thinking mode)
-    process.stdout.write(JSON.stringify({
+    await writeResponse({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext: context
       }
-    }));
+    });
   } catch (error) {
     // Fail silently - never block Claude Code
     console.error('[context-manager] Error:', error);
-    process.stdout.write(JSON.stringify({
+    await writeResponse({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext: ''
       }
-    }));
+    });
   } finally {
     storage.close();
   }

@@ -1783,6 +1783,17 @@ async function readStdin() {
     process.stdin.on("end", () => resolve(data));
   });
 }
+function writeResponse(data) {
+  return new Promise((resolve, reject) => {
+    const ok = process.stdout.write(JSON.stringify(data) + "\n");
+    if (ok) {
+      resolve();
+    } else {
+      process.stdout.once("drain", resolve);
+      process.stdout.once("error", reject);
+    }
+  });
+}
 async function main() {
   const storage = new SQLiteStorage();
   try {
@@ -1794,7 +1805,7 @@ async function main() {
     } catch (parseError) {
       debugLog("JSON_PARSE_ERROR", { error: String(parseError), input: inputStr });
       console.error("[context-manager] Invalid JSON input");
-      process.stdout.write(JSON.stringify({ status: "error" }));
+      await writeResponse({ status: "error" });
       return;
     }
     debugLog("PARSED_INPUT", rawInput);
@@ -1841,7 +1852,7 @@ async function main() {
     } catch (exportError) {
       console.error("[context-manager] Auto-memory export failed:", exportError);
     }
-    process.stdout.write(JSON.stringify({ status: "complete" }));
+    await writeResponse({ status: "complete" });
   } catch (error) {
     debugLog("SESSION_END_ERROR", { error: String(error) });
     console.error("[context-manager] Session end error:", error);

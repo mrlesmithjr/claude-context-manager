@@ -1305,6 +1305,17 @@ async function readStdin() {
     process.stdin.on("end", () => resolve(data));
   });
 }
+function writeResponse(data) {
+  return new Promise((resolve, reject) => {
+    const ok = process.stdout.write(JSON.stringify(data) + "\n");
+    if (ok) {
+      resolve();
+    } else {
+      process.stdout.once("drain", resolve);
+      process.stdout.once("error", reject);
+    }
+  });
+}
 async function main() {
   const storage = new SQLiteStorage();
   const debugLog = createDebugLogger("prompt-hook-debug.log");
@@ -1318,7 +1329,7 @@ async function main() {
     } catch (parseError) {
       debugLog("PARSE_ERROR", String(parseError));
       console.error("[context-manager] Invalid JSON input");
-      process.stdout.write(JSON.stringify({ status: "error" }));
+      await writeResponse({ status: "error" });
       return;
     }
     const input = validateUserPromptSubmitInput(rawInput);
@@ -1331,10 +1342,10 @@ async function main() {
       prompt_text: sanitizedPrompt,
       created_at: (/* @__PURE__ */ new Date()).toISOString()
     });
-    process.stdout.write(JSON.stringify({ status: "captured" }));
+    await writeResponse({ status: "captured" });
   } catch (error) {
     console.error("[context-manager] Prompt capture error:", error);
-    process.stdout.write(JSON.stringify({ status: "error" }));
+    await writeResponse({ status: "error" });
   } finally {
     storage.close();
   }

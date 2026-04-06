@@ -1817,6 +1817,17 @@ async function readStdin() {
     process.stdin.on("end", () => resolve(data));
   });
 }
+function writeResponse(data) {
+  return new Promise((resolve, reject) => {
+    const ok = process.stdout.write(JSON.stringify(data) + "\n");
+    if (ok) {
+      resolve();
+    } else {
+      process.stdout.once("drain", resolve);
+      process.stdout.once("error", reject);
+    }
+  });
+}
 async function main() {
   const storage = new SQLiteStorage();
   try {
@@ -1826,12 +1837,12 @@ async function main() {
       rawInput = JSON.parse(inputStr);
     } catch (parseError) {
       console.error("[context-manager] Invalid JSON input");
-      process.stdout.write(JSON.stringify({ status: "error", error: "Invalid JSON input" }));
+      await writeResponse({ status: "error", error: "Invalid JSON input" });
       return;
     }
     const input = validatePostToolUseInput(rawInput);
     if (!shouldCaptureTool(input.tool_name, input.tool_input)) {
-      process.stdout.write(JSON.stringify({ status: "skipped" }));
+      await writeResponse({ status: "skipped" });
       return;
     }
     await storage.initialize();
@@ -1843,10 +1854,10 @@ async function main() {
       tool_response: input.tool_response
     });
     await storage.save(observation);
-    process.stdout.write(JSON.stringify({ status: "captured" }));
+    await writeResponse({ status: "captured" });
   } catch (error) {
     console.error("[context-manager] Capture error:", error);
-    process.stdout.write(JSON.stringify({ status: "error" }));
+    await writeResponse({ status: "error" });
   } finally {
     storage.close();
   }
