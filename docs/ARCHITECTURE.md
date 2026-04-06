@@ -75,6 +75,11 @@ Claude Code plugins can register hooks for lifecycle events. We use three:
 #### Stop Hook (`session-end.ts`)
 - **Trigger**: When Claude Code session ends normally
 - **Purpose**: Extract conversation insights, save session summary, export to auto-memory
+- **Session Narrative Selection** (v0.8.3): Scores all assistant messages for narrative quality and picks the best candidate rather than defaulting to the last message (which is often a closing remark):
+  - Action verbs (implement, fix, add, update, refactor...) score highest
+  - File path references and code blocks boost score
+  - Short affirmations ("Yes", "Sure", "Let me...") score 0
+  - Minimum score threshold of 0.25; falls back to last assistant message if nothing qualifies
 - **Conversation Insights** (v0.6.4): Scans all assistant text blocks in the transcript for high-signal content:
   - Markdown tables (comparisons, specs, pricing)
   - Recommendation/decision language
@@ -424,7 +429,7 @@ Different tools produce different observation summaries:
 |------|---------------|----------|
 | `Read` | "Read {filename} ({type})" | File path, file type |
 | `Write` | "Write {filename}" | File path |
-| `Edit` | "Edit {filename}" | File path |
+| `Edit` | "Edited {filename}: {meaningful description}" | Pattern-matched from diff: function/import/type additions, schema changes, net line count, or first meaningfully different line. Uses set-difference of old/new lines — never raw first-line truncation. |
 | `Bash` | "Bash: {command_preview}" | Command (truncated) |
 | `Grep` | "Grep: \"{pattern}\" in {path}" | Pattern, search path |
 | `Glob` | "Glob: \"{pattern}\" in {path}" | Pattern, base path |

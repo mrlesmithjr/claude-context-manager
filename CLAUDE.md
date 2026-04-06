@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: April 6, 2026
+**Last Updated**: April 6, 2026 (v0.8.3)
 
 ---
 
@@ -208,10 +208,16 @@ claude-context-manager/
 - This format is compatible with Claude's extended thinking mode
 - Learned from claude-mem implementation
 
-### 4. Simple Summarization
-- Extract: tool name, files touched, basic patterns
-- No AI extraction (unlike claude-mem)
-- Trade-off: Less intelligent, but simpler and faster
+### 4. Observation Summarization (v0.8.2)
+- Extract: tool name, files touched, patterns — no AI extraction (unlike claude-mem)
+- **Edit summaries** use pattern matching on the diff to produce meaningful descriptions:
+  - Function/class/const additions → `"Added async getRecentSessionsWithObservations"`
+  - Import changes → `"Added import from '../utils/session-format.js'"`
+  - Interface/type additions, schema changes (CREATE/ALTER TABLE)
+  - Net line count for larger diffs (`"Added ~12 lines"`)
+  - First meaningfully different line as fallback
+  - Finds actually-different lines (set difference) rather than raw first-line truncation
+- Trade-off: Less intelligent than AI extraction, but deterministic and fast
 
 ### 5. Importance Scoring at Capture Time
 - Every observation gets an importance level (high/medium/low) and numeric score (0.0-1.0)
@@ -278,6 +284,17 @@ claude-context-manager/
   - **hybrid** (3-4 words, mixed) → both FTS5 + vector, merged with Reciprocal Rank Fusion (k=60)
 - Graceful degradation: if embeddings unavailable, all strategies fall back to keyword
 - Search method included in output for transparency
+
+### 13. Session Narrative Selection (v0.8.3)
+- The Stop hook previously used the **last** assistant message as the session summary — often a closing remark ("Yes.", "Now bump the version...")
+- Now scores all assistant messages for narrative quality and picks the best candidate
+- Scorer (`scoreForNarrative`) favors messages that describe work done:
+  - Action verbs: implement, add, fix, update, create, refactor, replace, rewrite (+0.20)
+  - File path references like `processor.ts`, `sqlite.ts` (+0.15)
+  - Code blocks (+0.10), bullet lists (+0.10), longer messages (+0.15/+0.10)
+  - Short affirmations ("Yes", "Sure", "Ok", "Let me...") score 0 even if they pass length check
+- Best-scoring message used if score >= 0.25; falls back to last assistant message otherwise
+- Result: session narratives in `context_list` now reflect what was accomplished, not how the session closed
 
 ---
 

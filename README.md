@@ -307,7 +307,7 @@ Once installed, the plugin works automatically:
 
 1. **Session Start**: A minimal status hint is injected (~30 tokens)
 2. **During Session**: Tool interactions are captured and scored in the background
-3. **Session End**: Session summary is saved, high-importance observations are exported to auto-memory
+3. **Session End**: Best-scoring assistant message is selected as the session narrative (favors messages describing work done over closing remarks), high-importance observations are exported to auto-memory
 
 ### MCP Tools
 
