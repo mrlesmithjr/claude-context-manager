@@ -279,22 +279,57 @@ function summarizeWrite(input: Record<string, unknown>, response?: string): stri
 }
 
 /**
- * Summarize Edit tool
+ * Summarize Edit tool — find the most meaningful description of what changed.
  */
 function summarizeEdit(input: Record<string, unknown>, response?: string): string {
   const filePath = input.file_path as string;
   const fileName = filePath.split('/').pop() || filePath;
 
-  // Extract a hint about what changed
   const oldString = (input.old_string as string) || '';
   const newString = (input.new_string as string) || '';
 
-  // Take first line or first 50 chars as hint
-  const oldHint = oldString.split('\n')[0]?.substring(0, 50) || '';
-  const newHint = newString.split('\n')[0]?.substring(0, 50) || '';
+  if (!oldString && !newString) return `Edited ${fileName}`;
 
-  if (oldHint && newHint) {
-    return `Edited ${fileName}: "${oldHint}" → "${newHint}"`;
+  const oldLines = oldString.split('\n').map(l => l.trim()).filter(Boolean);
+  const newLines = newString.split('\n').map(l => l.trim()).filter(Boolean);
+  const oldSet = new Set(oldLines);
+  const newSet = new Set(newLines);
+  const addedLines = newLines.filter(l => !oldSet.has(l));
+  const removedLines = oldLines.filter(l => !newSet.has(l));
+
+  // Look for high-signal patterns in added lines
+  for (const line of addedLines) {
+    const funcMatch = line.match(/(?:function|async function|class|const|export)\s+(\w+)/);
+    if (funcMatch) return `Edited ${fileName}: Added ${funcMatch[0].substring(0, 50)}`;
+
+    const importMatch = line.match(/import\s+.+from\s+['"](.+?)['"]/);
+    if (importMatch) return `Edited ${fileName}: Added import from '${importMatch[1]}'`;
+
+    const typeMatch = line.match(/(?:interface|type)\s+(\w+)/);
+    if (typeMatch) return `Edited ${fileName}: Added ${typeMatch[0]}`;
+
+    if (line.includes('CREATE TABLE') || line.includes('ALTER TABLE')) {
+      return `Edited ${fileName}: Schema ${line.substring(0, 50)}`;
+    }
+  }
+
+  // Summarize by net size of change
+  const netLines = newLines.length - oldLines.length;
+  if (netLines > 3) return `Edited ${fileName}: Added ~${netLines} lines`;
+  if (netLines < -3) return `Edited ${fileName}: Removed ~${Math.abs(netLines)} lines`;
+
+  // Find the first line that actually differs (skip shared prefix lines)
+  if (addedLines.length > 0) {
+    const hint = addedLines[0]!.substring(0, 60);
+    if (hint.length >= 8 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
+      return `Edited ${fileName}: ${hint}`;
+    }
+  }
+  if (removedLines.length > 0) {
+    const hint = removedLines[0]!.substring(0, 60);
+    if (hint.length >= 8 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
+      return `Edited ${fileName}: Changed ${hint}`;
+    }
   }
 
   return `Edited ${fileName}`;

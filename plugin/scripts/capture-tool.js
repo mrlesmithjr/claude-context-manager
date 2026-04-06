@@ -1710,10 +1710,44 @@ function summarizeEdit(input, response) {
   const fileName = filePath.split("/").pop() || filePath;
   const oldString = input.old_string || "";
   const newString = input.new_string || "";
-  const oldHint = oldString.split("\n")[0]?.substring(0, 50) || "";
-  const newHint = newString.split("\n")[0]?.substring(0, 50) || "";
-  if (oldHint && newHint) {
-    return `Edited ${fileName}: "${oldHint}" \u2192 "${newHint}"`;
+  if (!oldString && !newString)
+    return `Edited ${fileName}`;
+  const oldLines = oldString.split("\n").map((l) => l.trim()).filter(Boolean);
+  const newLines = newString.split("\n").map((l) => l.trim()).filter(Boolean);
+  const oldSet = new Set(oldLines);
+  const newSet = new Set(newLines);
+  const addedLines = newLines.filter((l) => !oldSet.has(l));
+  const removedLines = oldLines.filter((l) => !newSet.has(l));
+  for (const line of addedLines) {
+    const funcMatch = line.match(/(?:function|async function|class|const|export)\s+(\w+)/);
+    if (funcMatch)
+      return `Edited ${fileName}: Added ${funcMatch[0].substring(0, 50)}`;
+    const importMatch = line.match(/import\s+.+from\s+['"](.+?)['"]/);
+    if (importMatch)
+      return `Edited ${fileName}: Added import from '${importMatch[1]}'`;
+    const typeMatch = line.match(/(?:interface|type)\s+(\w+)/);
+    if (typeMatch)
+      return `Edited ${fileName}: Added ${typeMatch[0]}`;
+    if (line.includes("CREATE TABLE") || line.includes("ALTER TABLE")) {
+      return `Edited ${fileName}: Schema ${line.substring(0, 50)}`;
+    }
+  }
+  const netLines = newLines.length - oldLines.length;
+  if (netLines > 3)
+    return `Edited ${fileName}: Added ~${netLines} lines`;
+  if (netLines < -3)
+    return `Edited ${fileName}: Removed ~${Math.abs(netLines)} lines`;
+  if (addedLines.length > 0) {
+    const hint = addedLines[0].substring(0, 60);
+    if (hint.length >= 8 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
+      return `Edited ${fileName}: ${hint}`;
+    }
+  }
+  if (removedLines.length > 0) {
+    const hint = removedLines[0].substring(0, 60);
+    if (hint.length >= 8 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
+      return `Edited ${fileName}: Changed ${hint}`;
+    }
   }
   return `Edited ${fileName}`;
 }
