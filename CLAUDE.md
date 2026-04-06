@@ -257,8 +257,10 @@ claude-context-manager/
 - At capture time, importance_score is adjusted based on novelty:
   - First encounter: +0.15, encounters 2-3: +0.05, 11+: -0.10
   - Total cap: [-0.15, +0.20] to prevent dominating base score
+- Uses **7-day windowed count** from observations for scoring (not lifetime counter)
+  - Files untouched for a week feel novel again
+  - Lifetime counter still maintained in `file_encounter_counts` for analytics
 - Novel files surface above routine reads of the same files
-- Counts persist across sessions (lifetime project awareness)
 
 ### 11. Observation Relationships (v0.7.0)
 - `observation_relationships` table links observations passively at capture time

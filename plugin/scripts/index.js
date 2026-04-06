@@ -1159,17 +1159,18 @@ var SQLiteStorage = class {
    */
   incrementFileEncounter(filePath, project, toolName) {
     const now = (/* @__PURE__ */ new Date()).toISOString();
-    this.db.prepare(`
+    const row = this.db.prepare(`
       INSERT INTO file_encounter_counts (file_path, project, tool_name, encounter_count, last_seen)
       VALUES (?, ?, ?, 1, ?)
       ON CONFLICT(file_path, project, tool_name)
       DO UPDATE SET encounter_count = encounter_count + 1, last_seen = ?
-    `).run(filePath, project, toolName, now, now);
-    const row = this.db.prepare(`
-      SELECT encounter_count FROM file_encounter_counts
-      WHERE file_path = ? AND project = ? AND tool_name = ?
-    `).get(filePath, project, toolName);
-    return row?.encounter_count ?? 1;
+      RETURNING encounter_count
+    `).get(filePath, project, toolName, now, now);
+    const recent = this.db.prepare(`
+      SELECT COUNT(*) as cnt FROM observations
+      WHERE project = ? AND files_touched LIKE ? AND created_at > datetime('now', '-7 days')
+    `).get(project, `%${filePath.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
+    return recent.cnt;
   }
   /**
    * Infer and store relationships for a newly inserted observation.

@@ -484,7 +484,7 @@ After base scoring, the capture hook adjusts based on file novelty via `file_enc
 | 11+ | -0.10 | Frequently seen, reduce noise |
 | **Total cap** | [-0.15, +0.20] | Prevent dominating base score |
 
-Encounter counts are tracked per (file_path, project, tool_name) triple and persist across sessions.
+Encounter counts are tracked per (file_path, project, tool_name) triple. The lifetime counter persists in `file_encounter_counts` for analytics, but scoring uses a **7-day windowed count** from `observations` — files untouched for a week feel novel again rather than being permanently penalized.
 
 **Levels:** score >= 0.65 = high, >= 0.35 = medium, < 0.35 = low
 

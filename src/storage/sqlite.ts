@@ -1546,19 +1546,26 @@ export class SQLiteStorage implements ContextStorage {
    */
   incrementFileEncounter(filePath: string, project: string, toolName: string): number {
     const now = new Date().toISOString();
-    this.db.prepare(`
+
+    // Upsert + RETURNING in one statement (SQLite 3.35+)
+    const row = this.db.prepare(`
       INSERT INTO file_encounter_counts (file_path, project, tool_name, encounter_count, last_seen)
       VALUES (?, ?, ?, 1, ?)
       ON CONFLICT(file_path, project, tool_name)
       DO UPDATE SET encounter_count = encounter_count + 1, last_seen = ?
-    `).run(filePath, project, toolName, now, now);
+      RETURNING encounter_count
+    `).get(filePath, project, toolName, now, now) as { encounter_count: number } | undefined;
 
-    const row = this.db.prepare(`
-      SELECT encounter_count FROM file_encounter_counts
-      WHERE file_path = ? AND project = ? AND tool_name = ?
-    `).get(filePath, project, toolName) as { encounter_count: number } | undefined;
+    // For surprise scoring, use the 7-day windowed count rather than the lifetime total.
+    // This way files you haven't touched in a while feel novel again.
+    const recent = this.db.prepare(`
+      SELECT COUNT(*) as cnt FROM observations
+      WHERE project = ? AND files_touched LIKE ? AND created_at > datetime('now', '-7 days')
+    `).get(project, `%${filePath.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`) as { cnt: number };
 
-    return row?.encounter_count ?? 1;
+    // Return the higher-signal windowed count for scoring, but the lifetime
+    // counter is still maintained in file_encounter_counts for analytics
+    return recent.cnt;
   }
 
   /**
