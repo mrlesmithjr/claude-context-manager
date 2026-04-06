@@ -1,6 +1,6 @@
 {
   "name": "context-manager",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Persistent memory system for Claude Code - seamlessly preserve context across sessions",
   "author": {
     "name": "Larry Smith Jr."

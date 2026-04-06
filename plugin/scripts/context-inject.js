@@ -338,6 +338,7 @@ var SQLiteStorage = class {
   async search(query, project) {
     let sql;
     let params;
+    const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     if (project) {
       sql = `
         SELECT o.* FROM observations o
@@ -346,7 +347,7 @@ var SQLiteStorage = class {
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
-      params = [query, project + "%"];
+      params = [ftsQuery, project + "%"];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -355,7 +356,7 @@ var SQLiteStorage = class {
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
-      params = [query];
+      params = [ftsQuery];
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
@@ -597,6 +598,7 @@ var SQLiteStorage = class {
   async searchPrompts(query, project) {
     let sql;
     let params;
+    const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     if (project) {
       sql = `
         SELECT p.* FROM user_prompts p
@@ -605,7 +607,7 @@ var SQLiteStorage = class {
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
-      params = [query, project + "%"];
+      params = [ftsQuery, project + "%"];
     } else {
       sql = `
         SELECT p.* FROM user_prompts p
@@ -1347,11 +1349,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.7.1") {
+    if (installedVersion !== "0.7.2") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.7.1"}
+   Source:    v${"0.7.2"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1382,7 +1384,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.7.1"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.7.2"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     const context = lines.join("\n");
     console.error(`[context-manager] ${count} observations tracked, activity exported to auto-memory`);

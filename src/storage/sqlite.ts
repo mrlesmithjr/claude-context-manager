@@ -453,6 +453,14 @@ export class SQLiteStorage implements ContextStorage {
     let sql: string;
     let params: unknown[];
 
+    // Escape FTS5 special characters by wrapping each token in double quotes.
+    // This prevents dots, hyphens, and other chars from being parsed as FTS5 operators.
+    const ftsQuery = query.replace(/"/g, '""')  // escape existing double quotes
+      .split(/\s+/)
+      .filter(t => t.length > 0)
+      .map(t => `"${t}"`)
+      .join(' ');
+
     if (project) {
       // Use LIKE for prefix matching (parent directory sees children)
       // FTS5 requires full table name in MATCH clause (aliases don't work)
@@ -463,7 +471,7 @@ export class SQLiteStorage implements ContextStorage {
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
-      params = [query, project + '%'];
+      params = [ftsQuery, project + '%'];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -472,7 +480,7 @@ export class SQLiteStorage implements ContextStorage {
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
-      params = [query];
+      params = [ftsQuery];
     }
 
     const stmt = this.db.prepare(sql);
@@ -821,6 +829,13 @@ export class SQLiteStorage implements ContextStorage {
     let sql: string;
     let params: unknown[];
 
+    // Escape FTS5 special characters (same as search())
+    const ftsQuery = query.replace(/"/g, '""')
+      .split(/\s+/)
+      .filter(t => t.length > 0)
+      .map(t => `"${t}"`)
+      .join(' ');
+
     if (project) {
       // FTS5 requires full table name in MATCH clause (aliases don't work)
       sql = `
@@ -830,7 +845,7 @@ export class SQLiteStorage implements ContextStorage {
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
-      params = [query, project + '%'];
+      params = [ftsQuery, project + '%'];
     } else {
       sql = `
         SELECT p.* FROM user_prompts p

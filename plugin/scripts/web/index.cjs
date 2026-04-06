@@ -43959,6 +43959,7 @@ var SQLiteStorage = class {
   async search(query, project) {
     let sql;
     let params;
+    const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     if (project) {
       sql = `
         SELECT o.* FROM observations o
@@ -43967,7 +43968,7 @@ var SQLiteStorage = class {
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
-      params = [query, project + "%"];
+      params = [ftsQuery, project + "%"];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -43976,7 +43977,7 @@ var SQLiteStorage = class {
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
-      params = [query];
+      params = [ftsQuery];
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
@@ -44218,6 +44219,7 @@ var SQLiteStorage = class {
   async searchPrompts(query, project) {
     let sql;
     let params;
+    const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     if (project) {
       sql = `
         SELECT p.* FROM user_prompts p
@@ -44226,7 +44228,7 @@ var SQLiteStorage = class {
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
-      params = [query, project + "%"];
+      params = [ftsQuery, project + "%"];
     } else {
       sql = `
         SELECT p.* FROM user_prompts p
