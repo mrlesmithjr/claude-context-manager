@@ -38,11 +38,67 @@ interface TranscriptMessage {
 }
 
 /**
+ * Score an assistant message for narrative quality.
+ * Distinct from scoreAssistantBlock() which scores for structured knowledge.
+ * This scores for "describes what was done in this session."
+ * Returns 0.0-1.0 (0 = skip, higher = better narrative candidate).
+ */
+function scoreForNarrative(text: string): number {
+  if (text.length < 50) return 0;
+
+  const lower = text.toLowerCase().trimStart();
+
+  // Skip short affirmations and confirmations
+  if (text.length < 200) {
+    if (/^(yes|sure|ok|okay|alright|got it|sounds good|perfect|great|done|correct|right|no problem|will do|absolutely)\b/.test(lower)) return 0;
+    if (/^(let me |i'll |i've |checking|looking|reading|searching)/.test(lower)) return 0;
+  }
+
+  let score = 0;
+
+  // Length sweet spot: 150-1500 chars
+  if (text.length >= 150) score += 0.15;
+  if (text.length >= 400) score += 0.10;
+  if (text.length > 3000) score -= 0.10; // Long raw dumps make poor narratives
+
+  // Technical/work-describing content
+  if (/\b(implement|add|fix|update|creat|refactor|chang|remov|improv|build|replac|rewrit)\w*\b/i.test(text)) score += 0.20;
+  if (/\b\w+\.(ts|js|py|yaml|yml|json|md|sql)\b/.test(text)) score += 0.15;
+  if (text.includes('```')) score += 0.10;
+
+  // Structured content (bullet lists suggest substantive output)
+  const bulletCount = (text.match(/^[-*]\s/gm) || []).length;
+  if (bulletCount >= 2) score += 0.10;
+
+  // Slight penalty for responses that end as questions
+  if (text.trimEnd().endsWith('?')) score -= 0.10;
+
+  return Math.max(0, Math.min(1.0, score));
+}
+
+/**
+ * Extract text content from a parsed transcript message.
+ */
+function extractTextFromMessage(msg: TranscriptMessage): string {
+  const msgContent = msg.message?.content;
+  if (!msgContent) return '';
+  if (typeof msgContent === 'string') return msgContent;
+  if (Array.isArray(msgContent)) {
+    return msgContent
+      .filter(block => block.type === 'text' && block.text)
+      .map(block => block.text!)
+      .join('\n');
+  }
+  return '';
+}
+
+/**
  * Extract a summary from the transcript file.
  *
  * The transcript is JSONL format. We look for:
  * 1. First line may contain a summary field
- * 2. Last assistant message content
+ * 2. Best-scoring assistant message (by narrative quality)
+ * 3. Falls back to last assistant message if no good candidate
  */
 function extractSummaryFromTranscript(transcriptPath: string): string | undefined {
   try {
@@ -70,43 +126,37 @@ function extractSummaryFromTranscript(transcriptPath: string): string | undefine
       // First line might not be valid JSON, continue
     }
 
-    // Find the last assistant message
-    let lastAssistantContent: string | undefined;
+    // Collect all assistant messages with narrative scores
+    let bestText = '';
+    let bestScore = -1;
+    let lastAssistantContent = '';
 
-    for (let i = lines.length - 1; i >= 0; i--) {
+    for (const rawLine of lines) {
       try {
-        const line = JSON.parse(lines[i]) as TranscriptMessage;
+        const msg = JSON.parse(rawLine) as TranscriptMessage;
+        if (msg.type !== 'assistant' || msg.message?.role !== 'assistant') continue;
 
-        if (line.type === 'assistant' && line.message?.role === 'assistant') {
-          const msgContent = line.message.content;
+        const text = extractTextFromMessage(msg);
+        if (!text) continue;
 
-          if (typeof msgContent === 'string') {
-            lastAssistantContent = msgContent;
-            break;
-          } else if (Array.isArray(msgContent)) {
-            // Content might be an array of content blocks
-            const textBlocks = msgContent
-              .filter(block => block.type === 'text' && block.text)
-              .map(block => block.text)
-              .join('\n');
-            if (textBlocks) {
-              lastAssistantContent = textBlocks;
-              break;
-            }
-          }
+        lastAssistantContent = text;
+
+        const score = scoreForNarrative(text);
+        if (score > bestScore) {
+          bestScore = score;
+          bestText = text;
         }
       } catch {
-        // Skip malformed lines
         continue;
       }
     }
 
-    if (lastAssistantContent) {
-      // Truncate to reasonable summary length (first 1500 chars)
-      const summary = lastAssistantContent.length > 1500
-        ? lastAssistantContent.substring(0, 1500) + '...'
-        : lastAssistantContent;
-      debugLog('EXTRACTED_LAST_ASSISTANT', summary.substring(0, 200));
+    // Use best-scoring message if it clears a minimum threshold
+    const chosen = bestScore >= 0.25 ? bestText : lastAssistantContent;
+
+    if (chosen) {
+      const summary = chosen.length > 1500 ? chosen.substring(0, 1500) + '...' : chosen;
+      debugLog('EXTRACTED_SUMMARY', { score: bestScore, length: summary.length, preview: summary.substring(0, 200) });
       return summary;
     }
 

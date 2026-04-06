@@ -1738,6 +1738,47 @@ function estimateTokens(text) {
 // plugin/hooks/session-end.ts
 import * as fs from "fs";
 var debugLog = createDebugLogger("stop-hook-debug.log");
+function scoreForNarrative(text) {
+  if (text.length < 50)
+    return 0;
+  const lower = text.toLowerCase().trimStart();
+  if (text.length < 200) {
+    if (/^(yes|sure|ok|okay|alright|got it|sounds good|perfect|great|done|correct|right|no problem|will do|absolutely)\b/.test(lower))
+      return 0;
+    if (/^(let me |i'll |i've |checking|looking|reading|searching)/.test(lower))
+      return 0;
+  }
+  let score = 0;
+  if (text.length >= 150)
+    score += 0.15;
+  if (text.length >= 400)
+    score += 0.1;
+  if (text.length > 3e3)
+    score -= 0.1;
+  if (/\b(implement|add|fix|update|creat|refactor|chang|remov|improv|build|replac|rewrit)\w*\b/i.test(text))
+    score += 0.2;
+  if (/\b\w+\.(ts|js|py|yaml|yml|json|md|sql)\b/.test(text))
+    score += 0.15;
+  if (text.includes("```"))
+    score += 0.1;
+  const bulletCount = (text.match(/^[-*]\s/gm) || []).length;
+  if (bulletCount >= 2)
+    score += 0.1;
+  if (text.trimEnd().endsWith("?"))
+    score -= 0.1;
+  return Math.max(0, Math.min(1, score));
+}
+function extractTextFromMessage(msg) {
+  const msgContent = msg.message?.content;
+  if (!msgContent)
+    return "";
+  if (typeof msgContent === "string")
+    return msgContent;
+  if (Array.isArray(msgContent)) {
+    return msgContent.filter((block) => block.type === "text" && block.text).map((block) => block.text).join("\n");
+  }
+  return "";
+}
 function extractSummaryFromTranscript(transcriptPath) {
   try {
     if (!fs.existsSync(transcriptPath)) {
@@ -1758,30 +1799,31 @@ function extractSummaryFromTranscript(transcriptPath) {
       }
     } catch {
     }
-    let lastAssistantContent;
-    for (let i = lines.length - 1; i >= 0; i--) {
+    let bestText = "";
+    let bestScore = -1;
+    let lastAssistantContent = "";
+    for (const rawLine of lines) {
       try {
-        const line = JSON.parse(lines[i]);
-        if (line.type === "assistant" && line.message?.role === "assistant") {
-          const msgContent = line.message.content;
-          if (typeof msgContent === "string") {
-            lastAssistantContent = msgContent;
-            break;
-          } else if (Array.isArray(msgContent)) {
-            const textBlocks = msgContent.filter((block) => block.type === "text" && block.text).map((block) => block.text).join("\n");
-            if (textBlocks) {
-              lastAssistantContent = textBlocks;
-              break;
-            }
-          }
+        const msg = JSON.parse(rawLine);
+        if (msg.type !== "assistant" || msg.message?.role !== "assistant")
+          continue;
+        const text = extractTextFromMessage(msg);
+        if (!text)
+          continue;
+        lastAssistantContent = text;
+        const score = scoreForNarrative(text);
+        if (score > bestScore) {
+          bestScore = score;
+          bestText = text;
         }
       } catch {
         continue;
       }
     }
-    if (lastAssistantContent) {
-      const summary = lastAssistantContent.length > 1500 ? lastAssistantContent.substring(0, 1500) + "..." : lastAssistantContent;
-      debugLog("EXTRACTED_LAST_ASSISTANT", summary.substring(0, 200));
+    const chosen = bestScore >= 0.25 ? bestText : lastAssistantContent;
+    if (chosen) {
+      const summary = chosen.length > 1500 ? chosen.substring(0, 1500) + "..." : chosen;
+      debugLog("EXTRACTED_SUMMARY", { score: bestScore, length: summary.length, preview: summary.substring(0, 200) });
       return summary;
     }
     debugLog("NO_ASSISTANT_MESSAGE_FOUND", { lineCount: lines.length });
