@@ -21,6 +21,12 @@ import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
 import { auditMemoryDirectories, formatAuditReport } from '../memory/audit.js';
 import { consolidateMemories, formatConsolidationReport } from '../memory/consolidate.js';
 import type { Observation, Session, Stats, UserPrompt } from '../storage/interface.js';
+import {
+  computeSessionDuration,
+  extractSessionNarrative,
+  countByImportance,
+  formatShortDate,
+} from '../utils/session-format.js';
 
 // Version injected by esbuild
 declare const PLUGIN_VERSION: string;
@@ -383,7 +389,7 @@ server.tool(
 
 server.tool(
   'context_list',
-  'List recent Claude Code session activity for a project. Use to understand what was done recently or get context on recent changes.',
+  'List recent Claude Code session activity for a project, grouped by session with summaries and importance indicators. Use to understand what was done recently or get context on recent changes.',
   {
     project: z
       .string()
@@ -391,19 +397,66 @@ server.tool(
     limit: z
       .number()
       .optional()
-      .default(20)
-      .describe('Maximum number of observations to return (default: 20)'),
+      .default(10)
+      .describe('Maximum number of sessions to return (default: 10)'),
   },
   async ({ project, limit }) => {
     const db = await getStorage();
-    const observations = await db.getRecent(project, limit);
+    const sessionsWithObs = await db.getRecentSessionsWithObservations(project, limit);
+
+    if (sessionsWithObs.length === 0) {
+      return {
+        content: [{ type: 'text' as const, text: `No sessions found for ${project}.` }],
+      };
+    }
+
+    const lines: string[] = [];
+
+    for (const { session, observations } of sessionsWithObs) {
+      const shortId = session.id.substring(0, 8);
+      const date = formatShortDate(session.started_at);
+      const duration = computeSessionDuration(session);
+      const narrative = extractSessionNarrative(session.summary);
+      const counts = countByImportance(observations);
+
+      // Session header
+      const header = narrative
+        ? `Session ${shortId} (${date}, ${duration}) — ${narrative}`
+        : `Session ${shortId} (${date}, ${duration})`;
+      lines.push(header);
+
+      // High-importance observations inline
+      const highObs = observations.filter(o => o.importance === 'high' && o.tool_name !== 'Conversation');
+      for (const obs of highObs.slice(0, 5)) {
+        const fileInfo = obs.files_touched.length > 0
+          ? ` (${obs.files_touched.map(f => f.split('/').pop()).join(', ')})`
+          : '';
+        lines.push(`  [HIGH] ${obs.tool_name}: ${obs.summary.substring(0, 80)}${fileInfo}`);
+      }
+      if (highObs.length > 5) {
+        lines.push(`  ... +${highObs.length - 5} more high-importance`);
+      }
+
+      // Conversation insights
+      const insights = observations.filter(o => o.tool_name === 'Conversation');
+      for (const ins of insights.slice(0, 3)) {
+        lines.push(`  [INSIGHT] ${ins.summary.substring(0, 80)}`);
+      }
+
+      // Collapse the rest
+      const remaining = observations.length - highObs.slice(0, 5).length - insights.slice(0, 3).length;
+      if (remaining > 0) {
+        lines.push(`  ... ${remaining} more (${counts.medium} medium, ${counts.low} low)`);
+      }
+
+      lines.push('');
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: observations.length > 0
-            ? `Recent observations for ${project}:\n\n${formatObservations(observations)}`
-            : `No observations found for ${project}.`,
+          text: `Recent sessions for ${project}:\n\n${lines.join('\n')}`,
         },
       ],
     };

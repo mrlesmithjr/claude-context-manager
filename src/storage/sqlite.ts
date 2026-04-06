@@ -1556,6 +1556,24 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   /**
+   * Get recent sessions with their observations, grouped for display.
+   */
+  async getRecentSessionsWithObservations(
+    project: string,
+    sessionLimit: number = 10
+  ): Promise<Array<{ session: Session; observations: Observation[] }>> {
+    const sessions = await this.getRecentSessions(project, sessionLimit);
+    const result: Array<{ session: Session; observations: Observation[] }> = [];
+
+    for (const session of sessions) {
+      const observations = await this.getSessionObservations(session.id);
+      result.push({ session, observations });
+    }
+
+    return result;
+  }
+
+  /**
    * Increment file encounter count and return the new count.
    * Uses upsert for atomic increment — sub-millisecond on primary key lookup.
    */

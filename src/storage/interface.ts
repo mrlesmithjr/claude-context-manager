@@ -288,6 +288,16 @@ export interface ContextStorage {
   countUnembeddedSessions(project?: string): number;
 
   /**
+   * Get recent sessions with their observations, grouped for display.
+   * @param project - Project path
+   * @param sessionLimit - Maximum number of sessions (default: 10)
+   */
+  getRecentSessionsWithObservations(
+    project: string,
+    sessionLimit?: number
+  ): Promise<Array<{ session: Session; observations: Observation[] }>>;
+
+  /**
    * Increment file encounter count and return the new count.
    * Used for surprise scoring — first encounters get boosted importance.
    */

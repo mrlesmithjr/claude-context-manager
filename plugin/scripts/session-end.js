@@ -1157,6 +1157,18 @@ var SQLiteStorage = class {
     return rows.map((row) => this.mapRow(row));
   }
   /**
+   * Get recent sessions with their observations, grouped for display.
+   */
+  async getRecentSessionsWithObservations(project, sessionLimit = 10) {
+    const sessions = await this.getRecentSessions(project, sessionLimit);
+    const result = [];
+    for (const session of sessions) {
+      const observations = await this.getSessionObservations(session.id);
+      result.push({ session, observations });
+    }
+    return result;
+  }
+  /**
    * Increment file encounter count and return the new count.
    * Uses upsert for atomic increment — sub-millisecond on primary key lookup.
    */
@@ -1360,6 +1372,45 @@ function convertPathToDashed(projectPath) {
   return projectPath.replace(/\//g, "-");
 }
 
+// src/utils/session-format.ts
+function computeSessionDuration(session) {
+  if (!session.ended_at)
+    return "active";
+  const start = new Date(session.started_at).getTime();
+  const end = new Date(session.ended_at).getTime();
+  if (isNaN(start) || isNaN(end) || end <= start)
+    return "unknown";
+  const minutes = Math.round((end - start) / 6e4);
+  if (minutes < 1)
+    return "<1m";
+  if (minutes < 60)
+    return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remaining = minutes % 60;
+  return remaining > 0 ? `${hours}h ${remaining}m` : `${hours}h`;
+}
+function extractSessionNarrative(summary, maxLen = 120) {
+  if (!summary || summary.length < 10)
+    return "";
+  let text = summary.replace(/\*\*/g, "").replace(/`/g, "").trim();
+  const sentenceEnd = text.search(/[.!?\n]/);
+  if (sentenceEnd > 0 && sentenceEnd < maxLen) {
+    text = text.substring(0, sentenceEnd + 1);
+  } else if (text.length > maxLen) {
+    text = text.substring(0, maxLen).replace(/\s+\S*$/, "") + "...";
+  }
+  if (text.match(/^(Let me|I'll|Here's the|Looking at|No response|Checking)/i)) {
+    const afterFiller = summary.indexOf("\n");
+    if (afterFiller > 0 && afterFiller < 200) {
+      const next = summary.substring(afterFiller + 1).trim();
+      if (next.length > 10) {
+        return extractSessionNarrative(next, maxLen);
+      }
+    }
+  }
+  return text;
+}
+
 // src/export/memory.ts
 var TOPIC_FILE = "context-manager-activity.md";
 var DEFAULT_MAX_LINES = 150;
@@ -1371,12 +1422,10 @@ function resolveMemoryDir(projectPath) {
 function formatObservationsForMemory(observations, sessions) {
   if (observations.length === 0)
     return "";
-  const sessionSummaries = /* @__PURE__ */ new Map();
+  const sessionLookup = /* @__PURE__ */ new Map();
   if (sessions) {
     for (const s of sessions) {
-      if (s.summary && s.summary.length > 10) {
-        sessionSummaries.set(s.id, s.summary);
-      }
+      sessionLookup.set(s.id, s);
     }
   }
   const byDate = /* @__PURE__ */ new Map();
@@ -1394,7 +1443,7 @@ function formatObservationsForMemory(observations, sessions) {
     lines.push(`## ${date}`);
     lines.push("");
     for (const [sessionId, sessionObs] of sessionMap) {
-      const block = formatSessionBlock(sessionId, sessionObs, sessionSummaries.get(sessionId));
+      const block = formatSessionBlock(sessionObs, sessionLookup.get(sessionId));
       if (block) {
         lines.push(block);
         lines.push("");
@@ -1403,13 +1452,22 @@ function formatObservationsForMemory(observations, sessions) {
   }
   return lines.join("\n");
 }
-function formatSessionBlock(sessionId, observations, sessionSummary) {
+function formatSessionBlock(observations, session) {
+  const sessionId = observations[0]?.session_id || "unknown";
   const shortId = sessionId.substring(0, 8);
-  const heading = sessionSummary ? `### ${shortId} \u2014 ${extractSessionTitle(sessionSummary)}` : `### ${shortId}`;
+  let heading;
+  if (session) {
+    const duration = computeSessionDuration(session);
+    heading = `### Session ${shortId} (${duration}, ${observations.length} actions)`;
+  } else {
+    heading = `### ${shortId}`;
+  }
+  const narrative = session ? extractSessionNarrative(session.summary) : "";
   const created = [];
   const edited = /* @__PURE__ */ new Map();
   const commits = [];
   const commands = [];
+  const insights = [];
   for (const obs of observations) {
     const file = obs.files_touched[0] || "";
     const shortFile = file ? file.split("/").slice(-2).join("/") : "";
@@ -1435,6 +1493,13 @@ function formatSessionBlock(sessionId, observations, sessionSummary) {
           commands.push("Install dependencies");
         } else if (obs.summary.includes("npm run test") || obs.summary.includes("npm test")) {
           commands.push("Tests");
+        }
+        break;
+      }
+      case "Conversation": {
+        const insightText = obs.summary.substring(0, 80);
+        if (insightText.length > 5) {
+          insights.push(insightText);
         }
         break;
       }
@@ -1468,28 +1533,22 @@ function formatSessionBlock(sessionId, observations, sessionSummary) {
   if (uniqueCommands.length > 0) {
     items.push(uniqueCommands.join(", "));
   }
+  for (const insight of insights.slice(0, 2)) {
+    items.push(`Key insight: ${insight}`);
+  }
   const cappedItems = items.slice(0, MAX_ITEMS_PER_SESSION);
   if (items.length > MAX_ITEMS_PER_SESSION) {
     cappedItems.push(`+ ${items.length - MAX_ITEMS_PER_SESSION} more changes`);
   }
-  if (cappedItems.length === 0)
+  if (cappedItems.length === 0 && !narrative)
     return "";
   const itemLines = cappedItems.map((item) => `- ${item}`).join("\n");
-  return `${heading}
-${itemLines}`;
-}
-function extractSessionTitle(summary) {
-  let text = summary.replace(/\*\*/g, "").replace(/`/g, "").trim();
-  const sentenceEnd = text.search(/[.!?\n]/);
-  if (sentenceEnd > 0 && sentenceEnd < 120) {
-    text = text.substring(0, sentenceEnd);
-  } else if (text.length > 80) {
-    text = text.substring(0, 80).replace(/\s+\S*$/, "");
-  }
-  if (text.match(/^(Let me|I'll|Here's the|Looking at|No response|Checking)/i)) {
-    return text.substring(0, 60);
-  }
-  return text;
+  const parts = [heading];
+  if (narrative)
+    parts.push(narrative);
+  if (itemLines)
+    parts.push(itemLines);
+  return parts.join("\n");
 }
 function describeEdit(obs) {
   const toolInput = obs.metadata?.tool_input;
@@ -1591,7 +1650,7 @@ function parseSessionBlocks(body) {
       if (currentBlock)
         blocks.push(currentBlock);
       const headingText = line.substring(4).trim();
-      const sessionId = headingText.split(/[\s—]/)[0] || headingText;
+      const sessionId = headingText.replace(/^Session\s+/, "").split(/[\s—(]/)[0] || headingText;
       currentBlock = {
         date: currentDate,
         sessionId,

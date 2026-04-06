@@ -1157,6 +1157,18 @@ var SQLiteStorage = class {
     return rows.map((row) => this.mapRow(row));
   }
   /**
+   * Get recent sessions with their observations, grouped for display.
+   */
+  async getRecentSessionsWithObservations(project, sessionLimit = 10) {
+    const sessions = await this.getRecentSessions(project, sessionLimit);
+    const result = [];
+    for (const session of sessions) {
+      const observations = await this.getSessionObservations(session.id);
+      result.push({ session, observations });
+    }
+    return result;
+  }
+  /**
    * Increment file encounter count and return the new count.
    * Uses upsert for atomic increment — sub-millisecond on primary key lookup.
    */
@@ -1349,11 +1361,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.7.2") {
+    if (installedVersion !== "0.8.0") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.7.2"}
+   Source:    v${"0.8.0"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1384,7 +1396,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.7.2"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.0"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     const context = lines.join("\n");
     console.error(`[context-manager] ${count} observations tracked, activity exported to auto-memory`);

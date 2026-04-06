@@ -18,6 +18,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { convertPathToDashed } from '../utils/transcript.js';
+import { computeSessionDuration, extractSessionNarrative } from '../utils/session-format.js';
 import type { Observation, Session, ContextStorage } from '../storage/interface.js';
 
 const TOPIC_FILE = 'context-manager-activity.md';
@@ -43,13 +44,11 @@ export function formatObservationsForMemory(
 ): string {
   if (observations.length === 0) return '';
 
-  // Build session summary lookup
-  const sessionSummaries = new Map<string, string>();
+  // Build session lookup
+  const sessionLookup = new Map<string, Session>();
   if (sessions) {
     for (const s of sessions) {
-      if (s.summary && s.summary.length > 10) {
-        sessionSummaries.set(s.id, s.summary);
-      }
+      sessionLookup.set(s.id, s);
     }
   }
 
@@ -71,7 +70,7 @@ export function formatObservationsForMemory(
     lines.push('');
 
     for (const [sessionId, sessionObs] of sessionMap) {
-      const block = formatSessionBlock(sessionId, sessionObs, sessionSummaries.get(sessionId));
+      const block = formatSessionBlock(sessionObs, sessionLookup.get(sessionId));
       if (block) {
         lines.push(block);
         lines.push('');
@@ -86,22 +85,30 @@ export function formatObservationsForMemory(
  * Format a single session's observations as a compact block.
  */
 function formatSessionBlock(
-  sessionId: string,
   observations: Observation[],
-  sessionSummary?: string
+  session?: Session
 ): string {
+  const sessionId = observations[0]?.session_id || 'unknown';
   const shortId = sessionId.substring(0, 8);
 
-  // Build session heading with summary if available
-  const heading = sessionSummary
-    ? `### ${shortId} — ${extractSessionTitle(sessionSummary)}`
-    : `### ${shortId}`;
+  // Build session heading with duration and action count
+  let heading: string;
+  if (session) {
+    const duration = computeSessionDuration(session);
+    heading = `### Session ${shortId} (${duration}, ${observations.length} actions)`;
+  } else {
+    heading = `### ${shortId}`;
+  }
+
+  // Narrative summary line (not a bullet — plain text under heading)
+  const narrative = session ? extractSessionNarrative(session.summary) : '';
 
   // Categorize observations
   const created: string[] = [];
   const edited = new Map<string, string[]>(); // file → descriptions
   const commits: string[] = [];
   const commands: string[] = [];
+  const insights: string[] = [];
 
   for (const obs of observations) {
     const file = obs.files_touched[0] || '';
@@ -131,6 +138,14 @@ function formatSessionBlock(
           commands.push('Tests');
         }
         // Deliberately skip: npm run build, npm version — these are routine noise
+        break;
+      }
+      case 'Conversation': {
+        // High-signal conversation insights extracted by session-end hook
+        const insightText = obs.summary.substring(0, 80);
+        if (insightText.length > 5) {
+          insights.push(insightText);
+        }
         break;
       }
       default:
@@ -179,6 +194,11 @@ function formatSessionBlock(
     items.push(uniqueCommands.join(', '));
   }
 
+  // Conversation insights (cap at 2 to stay within budget)
+  for (const insight of insights.slice(0, 2)) {
+    items.push(`Key insight: ${insight}`);
+  }
+
   // Cap items per session
   const cappedItems = items.slice(0, MAX_ITEMS_PER_SESSION);
   if (items.length > MAX_ITEMS_PER_SESSION) {
@@ -186,10 +206,13 @@ function formatSessionBlock(
   }
 
   // If all items were filtered out, skip this session entirely
-  if (cappedItems.length === 0) return '';
+  if (cappedItems.length === 0 && !narrative) return '';
 
   const itemLines = cappedItems.map(item => `- ${item}`).join('\n');
-  return `${heading}\n${itemLines}`;
+  const parts = [heading];
+  if (narrative) parts.push(narrative);
+  if (itemLines) parts.push(itemLines);
+  return parts.join('\n');
 }
 
 /**
@@ -370,9 +393,9 @@ function parseSessionBlocks(body: string): SessionBlock[] {
       currentDate = line.substring(3).trim();
     } else if (line.startsWith('### ')) {
       if (currentBlock) blocks.push(currentBlock);
-      // Extract session ID (first 8 chars after ###)
+      // Extract session ID — handle both old format (### {id}) and new (### Session {id} (...))
       const headingText = line.substring(4).trim();
-      const sessionId = headingText.split(/[\s—]/)[0] || headingText;
+      const sessionId = headingText.replace(/^Session\s+/, '').split(/[\s—(]/)[0] || headingText;
       currentBlock = {
         date: currentDate,
         sessionId,

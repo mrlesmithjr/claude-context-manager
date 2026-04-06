@@ -1157,6 +1157,18 @@ var SQLiteStorage = class {
     return rows.map((row) => this.mapRow(row));
   }
   /**
+   * Get recent sessions with their observations, grouped for display.
+   */
+  async getRecentSessionsWithObservations(project, sessionLimit = 10) {
+    const sessions = await this.getRecentSessions(project, sessionLimit);
+    const result = [];
+    for (const session of sessions) {
+      const observations = await this.getSessionObservations(session.id);
+      result.push({ session, observations });
+    }
+    return result;
+  }
+  /**
    * Increment file encounter count and return the new count.
    * Uses upsert for atomic increment — sub-millisecond on primary key lookup.
    */
