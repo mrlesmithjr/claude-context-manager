@@ -406,8 +406,18 @@ async function main() {
           input.session_id,
           input.cwd
         );
+        // Deduplicate: skip insights that already exist in this session
+        // (Stop hook can fire multiple times for the same session on restart)
+        const existingObs = await storage.getSessionObservations(input.session_id);
+        const existingSummaries = new Set(
+          existingObs
+            .filter(o => o.tool_name === 'Conversation')
+            .map(o => o.summary)
+        );
         for (const insight of insights) {
-          await storage.save(insight);
+          if (!existingSummaries.has(insight.summary)) {
+            await storage.save(insight);
+          }
         }
         if (insights.length > 0) {
           debugLog('CONVERSATION_INSIGHTS', { count: insights.length });
