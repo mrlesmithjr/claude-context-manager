@@ -47,6 +47,11 @@ function shouldUseReducedLimits(toolName: string, toolInput?: unknown): boolean 
     return true;
   }
 
+  // sqlite3 queries - diagnostic, run-once, low cross-session value
+  if (command.includes('sqlite3')) {
+    return true;
+  }
+
   // ssh commands with log/cat output - verbose, low cross-session value
   if (command.startsWith('ssh ') && (command.includes(' cat ') || command.includes(' logs '))) {
     return true;
@@ -59,6 +64,16 @@ function shouldUseReducedLimits(toolName: string, toolInput?: unknown): boolean 
 
   // npm/node commands with verbose output
   if (command.includes('npm run') && (command.includes('test') || command.includes('build'))) {
+    return true;
+  }
+
+  // filesystem inspection - ephemeral, no cross-session value
+  if (/^(ls|du|df|wc|find)\s/.test(command) || command === 'ls' || command === 'du' || command === 'df') {
+    return true;
+  }
+
+  // one-off python scripts - usually diagnostic
+  if (/^python3?\s+-c\s+/.test(command)) {
     return true;
   }
 
@@ -551,6 +566,18 @@ export function calculateImportance(
       // cat/head/tail via Bash (if they made it through filters)
       else if (/^(cat|head|tail)\s+/.test(command)) {
         score = 0.20;
+      }
+      // Filesystem inspection - ephemeral, no cross-session value
+      else if (/^(ls|du|df|wc|find)\s/.test(command) || /^(ls|du|df)$/.test(command)) {
+        score = 0.20;
+      }
+      // sqlite3 / psql queries - diagnostic, run-once
+      else if (command.includes('sqlite3') || command.includes('psql')) {
+        score = 0.35;
+      }
+      // One-off python scripts - usually diagnostic
+      else if (/^python3?\s+-c\s+/.test(command)) {
+        score = 0.30;
       }
       // General Bash
       else {
