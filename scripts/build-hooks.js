@@ -11,7 +11,7 @@
  */
 
 import { build } from 'esbuild';
-import { readFileSync, existsSync, mkdirSync, cpSync, rmSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -26,6 +26,15 @@ const packageJson = JSON.parse(
 const VERSION = packageJson.version;
 
 console.log(`[build-hooks] Building hooks with version: ${VERSION}`);
+
+// Sync version into plugin/.claude-plugin/plugin.json
+const pluginJsonPath = join(PROJECT_ROOT, 'plugin', '.claude-plugin', 'plugin.json');
+const pluginJson = JSON.parse(readFileSync(pluginJsonPath, 'utf-8'));
+if (pluginJson.version !== VERSION) {
+  pluginJson.version = VERSION;
+  writeFileSync(pluginJsonPath, JSON.stringify(pluginJson, null, 2) + '\n');
+  console.log(`[build-hooks] Updated plugin.json version to ${VERSION}`);
+}
 
 // Copy better-sqlite3 and its runtime dependencies into plugin/node_modules/
 // so the plugin is self-contained when installed to Claude Code's plugin cache.
