@@ -145,6 +145,24 @@ export interface ContextStorage {
   }>;
 
   /**
+   * Targeted pruning of observations by tool name, importance, and/or age.
+   * Safer than vacuum — filters precisely rather than deleting by age alone.
+   * Requires at least one filter; returns 0 if none are provided.
+   *
+   * @param options.toolName - Filter by tool name (e.g., "Bash", "Read")
+   * @param options.importance - Filter by importance level ("high" | "medium" | "low")
+   * @param options.olderThanDays - Only prune observations older than this many days
+   * @param options.dryRun - Preview count and samples without deleting (default: false)
+   * @returns Count of deleted (or matching, if dry run) observations and optional samples
+   */
+  prune(options: {
+    toolName?: string;
+    importance?: ImportanceLevel;
+    olderThanDays?: number;
+    dryRun?: boolean;
+  }): Promise<{ deleted: number; preview?: string[] }>;
+
+  /**
    * Save a user prompt
    */
   saveUserPrompt(prompt: Omit<UserPrompt, 'id'>): Promise<void>;

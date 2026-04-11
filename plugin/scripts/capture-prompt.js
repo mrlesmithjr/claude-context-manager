@@ -564,6 +564,49 @@ var SQLiteStorage = class {
       compacted_originals: compactionResult.originals
     };
   }
+  async prune(options) {
+    const { toolName, importance, olderThanDays, dryRun = false } = options;
+    const conditions = [];
+    const params = [];
+    if (olderThanDays !== void 0) {
+      const cutoff = /* @__PURE__ */ new Date();
+      cutoff.setDate(cutoff.getDate() - olderThanDays);
+      conditions.push("created_at < ?");
+      params.push(cutoff.toISOString());
+    }
+    if (toolName) {
+      conditions.push("tool_name = ?");
+      params.push(toolName);
+    }
+    if (importance) {
+      conditions.push("importance = ?");
+      params.push(importance);
+    }
+    if (conditions.length === 0) {
+      return { deleted: 0 };
+    }
+    const where = `WHERE ${conditions.join(" AND ")}`;
+    if (dryRun) {
+      const total = this.db.prepare(`SELECT COUNT(*) as cnt FROM observations ${where}`).get(...params).cnt;
+      const rows = this.db.prepare(
+        `SELECT tool_name, importance, summary FROM observations ${where} ORDER BY created_at DESC LIMIT 5`
+      ).all(...params);
+      const preview = rows.map((r) => `[${r.importance}] ${r.tool_name}: ${r.summary.slice(0, 80)}`);
+      return { deleted: total, preview };
+    }
+    const ids = this.db.prepare(`SELECT id FROM observations ${where}`).all(...params).map((r) => r.id);
+    if (ids.length === 0) {
+      return { deleted: 0 };
+    }
+    if (this.vecEnabled) {
+      const idJson = JSON.stringify(ids);
+      this.db.prepare(
+        `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
+      ).run(idJson);
+    }
+    const result = this.db.prepare(`DELETE FROM observations ${where}`).run(...params);
+    return { deleted: result.changes };
+  }
   async saveUserPrompt(prompt) {
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts (

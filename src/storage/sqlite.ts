@@ -782,6 +782,78 @@ export class SQLiteStorage implements ContextStorage {
     };
   }
 
+  async prune(options: {
+    toolName?: string;
+    importance?: ImportanceLevel;
+    olderThanDays?: number;
+    dryRun?: boolean;
+  }): Promise<{ deleted: number; preview?: string[] }> {
+    const { toolName, importance, olderThanDays, dryRun = false } = options;
+
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (olderThanDays !== undefined) {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - olderThanDays);
+      conditions.push('created_at < ?');
+      params.push(cutoff.toISOString());
+    }
+    if (toolName) {
+      conditions.push('tool_name = ?');
+      params.push(toolName);
+    }
+    if (importance) {
+      conditions.push('importance = ?');
+      params.push(importance);
+    }
+
+    // Require at least one filter — prevent accidental full wipe
+    if (conditions.length === 0) {
+      return { deleted: 0 };
+    }
+
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    if (dryRun) {
+      const total = (
+        this.db.prepare(`SELECT COUNT(*) as cnt FROM observations ${where}`).get(...params) as {
+          cnt: number;
+        }
+      ).cnt;
+      const rows = this.db
+        .prepare(
+          `SELECT tool_name, importance, summary FROM observations ${where} ORDER BY created_at DESC LIMIT 5`
+        )
+        .all(...params) as Array<{ tool_name: string; importance: string; summary: string }>;
+      const preview = rows.map(r => `[${r.importance}] ${r.tool_name}: ${r.summary.slice(0, 80)}`);
+      return { deleted: total, preview };
+    }
+
+    // Collect IDs first so we can clean up vec_observations (vec0 does not cascade)
+    const ids = (
+      this.db
+        .prepare(`SELECT id FROM observations ${where}`)
+        .all(...params) as Array<{ id: number }>
+    ).map(r => r.id);
+
+    if (ids.length === 0) {
+      return { deleted: 0 };
+    }
+
+    if (this.vecEnabled) {
+      const idJson = JSON.stringify(ids);
+      this.db
+        .prepare(
+          `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
+        )
+        .run(idJson);
+    }
+
+    const result = this.db.prepare(`DELETE FROM observations ${where}`).run(...params);
+    return { deleted: result.changes };
+  }
+
   async saveUserPrompt(prompt: Omit<UserPrompt, 'id'>): Promise<void> {
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts (

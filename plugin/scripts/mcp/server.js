@@ -30652,6 +30652,49 @@ var SQLiteStorage = class {
       compacted_originals: compactionResult.originals
     };
   }
+  async prune(options) {
+    const { toolName, importance, olderThanDays, dryRun = false } = options;
+    const conditions = [];
+    const params = [];
+    if (olderThanDays !== void 0) {
+      const cutoff = /* @__PURE__ */ new Date();
+      cutoff.setDate(cutoff.getDate() - olderThanDays);
+      conditions.push("created_at < ?");
+      params.push(cutoff.toISOString());
+    }
+    if (toolName) {
+      conditions.push("tool_name = ?");
+      params.push(toolName);
+    }
+    if (importance) {
+      conditions.push("importance = ?");
+      params.push(importance);
+    }
+    if (conditions.length === 0) {
+      return { deleted: 0 };
+    }
+    const where = `WHERE ${conditions.join(" AND ")}`;
+    if (dryRun) {
+      const total = this.db.prepare(`SELECT COUNT(*) as cnt FROM observations ${where}`).get(...params).cnt;
+      const rows = this.db.prepare(
+        `SELECT tool_name, importance, summary FROM observations ${where} ORDER BY created_at DESC LIMIT 5`
+      ).all(...params);
+      const preview = rows.map((r) => `[${r.importance}] ${r.tool_name}: ${r.summary.slice(0, 80)}`);
+      return { deleted: total, preview };
+    }
+    const ids = this.db.prepare(`SELECT id FROM observations ${where}`).all(...params).map((r) => r.id);
+    if (ids.length === 0) {
+      return { deleted: 0 };
+    }
+    if (this.vecEnabled) {
+      const idJson = JSON.stringify(ids);
+      this.db.prepare(
+        `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
+      ).run(idJson);
+    }
+    const result = this.db.prepare(`DELETE FROM observations ${where}`).run(...params);
+    return { deleted: result.changes };
+  }
   async saveUserPrompt(prompt) {
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts (
@@ -32463,10 +32506,10 @@ function formatConsolidationReport(report) {
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.8.3" : "0.5.0"
+    version: true ? "0.8.5" : "0.5.0"
   },
   {
-    instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery."
+    instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age \u2014 always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
   }
 );
 var storage = null;
@@ -32903,6 +32946,63 @@ server.tool(
         {
           type: "text",
           text: lines.join("\n")
+        }
+      ]
+    };
+  }
+);
+server.tool(
+  "context_prune",
+  "Targeted pruning of observations by tool name, importance, and/or age. Safer than context_vacuum \u2014 filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required.",
+  {
+    tool_name: external_exports3.string().optional().describe('Delete observations from this tool (e.g., "Bash", "Read", "Grep")'),
+    importance: external_exports3.enum(["high", "medium", "low"]).optional().describe('Delete observations at this importance level (e.g., "low")'),
+    older_than_days: external_exports3.number().optional().describe("Only delete observations older than this many days"),
+    dry_run: external_exports3.boolean().optional().describe(
+      "Preview count and sample observations without deleting. Default: false. Always run dry_run=true first."
+    )
+  },
+  async ({ tool_name, importance, older_than_days, dry_run }) => {
+    if (!tool_name && !importance && older_than_days === void 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "At least one filter (tool_name, importance, or older_than_days) is required."
+          }
+        ]
+      };
+    }
+    const db = await getStorage();
+    const result = await db.prune({
+      toolName: tool_name,
+      importance,
+      olderThanDays: older_than_days,
+      dryRun: dry_run
+    });
+    const filters = [
+      tool_name && `tool="${tool_name}"`,
+      importance && `importance="${importance}"`,
+      older_than_days !== void 0 && `older_than=${older_than_days}d`
+    ].filter(Boolean).join(", ");
+    if (dry_run) {
+      const sampleLines = result.preview?.map((p) => `  \u2022 ${p}`).join("\n") ?? "";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `DRY RUN \u2014 would delete ${result.deleted} observations [${filters}].
+Sample (up to 5):
+${sampleLines}`
+          }
+        ]
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Deleted ${result.deleted} observations [${filters}].`
         }
       ]
     };

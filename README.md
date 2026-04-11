@@ -320,7 +320,8 @@ Once installed, these tools are available to Claude Code via MCP:
 | `context_search` | Search observations and user prompts (FTS5 keyword, auto-falls back to semantic) |
 | `context_semantic_search` | Search sessions by meaning (vector similarity, enriched text) |
 | `context_embed` | Generate vector embeddings for observations and sessions |
-| `context_vacuum` | Clean up old data |
+| `context_vacuum` | Delete observations by age and run compaction/optimization |
+| `context_prune` | Targeted pruning by tool name, importance, and/or age — use `dry_run=true` first |
 | `context_export` | Export to auto-memory |
 | `context_memory_audit` | Scan for orphaned memory directories when launch point changes |
 | `context_memory_consolidate` | Migrate orphaned memories to parent project (dry-run by default) |
@@ -419,6 +420,34 @@ context_semantic_search "database fix" --scope observations
 - FTS5 keyword search (`context_search`) always works independently — embeddings are optional
 - All features work normally even if embedding setup hasn't been run
 - All processing is local — no external APIs, no data leaves your machine
+
+### Targeted Pruning
+
+`context_vacuum` deletes all observations older than N days. `context_prune` lets you target specific noise — by tool name, importance level, and/or age — without touching unrelated observations.
+
+**Always run `dry_run=true` first:**
+```
+# Preview: how many low-importance Bash observations older than 30 days would be deleted?
+context_prune tool_name="Bash" importance="low" older_than_days=30 dry_run=true
+
+# Same query, actually delete:
+context_prune tool_name="Bash" importance="low" older_than_days=30
+```
+
+**Filter options (at least one required):**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tool_name` | string | Tool to target: `"Bash"`, `"Read"`, `"Grep"`, etc. |
+| `importance` | `"high"` \| `"medium"` \| `"low"` | Importance level to delete |
+| `older_than_days` | number | Only delete observations older than N days |
+| `dry_run` | boolean | Preview without deleting (default: `false`) |
+
+**Notes:**
+- At least one filter is required — calling with no filters returns 0 and does nothing.
+- `dry_run=true` returns total count plus a sample of up to 5 matching observations.
+- High-importance observations can be deleted by explicitly passing `importance="high"` — there is no guard beyond requiring a filter. Use `dry_run=true` to confirm before running.
+- Vector embeddings (`vec_observations`) are cleaned up along with deleted observations. FTS5 and relationship edges cascade automatically.
 
 ### Memory Audit & Consolidation
 

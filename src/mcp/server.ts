@@ -20,7 +20,7 @@ import { getEmbeddingService } from '../embedding/service.js';
 import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
 import { auditMemoryDirectories, formatAuditReport } from '../memory/audit.js';
 import { consolidateMemories, formatConsolidationReport } from '../memory/consolidate.js';
-import type { Observation, Session, Stats, UserPrompt } from '../storage/interface.js';
+import type { ImportanceLevel, Observation, Session, Stats, UserPrompt } from '../storage/interface.js';
 import {
   computeSessionDuration,
   extractSessionNarrative,
@@ -39,7 +39,8 @@ const server = new McpServer(
   {
     instructions:
       'Check context_list at session start to load relevant prior context. ' +
-      'Use context_search for targeted lookups and context_semantic_search for broader discovery.',
+      'Use context_search for targeted lookups and context_semantic_search for broader discovery. ' +
+      'Use context_prune for targeted cleanup by tool_name, importance, or age — always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe.',
   },
 );
 
@@ -599,6 +600,80 @@ server.tool(
         {
           type: 'text' as const,
           text: lines.join('\n'),
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
+  'context_prune',
+  'Targeted pruning of observations by tool name, importance, and/or age. Safer than context_vacuum — filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required.',
+  {
+    tool_name: z
+      .string()
+      .optional()
+      .describe('Delete observations from this tool (e.g., "Bash", "Read", "Grep")'),
+    importance: z
+      .enum(['high', 'medium', 'low'])
+      .optional()
+      .describe('Delete observations at this importance level (e.g., "low")'),
+    older_than_days: z
+      .number()
+      .optional()
+      .describe('Only delete observations older than this many days'),
+    dry_run: z
+      .boolean()
+      .optional()
+      .describe(
+        'Preview count and sample observations without deleting. Default: false. Always run dry_run=true first.'
+      ),
+  },
+  async ({ tool_name, importance, older_than_days, dry_run }) => {
+    if (!tool_name && !importance && older_than_days === undefined) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'At least one filter (tool_name, importance, or older_than_days) is required.',
+          },
+        ],
+      };
+    }
+
+    const db = await getStorage();
+    const result = await db.prune({
+      toolName: tool_name,
+      importance: importance as ImportanceLevel | undefined,
+      olderThanDays: older_than_days,
+      dryRun: dry_run,
+    });
+
+    const filters = [
+      tool_name && `tool="${tool_name}"`,
+      importance && `importance="${importance}"`,
+      older_than_days !== undefined && `older_than=${older_than_days}d`,
+    ]
+      .filter(Boolean)
+      .join(', ');
+
+    if (dry_run) {
+      const sampleLines = result.preview?.map(p => `  • ${p}`).join('\n') ?? '';
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `DRY RUN — would delete ${result.deleted} observations [${filters}].\nSample (up to 5):\n${sampleLines}`,
+          },
+        ],
+      };
+    }
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Deleted ${result.deleted} observations [${filters}].`,
         },
       ],
     };
