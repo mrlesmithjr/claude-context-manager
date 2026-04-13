@@ -2,7 +2,7 @@
 
 ## Status
 
-**Implemented** (v0.3.0+)
+**Implemented** (v0.3.0+, current as of v0.8.6)
 
 ---
 
@@ -67,47 +67,23 @@ Implement a lightweight local web dashboard using:
 
 ### System Overview
 
-```
-+------------------------------------------------------------------+
-|                        User Browser                               |
-|  (http://localhost:3847)                                         |
-+------------------------------------------------------------------+
-                              |
-                              | HTTP
-                              v
-+------------------------------------------------------------------+
-|                      Web Server Layer                             |
-|                       (Fastify)                                   |
-+------------------------------------------------------------------+
-|  /api/sessions    GET     - List sessions with filters           |
-|  /api/sessions/:id GET    - Get session detail with observations |
-|  /api/observations GET    - Search/list observations             |
-|  /api/stats       GET     - Get statistics                       |
-|  /api/stats/timeline GET  - Token usage over time                |
-|  /api/projects    GET     - List unique projects                 |
-|  /                GET     - Serve SPA (static files)             |
-+------------------------------------------------------------------+
-                              |
-                              | Direct Access
-                              v
-+------------------------------------------------------------------+
-|                     Storage Layer                                 |
-|            (src/storage/sqlite.ts - REUSE EXISTING)              |
-+------------------------------------------------------------------+
-|  SQLiteStorage class                                             |
-|  - getRecentSessions()                                           |
-|  - getRecent()                                                   |
-|  - search()                                                      |
-|  - getStats()                                                    |
-|  + NEW: getTimeline() - aggregate by day/week                    |
-|  + NEW: getProjects() - distinct project list                    |
-+------------------------------------------------------------------+
-                              |
-                              v
-+------------------------------------------------------------------+
-|                    SQLite Database                                |
-|              ~/.claude-context/context.db                        |
-+------------------------------------------------------------------+
+```mermaid
+flowchart TD
+    B[/"User Browser\nlocalhost:3847"/]
+
+    subgraph WS["Web Server (Fastify)"]
+        API["GET /api/sessions\nGET /api/sessions/:id\nGET /api/observations\nGET /api/stats\nGET /api/stats/timeline\nGET /api/projects\nGET / — SPA"]
+    end
+
+    subgraph SL["Storage Layer (src/storage/sqlite.ts)"]
+        ST["SQLiteStorage\ngetRecentSessions · getRecent · search\ngetStats · getTimeline · getProjects"]
+    end
+
+    DB[("SQLite\n~/.claude-context/context.db")]
+
+    B -->|HTTP| WS
+    WS -->|Direct access| SL
+    SL --> DB
 ```
 
 ### Directory Structure
