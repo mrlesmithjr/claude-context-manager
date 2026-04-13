@@ -421,133 +421,67 @@ END;
 
 ### Capture Flow (PostToolUse)
 
-```
-Claude Code executes tool
-         |
-         v
-+-------------------------+
-| PostToolUse Hook        |
-| (capture-tool.ts)       |
-+-------------------------+
-| 1. Parse stdin JSON     |
-| 2. Validate input       |
-| 3. Check skip filters   |
-+-------------------------+
-         |
-         v
-+-------------------------+
-| Capture Processor       |
-| (processor.ts)          |
-+-------------------------+
-| 1. Sanitize response    |
-| 2. Generate summary     |
-| 3. Extract files        |
-| 4. Estimate tokens      |
-| 5. Score importance     |
-|    (calculateImportance)|
-| 6. Infer domain tags    |
-|    (inferTags) v0.8.6   |
-+-------------------------+
-         |
-         v
-+-------------------------+
-| Surprise Scoring        |
-| (capture-tool.ts)       |
-+-------------------------+
-| For each file touched:  |
-| - Increment encounter   |
-|   count in DB           |
-| - Adjust importance:    |
-|   1st time: +0.15       |
-|   2-3 times: +0.05      |
-|   11+ times: -0.10      |
-| - Cap: [-0.15, +0.20]   |
-+-------------------------+
-         |
-         v (direct SQLite)
-+-------------------------+
-| SQLiteStorage           |
-+-------------------------+
-| 1. Deduplication check  |
-| 2. INSERT with          |
-|    importance +         |
-|    importance_score +   |
-|    tags                 |
-| 3. FTS trigger fires    |
-| 4. Infer relationships: |
-|    - followed_by (prev  |
-|      obs in session)    |
-|    - same_file (recent  |
-|      obs touching same  |
-|      files, 24h window) |
-+-------------------------+
+```mermaid
+flowchart TD
+    T([tool executes]) --> H["PostToolUse Hook\ncapture-tool.ts"]
+    H --> V{valid &\ncapturable?}
+    V -->|no| SK([skip])
+    V -->|yes| P["Capture Processor\nprocessor.ts"]
+
+    P --> P1[sanitize response]
+    P --> P2[generate summary]
+    P --> P3[extract files_touched]
+    P --> P4[estimate tokens]
+    P --> P5["calculateImportance()"]
+    P --> P6["inferTags()  v0.8.6"]
+
+    P1 & P2 & P3 & P4 & P5 & P6 --> SUR["Surprise Scoring\ncapture-tool.ts"]
+    SUR --> FE["incrementFileEncounter()\n7-day windowed count"]
+    FE --> ADJ["adjust importance_score\ncap −0.15 to +0.20"]
+
+    ADJ --> DB["SQLiteStorage.save()"]
+    DB --> DED{duplicate\nwithin window?}
+    DED -->|yes| SK2([skip])
+    DED -->|no| INS["INSERT observation\nimportance · tags · score"]
+    INS --> FTS[FTS5 trigger]
+    INS --> REL["inferRelationships()\nfollowed_by · same_file"]
+    FTS & REL --> DONE([captured])
 ```
 
-### Injection Flow (SessionStart) — v0.4.0
+### Injection Flow (SessionStart)
 
-```
-New Claude Code session
-         |
-         v
-+-------------------------------+
-| SessionStart Hook             |
-| (context-inject.ts)           |
-+-------------------------------+
-| 1. Parse stdin JSON           |
-| 2. Create session record      |
-| 3. Count observations         |
-| 4. Build status hint          |
-+-------------------------------+
-         |
-         v (stdout, ~30 tokens)
-{ hookSpecificOutput: {
-    additionalContext: "context-manager v0.4.0 active. 570 observations tracked..."
-  }
-}
+```mermaid
+flowchart TD
+    S([session starts]) --> H["SessionStart Hook\ncontext-inject.ts"]
+    H --> DB["createSession()\nin SQLite"]
+    H --> CNT["count observations\nbuild status hint"]
+    CNT --> OUT[/"context-manager v0.8.6 active. N observations tracked..."/]
+    OUT --> CC(["injected into Claude context\n~30 tokens"])
 
-(High-value context is now provided via auto-memory topic files,
- written at session end by the Stop hook)
+    NOTE["High-value context is delivered via\nauto-memory files written at session\nend by the Stop hook"]
+    CC -.-> NOTE
 ```
 
-### Export Flow (Stop Hook) — v0.4.0
+### Export Flow (Stop Hook)
 
-```
-Claude Code session ends
-         |
-         v
-+-------------------------------+
-| Stop Hook                     |
-| (session-end.ts)              |
-+-------------------------------+
-| 1. Extract conversation       |
-|    insights from transcript   |
-|    (tables, recommendations,  |
-|    decisions, user facts)     |
-| 2. Save as Conversation obs   |
-|    (top 10 by score)          |
-| 3. End session with summary   |
-| 4. Export to auto-memory      |
-+-------------------------------+
-         |
-         v (direct SQLite)
-+-------------------------------+
-| getUnexportedHighImportance() |
-|   WHERE importance_score >= 0.65 |
-|   AND exported_at IS NULL     |
-+-------------------------------+
-         |
-         v
-+-------------------------------+
-| Export Module (memory.ts)     |
-+-------------------------------+
-| 1. Format as dated markdown   |
-| 2. Append to topic file       |
-| 3. Trim if > 150 lines        |
-| 4. Mark exported in DB        |
-+-------------------------------+
-         |
-         v (file write)
-~/.claude/projects/<path>/memory/context-manager-activity.md
+```mermaid
+flowchart TD
+    E([session ends]) --> H["Stop Hook\nsession-end.ts"]
+
+    H --> N["scoreForNarrative()\npick best assistant message\nscore ≥ 0.25 threshold"]
+    H --> I["extractConversationInsights()\nscore all assistant blocks\ntop 10 saved as Conversation obs"]
+
+    N & I --> ES["endSession()\nsave insight observations"]
+
+    ES --> Q["getUnexportedHighImportance()\nWHERE importance_score ≥ 0.65\nAND exported_at IS NULL"]
+    Q --> EXP["Export Module\nmemory.ts"]
+
+    EXP --> F1[format as dated markdown]
+    EXP --> F2[append to topic file]
+    EXP --> F3[trim if > 150 lines]
+    EXP --> F4["markExported() in DB"]
+
+    F1 & F2 & F3 & F4 --> MEM[/"~/.claude/projects/&lt;path&gt;/memory/\ncontext-manager-activity.md"/]
 ```
 
 ---
@@ -625,6 +559,44 @@ After base scoring, the capture hook adjusts based on file novelty via `file_enc
 Encounter counts are tracked per (file_path, project, tool_name) triple. The lifetime counter persists in `file_encounter_counts` for analytics, but scoring uses a **7-day windowed count** from `observations` — files untouched for a week feel novel again rather than being permanently penalized.
 
 **Levels:** score >= 0.65 = high, >= 0.35 = medium, < 0.35 = low
+
+```mermaid
+flowchart TD
+    IN([tool + files + response]) --> BASE["Base score\nby tool type"]
+
+    BASE --> ADJ["Content adjustments"]
+    ADJ --> E{error in\nresponse?}
+    ADJ --> C{config\nfile?}
+    ADJ --> T{test\nfile?}
+    ADJ --> L{lock /\ngenerated?}
+
+    E -->|yes| E1[+0.25]
+    C -->|yes| C1[+0.15]
+    T -->|yes| T1[+0.10]
+    L -->|yes| L1[−0.30]
+
+    E1 & C1 & T1 & L1 --> SUR["Surprise adjustment\nfile_encounter_counts\n7-day windowed count"]
+
+    SUR --> N1{1st encounter}
+    SUR --> N2{2–3 encounters}
+    SUR --> N3{4–10 encounters}
+    SUR --> N4{11+ encounters}
+
+    N1 -->|yes| S1[+0.15]
+    N2 -->|yes| S2[+0.05]
+    N3 -->|yes| S3[0.00]
+    N4 -->|yes| S4[−0.10]
+
+    S1 & S2 & S3 & S4 --> CLAMP["clamp to [0.0, 1.0]"]
+
+    CLAMP --> H{≥ 0.65?}
+    CLAMP --> M{≥ 0.35?}
+    CLAMP --> LO{< 0.35?}
+
+    H -->|yes| RH([high])
+    M -->|yes| RM([medium])
+    LO -->|yes| RL([low])
+```
 
 ### Relevance-Based Injection (Deprecated in v0.4.0)
 
