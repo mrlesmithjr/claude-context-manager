@@ -46,48 +46,19 @@ This is "manual curation + auto-capture," not "auto-capture instead of manual cu
 
 ## How It Works
 
-```
-During your session:
-+-----------------------------------------+
-| Tool interactions captured + scored:    |
-|  - Files read/written                   |
-|  - Commands run                         |
-|  - Edits made (importance: high)        |
-|  - Errors flagged (boosted +0.25)       |
-|  - Surprise scoring (novel files +0.15) |
-|  - Low-value tools filtered out         |
-|  - User prompts indexed (FTS5)          |
-|  - Relationships inferred automatically |
-|    (same_file, followed_by)             |
-+-----------------------------------------+
-                    |
-                    v (stored in SQLite with importance scores)
+```mermaid
+flowchart TD
+    A["During your session\nEvery tool interaction captured, scored, and tagged\nSmart filtering removes low-value noise\nUser prompts indexed · relationships inferred automatically"]
 
-Session end:
-+-----------------------------------------+
-| Auto-memory export:                     |
-|  - High-importance observations         |
-|    (score >= 0.65) exported to          |
-|    ~/.claude/projects/<path>/memory/    |
-|    context-manager-activity.md          |
-|  - Session summary saved                |
-|  - Conversation insights extracted      |
-|    (tables, recommendations, decisions) |
-+-----------------------------------------+
+    B["Session end\nBest narrative selected as session summary\nHigh-signal assistant responses extracted as insights\nHigh-importance observations exported to auto-memory"]
 
-Next session:
-+-----------------------------------------+
-| Minimal status hint (~30 tokens)        |
-| Auto-memory provides the context        |
-+-----------------------------------------+
+    C["Next session\nStatus hint injected (~30 tokens)\nAuto-memory delivers the high-value context"]
 
-Anytime:
-+-----------------------------------------+
-| Search: "authentication"                |
-| Browse: last week's sessions            |
-| Dashboard: token usage + importance     |
-| Vacuum: auto-compacts old observations  |
-+-----------------------------------------+
+    D["Anytime via MCP\ncontext_search — keyword · semantic · hybrid · tag:X\ncontext_list — browse sessions with summaries\nWeb dashboard — analytics, token usage, history"]
+
+    A -->|"stored in SQLite with importance scores & tags"| B
+    B -->|"written to ~/.claude/.../memory/context-manager-activity.md"| C
+    C --> D
 ```
 
 ---
@@ -122,32 +93,34 @@ Anytime:
 
 ## Architecture
 
-```
-Claude Code Hooks                    Storage               Auto-Memory
------------------                    -------               -----------
-SessionStart ----------------------> SQLite + FTS5
-  (status hint)                      + sqlite-vec
-                                     ~/.claude-context/
-PostToolUse -----------------------> context.db
-  (capture tools)
+```mermaid
+flowchart LR
+    subgraph hooks["Hooks (automatic)"]
+        SI["SessionStart\nstatus hint"]
+        UP["UserPromptSubmit\ncapture prompt"]
+        PT["PostToolUse\ncapture · score · tag"]
+        SE["Stop\nsummary · insights · export"]
+    end
 
-Stop ------------------------------>                ----> ~/.claude/projects/
-  (save summary + conversation                             <path>/memory/
-   insights + export)
-                                                           context-manager-
-MCP Tools:                                                 activity.md
-  context_search -------> Auto-routed search:
-                           tag:X (tag filter, fast path)
-                           keyword (FTS5) | semantic (vectors)
-                           | hybrid (RRF merge of both)
-                           + related observations enrichment
-  context_semantic_search -> Session vector search
-                              (enriched: prompts+actions+summary)
-  context_embed ---------> Generate embeddings
-                             (observations + sessions)
+    subgraph db["SQLite  ~/.claude-context/context.db"]
+        OBS["observations\nimportance · tags · embeddings"]
+        SES["sessions\nsummary · enriched_text"]
+        UPT["user_prompts"]
+    end
+
+    subgraph out["Outputs"]
+        MEM["Auto-Memory\n~/.claude/…/memory/\ncontext-manager-activity.md"]
+        MCP["MCP Tools\ncontext_search · context_list\ncontext_stats · context_embed\ncontext_vacuum · context_prune"]
+        WEB["Web Dashboard\nlocalhost:3847"]
+    end
+
+    hooks --> db
+    SE -->|"score ≥ 0.65"| MEM
+    db --> MCP
+    db --> WEB
 ```
 
-Direct SQLite access - no background service required.
+Direct SQLite access — no background service required.
 
 ---
 
