@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: April 6, 2026 (v0.8.3)
+**Last Updated**: April 13, 2026 (v0.8.6)
 
 ---
 
@@ -78,26 +78,42 @@ npm run import -- \
 
 Direct SQLite access - no background HTTP service required.
 
-```
-+-------------------------------------------------------------+
-|                    Claude Code Session                       |
-+-------------------------------------------------------------+
-|  SessionStart Hook    ->  Create session, minimal status hint |
-|  PostToolUse Hook     ->  Capture tool interactions           |
-|  Stop Hook            ->  Save summary + conversation insights |
-|                           + export to auto-memory             |
-+-------------------------------------------------------------+
-                              |
-                              v
-+-------------------------------------------------------------+
-|                    SQLite + FTS5                             |
-|                    ~/.claude-context/context.db              |
-+-------------------------------------------------------------+
-|  observations         ->  Tool interactions                  |
-|  sessions             ->  Session metadata + summaries       |
-|  observations_fts     ->  Full-text search index             |
-|  user_prompts         ->  User messages (FTS5-indexed)       |
-+-------------------------------------------------------------+
+```mermaid
+flowchart LR
+    subgraph hooks["Claude Code Hooks"]
+        SI["SessionStart\nstatus hint ~30 tokens"]
+        UP["UserPromptSubmit\ncapture prompt"]
+        PT["PostToolUse\nsummarize + score + tag"]
+        SE["Stop\nnarrative + insights + export"]
+    end
+
+    subgraph db["SQLite ~/.claude-context/context.db"]
+        OBS["observations\nimportance · tags · embedding"]
+        SES["sessions\nsummary · enriched_text · embedding"]
+        UPT["user_prompts\nFTS5-indexed"]
+        FEC["file_encounter_counts\nsurprise scoring"]
+        REL["observation_relationships\nsame_file · followed_by"]
+        FTS["observations_fts\nFTS5 virtual"]
+        VEC["vec_observations\nvec_sessions\nsqlite-vec virtual"]
+    end
+
+    subgraph mcp["MCP Tools"]
+        CS["context_search\nkeyword · semantic · hybrid · tag:X"]
+        CL["context_list"]
+        CE["context_embed"]
+    end
+
+    SI & UP & PT & SE --> db
+    PT --> OBS
+    PT --> FEC
+    PT --> REL
+    SE --> SES
+    UP --> UPT
+    OBS --> FTS
+    OBS --> VEC
+    SES --> VEC
+    db --> CS & CL & CE
+    SE -->|"score ≥ 0.65"| MEM["~/.claude/projects/\n…/memory/context-manager-activity.md"]
 ```
 
 ---
@@ -295,6 +311,17 @@ claude-context-manager/
   - Short affirmations ("Yes", "Sure", "Ok", "Let me...") score 0 even if they pass length check
 - Best-scoring message used if score >= 0.25; falls back to last assistant message otherwise
 - Result: session narratives in `context_list` now reflect what was accomplished, not how the session closed
+
+### 14. Domain Tag Inference (v0.8.6)
+- Every observation gets domain tags inferred at capture time from file paths and Bash commands
+- Tags stored as comma-separated string in `tags TEXT` column (added via migration, NULL for old observations)
+- 10 tag categories: `auth`, `database`, `testing`, `infra`, `config`, `frontend`, `api`, `git`, `build`, `deps`
+- Inference rules: file path pattern matching (e.g., `/auth/`, `sqlite`, `.test.`) + Bash command patterns (e.g., `git commit` → `git`, `npm run build` → `build`)
+- Multiple tags per observation are normal (e.g., a test migration file gets both `database` and `testing`)
+- `context_search` supports `tag:X` prefix to route directly to tag-filtered search, bypassing FTS5/vector routing
+- `tag:X keyword` syntax further filters tag results by FTS5 keyword (intersection)
+- Tags visible in `context_search` output as `[auth, config]` suffix on each observation line
+- Partial index on `tags WHERE tags IS NOT NULL` keeps tag queries fast without scanning NULL rows
 
 ---
 

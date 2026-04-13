@@ -3,7 +3,7 @@
 Automatic session history and searchable context for Claude Code. Captures every tool interaction in SQLite with full-text search, exports high-value observations to Claude Code's auto-memory, and provides a web dashboard.
 
 **Status**: ACTIVE
-**Last Updated**: April 6, 2026
+**Last Updated**: April 13, 2026
 
 ---
 
@@ -100,8 +100,9 @@ Anytime:
 | **Smart Filtering** | Skips low-value tools (cat, ls, node_modules reads, broad globs) at capture time |
 | **Importance Scoring** | Each observation scored 0.0-1.0 and classified as high/medium/low importance |
 | **Surprise Scoring** | First-time file encounters boosted, frequently-seen files decayed — novel work surfaces above routine |
+| **Domain Tag Inference** | Observations auto-tagged at capture time with domain categories (`auth`, `database`, `testing`, `infra`, `config`, `frontend`, `api`, `git`, `build`, `deps`) inferred from file paths and Bash commands — searchable via `tag:X` prefix in `context_search` |
 | **Observation Relationships** | Observations automatically linked by shared files (`same_file`) and temporal sequence (`followed_by`) — search results enriched with related context |
-| **Retrieval Routing** | Queries auto-classified as keyword/semantic/hybrid — short terms use FTS5, natural language uses vectors, mixed queries merged with Reciprocal Rank Fusion |
+| **Retrieval Routing** | Queries auto-classified as keyword/semantic/hybrid/tag — short terms use FTS5, natural language uses vectors, mixed queries merged with Reciprocal Rank Fusion, `tag:X` prefix routes to tag-filtered search |
 | **Auto-Memory Export** | High-importance observations exported to Claude Code's auto-memory topic files at session end |
 | **Auto-Compaction** | Old observations compressed into summaries during vacuum (`Read x4: file1, file2, ...`) |
 | **Full-Text Search** | SQLite FTS5 across observations and user prompts |
@@ -136,6 +137,7 @@ Stop ------------------------------>                ----> ~/.claude/projects/
                                                            context-manager-
 MCP Tools:                                                 activity.md
   context_search -------> Auto-routed search:
+                           tag:X (tag filter, fast path)
                            keyword (FTS5) | semantic (vectors)
                            | hybrid (RRF merge of both)
                            + related observations enrichment
@@ -317,7 +319,7 @@ Once installed, these tools are available to Claude Code via MCP:
 |------|-------------|
 | `context_stats` | Show statistics for current project |
 | `context_list` | List recent observations |
-| `context_search` | Search observations and user prompts (FTS5 keyword, auto-falls back to semantic) |
+| `context_search` | Search observations and user prompts. Auto-routes: keyword (FTS5) for short queries, semantic (vectors) for natural language, hybrid (RRF) for mixed. Supports `tag:X` prefix to filter by domain — available tags: `auth`, `database`, `testing`, `infra`, `config`, `frontend`, `api`, `git`, `build`, `deps`. Example: `tag:auth`, `tag:database sqlite` |
 | `context_semantic_search` | Search sessions by meaning (vector similarity, enriched text) |
 | `context_embed` | Generate vector embeddings for observations and sessions |
 | `context_vacuum` | Delete observations by age and run compaction/optimization |

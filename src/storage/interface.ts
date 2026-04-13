@@ -7,6 +7,17 @@
 
 export type ImportanceLevel = 'high' | 'medium' | 'low';
 export type RelationshipType = 'same_file' | 'followed_by';
+export type ObservationTag =
+  | 'auth'
+  | 'database'
+  | 'testing'
+  | 'infra'
+  | 'config'
+  | 'frontend'
+  | 'api'
+  | 'git'
+  | 'build'
+  | 'deps';
 
 export interface Observation {
   id?: number;
@@ -22,6 +33,7 @@ export interface Observation {
   importance_score: number; // 0.0 to 1.0
   is_compacted?: boolean;
   exported_at?: string; // ISO 8601 timestamp — when exported to auto-memory
+  tags?: string[]; // Domain tags inferred at capture time (auth, database, testing, etc.)
   created_at: string; // ISO 8601 timestamp
 }
 
@@ -110,6 +122,14 @@ export interface ContextStorage {
    * @param project - Project path (optional, for project-scoped search)
    */
   search(query: string, project?: string): Promise<Observation[]>;
+
+  /**
+   * Search observations by domain tag
+   * @param tag - Tag to filter by (auth, database, testing, etc.)
+   * @param project - Project path (optional, for project-scoped search)
+   * @param limit - Maximum results (default: 50)
+   */
+  searchByTag(tag: string, project?: string, limit?: number): Promise<Observation[]>;
 
   /**
    * Get statistics for a project

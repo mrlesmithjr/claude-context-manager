@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: April 6, 2026
+**Last Updated**: April 13, 2026
 
 ---
 
@@ -96,6 +96,47 @@ Claude Code plugins can register hooks for lifecycle events. We use three:
   }
   ```
 
+#### Hook Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant CC as Claude Code
+    participant SI as SessionStart<br/>(context-inject.ts)
+    participant UP as UserPromptSubmit<br/>(capture-prompt.ts)
+    participant PT as PostToolUse<br/>(capture-tool.ts)
+    participant SE as Stop<br/>(session-end.ts)
+    participant DB as SQLite
+
+    CC->>SI: session starts (10s timeout)
+    SI->>DB: createSession()
+    SI-->>CC: status hint (~30 tokens)
+
+    loop each user message
+        CC->>UP: prompt submitted (5s timeout)
+        UP->>DB: saveUserPrompt()
+        UP-->>CC: ok
+
+        loop each tool call
+            CC->>PT: tool result (5s timeout)
+            PT->>PT: filter low-value tools
+            PT->>PT: summarize + score + inferTags()
+            PT->>DB: save() — dedup check + INSERT
+            DB->>DB: FTS5 trigger + inferRelationships()
+            PT-->>CC: captured / skipped
+        end
+    end
+
+    CC->>SE: session ends (10s timeout)
+    SE->>SE: scoreForNarrative() → best summary
+    SE->>SE: extractConversationInsights() → top 10
+    SE->>DB: endSession() + save insights
+    SE->>DB: getUnexportedHighImportance()
+    DB-->>SE: observations (score ≥ 0.65)
+    SE->>SE: append to auto-memory file
+    SE->>DB: markExported()
+    SE-->>CC: complete
+```
+
 ### 2. Storage Layer (`src/storage/`)
 
 #### Storage Interface (`src/storage/interface.ts`)
@@ -104,6 +145,9 @@ Abstraction layer for storage operations:
 
 ```typescript
 export type ImportanceLevel = 'high' | 'medium' | 'low';
+export type ObservationTag =
+  | 'auth' | 'database' | 'testing' | 'infra' | 'config'
+  | 'frontend' | 'api' | 'git' | 'build' | 'deps';
 
 export interface Observation {
   id?: number;
@@ -119,6 +163,7 @@ export interface Observation {
   importance_score: number;         // 0.0 to 1.0
   is_compacted?: boolean;           // True if this is a compacted summary
   exported_at?: string;             // When exported to auto-memory
+  tags?: string[];                  // Domain tags inferred at capture time (v0.8.6)
   created_at: string;
 }
 
@@ -154,6 +199,9 @@ export interface ContextStorage {
   getUnexportedHighImportance(project: string, sessionId?: string, minScore?: number): Promise<Observation[]>;
   markExported(ids: number[]): Promise<void>;
 
+  // Tag search (v0.8.6)
+  searchByTag(tag: string, project?: string, limit?: number): Promise<Observation[]>;
+
   // Surprise scoring (v0.7.0)
   incrementFileEncounter(filePath: string, project: string, toolName: string): number;
 
@@ -186,7 +234,72 @@ Direct SQLite access using better-sqlite3:
 
 ## Database Schema
 
-SQLite database with FTS5 extension for full-text search.
+SQLite database at `~/.claude-context/context.db` using FTS5 for full-text search and sqlite-vec for vector similarity.
+
+### Entity Relationships
+
+```mermaid
+erDiagram
+    sessions {
+        TEXT id PK
+        TEXT project
+        TEXT started_at
+        TEXT ended_at
+        TEXT summary
+        TEXT status
+        BLOB embedding
+        TEXT enriched_text
+    }
+    observations {
+        INTEGER id PK
+        TEXT session_id FK
+        TEXT project
+        TEXT package
+        TEXT tool_name
+        TEXT summary
+        TEXT files_touched
+        TEXT metadata
+        INTEGER token_estimate
+        TEXT importance
+        REAL importance_score
+        INTEGER is_compacted
+        TEXT exported_at
+        TEXT tags
+        BLOB embedding
+        TEXT created_at
+    }
+    user_prompts {
+        INTEGER id PK
+        TEXT session_id FK
+        TEXT project
+        INTEGER prompt_number
+        TEXT prompt_text
+        TEXT created_at
+    }
+    file_encounter_counts {
+        TEXT file_path PK
+        TEXT project PK
+        TEXT tool_name PK
+        INTEGER encounter_count
+        TEXT last_seen
+    }
+    observation_relationships {
+        INTEGER id PK
+        INTEGER source_id FK
+        INTEGER target_id FK
+        TEXT relationship
+        TEXT created_at
+    }
+
+    sessions ||--o{ observations : "has"
+    sessions ||--o{ user_prompts : "has"
+    observations ||--o{ observation_relationships : "source"
+    observations ||--o{ observation_relationships : "target"
+```
+
+Virtual tables (not shown above): `observations_fts` (FTS5), `user_prompts_fts` (FTS5), `vec_observations` (sqlite-vec), `vec_sessions` (sqlite-vec).
+
+### DDL
 
 ```sql
 -- Sessions table
@@ -196,7 +309,9 @@ CREATE TABLE sessions (
   started_at TEXT NOT NULL,
   ended_at TEXT,
   summary TEXT,
-  status TEXT DEFAULT 'active'
+  status TEXT DEFAULT 'active',
+  embedding BLOB,              -- 384-dim float32, session vector (v0.6.0)
+  enriched_text TEXT           -- Assembled enrichment text for embedding
 );
 
 CREATE INDEX idx_sessions_project ON sessions(project);
@@ -211,13 +326,15 @@ CREATE TABLE observations (
   package TEXT,
   tool_name TEXT NOT NULL,
   summary TEXT NOT NULL,
-  files_touched TEXT,          -- JSON array
-  metadata TEXT,               -- JSON object
+  files_touched TEXT,               -- JSON array of absolute paths
+  metadata TEXT,                    -- JSON object (tool_input, stored_output, stats)
   token_estimate INTEGER DEFAULT 0,
-  importance TEXT DEFAULT 'medium',   -- 'high', 'medium', 'low'
-  importance_score REAL DEFAULT 0.5,  -- 0.0 to 1.0
-  is_compacted INTEGER DEFAULT 0,     -- 1 if compacted summary
-  exported_at TEXT,                   -- When exported to auto-memory
+  importance TEXT DEFAULT 'medium', -- 'high' | 'medium' | 'low'
+  importance_score REAL DEFAULT 0.5,-- 0.0 to 1.0
+  is_compacted INTEGER DEFAULT 0,   -- 1 if compacted summary
+  exported_at TEXT,                 -- ISO 8601, set after auto-memory export
+  tags TEXT,                        -- Comma-separated domain tags (v0.8.6)
+  embedding BLOB,                   -- 384-dim float32 observation vector (v0.5.5)
   created_at TEXT NOT NULL,
   FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
@@ -227,20 +344,41 @@ CREATE INDEX idx_observations_project_created
 CREATE INDEX idx_observations_session ON observations(session_id);
 CREATE INDEX idx_observations_project_score
   ON observations(project, importance_score DESC, created_at DESC);
+CREATE INDEX idx_observations_tags
+  ON observations(tags) WHERE tags IS NOT NULL;  -- partial index (v0.8.6)
 
--- FTS5 virtual tables for full-text search
-CREATE VIRTUAL TABLE observations_fts USING fts5(
-  summary,
-  files_touched,
-  metadata,
-  content=observations,
-  content_rowid=id
+-- User prompts table
+CREATE TABLE user_prompts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  project TEXT NOT NULL,
+  prompt_number INTEGER NOT NULL,
+  prompt_text TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 
+CREATE INDEX idx_user_prompts_project_created ON user_prompts(project, created_at DESC);
+CREATE INDEX idx_user_prompts_session ON user_prompts(session_id);
+
+-- FTS5 virtual tables (content tables — kept in sync via triggers)
+CREATE VIRTUAL TABLE observations_fts USING fts5(
+  summary, files_touched, metadata,
+  content=observations, content_rowid=id
+);
 CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
   prompt_text,
-  content=user_prompts,
-  content_rowid=id
+  content=user_prompts, content_rowid=id
+);
+
+-- Vector search virtual tables (sqlite-vec, conditional on extension availability)
+CREATE VIRTUAL TABLE vec_observations USING vec0(
+  observation_id INTEGER PRIMARY KEY,
+  embedding float[384]
+);
+CREATE VIRTUAL TABLE vec_sessions USING vec0(
+  session_id TEXT PRIMARY KEY,
+  embedding float[384]
 );
 
 -- File encounter counts for surprise scoring (v0.7.0)
@@ -269,19 +407,11 @@ CREATE INDEX idx_obs_rel_target ON observation_relationships(target_id);
 CREATE UNIQUE INDEX idx_obs_rel_unique
   ON observation_relationships(source_id, target_id, relationship);
 
--- context_search queries BOTH tables, merging results
-
--- Triggers to keep FTS in sync
+-- FTS sync triggers (INSERT / UPDATE / DELETE keep virtual tables current)
 CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
   INSERT INTO observations_fts(rowid, summary, files_touched, metadata)
-  VALUES (
-    new.id,
-    COALESCE(new.summary, ''),
-    COALESCE(new.files_touched, ''),
-    COALESCE(new.metadata, '')
-  );
+  VALUES (new.id, COALESCE(new.summary,''), COALESCE(new.files_touched,''), COALESCE(new.metadata,''));
 END;
-
 -- (Similar triggers for UPDATE and DELETE)
 ```
 
@@ -315,6 +445,8 @@ Claude Code executes tool
 | 4. Estimate tokens      |
 | 5. Score importance     |
 |    (calculateImportance)|
+| 6. Infer domain tags    |
+|    (inferTags) v0.8.6   |
 +-------------------------+
          |
          v
@@ -338,8 +470,9 @@ Claude Code executes tool
 +-------------------------+
 | 1. Deduplication check  |
 | 2. INSERT with          |
-|    importance +          |
-|    importance_score      |
+|    importance +         |
+|    importance_score +   |
+|    tags                 |
 | 3. FTS trigger fires    |
 | 4. Infer relationships: |
 |    - followed_by (prev  |
@@ -534,32 +667,61 @@ Observations are automatically linked at capture time via `inferRelationships()`
 
 **Retrieval**: `getRelatedObservations()` does bidirectional graph traversal (source→target and target→source). `context_search` enriches top 3 results with up to 10 related observations, deduplicated against primary results.
 
-### Retrieval Routing (v0.7.0)
+### Domain Tag Inference (v0.8.6)
+
+Every observation is tagged with one or more domain categories at capture time via `inferTags()` in `src/capture/processor.ts`. Tags are stored as a comma-separated string in the `tags` column and served as `string[]` via `mapRow()`.
+
+**Tag categories and inference rules:**
+
+| Tag | File path patterns | Bash command patterns |
+|---|---|---|
+| `auth` | `/auth/`, `auth.*`, `jwt`, `token`, `oauth`, `login`, `credential` | - |
+| `database` | `sqlite`, `postgres`, `mysql`, `/db/`, `schema`, `migration`, `.sql` | - |
+| `testing` | `.test.`, `.spec.`, `__tests__/`, `/test/` | `npm test`, `pytest`, `cargo test`, `jest` |
+| `infra` | `Dockerfile`, `docker-compose`, `.github/`, `/terraform/`, `.yml` | - |
+| `config` | `package.json`, `tsconfig`, `pyproject.toml`, `Makefile`, `.env` | - |
+| `frontend` | `/web/`, `/client/`, `/ui/`, `.html`, `.css`, `.tsx`, `.vue` | - |
+| `api` | `/api/`, `/routes/`, `/handlers/`, `router.*`, `server.*` | - |
+| `git` | - | `git commit/merge/push/pull/rebase/tag` |
+| `build` | - | `npm run build`, `tsc`, `cargo build`, `make` |
+| `deps` | - | `npm install`, `yarn add`, `pip install`, `cargo add` |
+
+A single observation can have multiple tags (e.g., a test migration file gets both `database` and `testing`). Old observations have `NULL` tags — they remain searchable via FTS5/vector but won't surface in tag-filtered queries.
+
+**Search:** `context_search` supports a `tag:X` prefix that bypasses FTS5/vector routing and calls `searchByTag()` directly. An optional keyword can follow: `tag:database sqlite` intersects tag results with FTS5 keyword results.
+
+### Retrieval Routing (v0.7.0, updated v0.8.6)
 
 `context_search` auto-classifies queries and routes to the optimal search strategy:
 
+```mermaid
+flowchart TD
+    Q([query]) --> TAG{tag: prefix?}
+    TAG -->|yes| TAGF["searchByTag(tag)\n+ optional FTS5 intersect"]
+    TAG -->|no| CQ[classifyQuery\nword count + NL heuristic]
+
+    CQ -->|1-2 words| KW[Keyword\nFTS5 only]
+    CQ -->|5+ words NL| SEM[Semantic]
+    CQ -->|3-4 words| HYB[Hybrid]
+
+    SEM --> VEC{embeddings\navailable?}
+    VEC -->|yes| VS[vectorSearchSessions\nthen vectorSearch]
+    VEC -->|no| FB1[FTS5 fallback]
+
+    HYB --> VEC2{embeddings\navailable?}
+    VEC2 -->|yes| RRF["FTS5 + vectorSearch\nmergeWithRRF(k=60)"]
+    VEC2 -->|no| FB2[FTS5 fallback]
+
+    KW & VS & RRF & FB1 & FB2 --> ENR["enrich top 3\nwith getRelatedObservations()"]
+    ENR --> OUT([results + related + prompts])
+    TAGF --> OUT
 ```
-Query arrives
-     |
-     v
-+---------------------+
-| classifyQuery()     |
-| (word count + NL    |
-|  indicator heuristic)|
-+---------------------+
-     |
-     +--> keyword (1-2 words) ---------> FTS5 only (fast path)
-     |
-     +--> semantic (5+ words, NL) -----> vectorSearchSessions → vectorSearch
-     |
-     +--> hybrid (3-4 words, mixed) ---> FTS5 + vectorSearch → mergeWithRRF(k=60)
-```
 
-**Reciprocal Rank Fusion (RRF)**: Standard approach for merging ranked lists from different retrieval systems. Each result's score = Σ 1/(k + rank) across all lists where it appears. k=60 is the standard value from the original paper. Results sorted by fused score, top 20 returned.
+**Reciprocal Rank Fusion (RRF)**: Each result's score = Σ 1/(k + rank) across all lists where it appears. k=60 per the original paper. Results sorted by fused score, top 20 returned.
 
-**Graceful degradation**: If embeddings are unavailable (model not loaded, sqlite-vec not present), semantic and hybrid both fall back to keyword-only search.
+**Graceful degradation**: Semantic and hybrid fall back to keyword-only if sqlite-vec is not loaded or embeddings haven't been generated.
 
-**Enrichment**: After primary results, top 3 observations are enriched with related observations via `getRelatedObservations()`, deduplicated against primary results.
+**Enrichment**: Top 3 primary results are enriched with related observations via `getRelatedObservations()`, deduplicated against the primary set.
 
 ---
 
@@ -774,7 +936,7 @@ Potential enhancements for future consideration. Prioritized by estimated value.
 |---------|-------------|-------|
 | **Cross-Project Context** | Optional global context across all projects | Privacy concerns |
 | **Endless Mode** | Aggressive compression for very long sessions | claude-mem beta |
-| **MCP Integration** | Expose context via MCP server | Alternative to hooks |
+| ~~**MCP Integration**~~ | ~~Expose context via MCP server~~ **IMPLEMENTED** as `context_search`, `context_list`, `context_stats`, `context_embed`, `context_vacuum`, `context_prune`, `context_export`, `context_memory_audit`, `context_memory_consolidate` | |
 | **Smart Install** | Auto-rebuild native modules on Node.js upgrade | Convenience |
 
 ### Token Reduction Techniques to Explore

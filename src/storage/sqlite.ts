@@ -228,6 +228,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add observation relationships
     this.migrateAddObservationRelationships();
+
+    // Migration: add domain tags column
+    this.migrateAddTagsColumn();
   }
 
   /**
@@ -307,6 +310,7 @@ export class SQLiteStorage implements ContextStorage {
       importance_score: (row.importance_score as number) ?? 0.5,
       is_compacted: (row.is_compacted as number) === 1,
       exported_at: (row.exported_at as string) || undefined,
+      tags: row.tags ? (row.tags as string).split(',').filter(Boolean) : undefined,
       created_at: row.created_at as string,
     };
   }
@@ -377,9 +381,13 @@ export class SQLiteStorage implements ContextStorage {
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+
+    const tagsValue = observation.tags && observation.tags.length > 0
+      ? observation.tags.join(',')
+      : null;
 
     const info = stmt.run(
       observation.session_id,
@@ -392,6 +400,7 @@ export class SQLiteStorage implements ContextStorage {
       observation.token_estimate,
       observation.importance || 'medium',
       observation.importance_score ?? 0.5,
+      tagsValue,
       observation.created_at
     );
 
@@ -485,6 +494,33 @@ export class SQLiteStorage implements ContextStorage {
 
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
+  }
+
+  async searchByTag(tag: string, project?: string, limit: number = 50): Promise<Observation[]> {
+    const likePattern = `%${tag}%`;
+    let sql: string;
+    let params: unknown[];
+
+    if (project) {
+      sql = `
+        SELECT * FROM observations
+        WHERE tags LIKE ? AND project LIKE ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [likePattern, project + '%', limit];
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE tags LIKE ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [likePattern, limit];
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
     return rows.map(row => this.mapRow(row));
   }
 
@@ -1432,6 +1468,23 @@ export class SQLiteStorage implements ContextStorage {
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_obs_rel_unique
       ON observation_relationships(source_id, target_id, relationship)
+    `);
+  }
+
+  /**
+   * Migration: add tags column to observations for domain classification.
+   */
+  private migrateAddTagsColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('tags')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN tags TEXT`);
+    }
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_tags
+      ON observations(tags) WHERE tags IS NOT NULL
     `);
   }
 

@@ -169,6 +169,7 @@ var SQLiteStorage = class {
     this.migrateAddSessionVectorSearch();
     this.migrateAddFileEncounterCounts();
     this.migrateAddObservationRelationships();
+    this.migrateAddTagsColumn();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -237,6 +238,7 @@ var SQLiteStorage = class {
       importance_score: row.importance_score ?? 0.5,
       is_compacted: row.is_compacted === 1,
       exported_at: row.exported_at || void 0,
+      tags: row.tags ? row.tags.split(",").filter(Boolean) : void 0,
       created_at: row.created_at
     };
   }
@@ -285,9 +287,10 @@ var SQLiteStorage = class {
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    const tagsValue = observation.tags && observation.tags.length > 0 ? observation.tags.join(",") : null;
     const info = stmt.run(
       observation.session_id,
       observation.project,
@@ -299,6 +302,7 @@ var SQLiteStorage = class {
       observation.token_estimate,
       observation.importance || "medium",
       observation.importance_score ?? 0.5,
+      tagsValue,
       observation.created_at
     );
     const insertedId = Number(info.lastInsertRowid);
@@ -360,6 +364,30 @@ var SQLiteStorage = class {
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
+    return rows.map((row) => this.mapRow(row));
+  }
+  async searchByTag(tag, project, limit = 50) {
+    const likePattern = `%${tag}%`;
+    let sql;
+    let params;
+    if (project) {
+      sql = `
+        SELECT * FROM observations
+        WHERE tags LIKE ? AND project LIKE ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [likePattern, project + "%", limit];
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE tags LIKE ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [likePattern, limit];
+    }
+    const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
   }
   async getStats(project) {
@@ -1044,6 +1072,20 @@ var SQLiteStorage = class {
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_obs_rel_unique
       ON observation_relationships(source_id, target_id, relationship)
+    `);
+  }
+  /**
+   * Migration: add tags column to observations for domain classification.
+   */
+  migrateAddTagsColumn() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("tags")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN tags TEXT`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_tags
+      ON observations(tags) WHERE tags IS NOT NULL
     `);
   }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {

@@ -5,7 +5,7 @@
  */
 
 import { sanitizeContent, estimateTokens } from '../utils/sanitize.js';
-import type { Observation, ImportanceLevel } from '../storage/interface.js';
+import type { Observation, ImportanceLevel, ObservationTag } from '../storage/interface.js';
 
 /**
  * Output storage thresholds
@@ -468,6 +468,109 @@ function isVersionBumpEdit(input: Record<string, unknown>): boolean {
   return false;
 }
 
+// --- Tag inference ---
+
+const TAG_FILE_RULES: Array<{ patterns: RegExp[]; tag: ObservationTag }> = [
+  {
+    tag: 'auth',
+    patterns: [
+      /\/auth\//i, /\/authentication\//i, /\/authorization\//i,
+      /auth\.(ts|js|py|go|rs)$/i, /login\.(ts|js|py|go|rs)$/i,
+      /session\.(ts|js|py|go|rs)$/i, /jwt\.(ts|js|py|go|rs)$/i,
+      /oauth/i, /token/i, /credential/i, /password/i,
+    ],
+  },
+  {
+    tag: 'database',
+    patterns: [
+      /sqlite/i, /postgres/i, /mysql/i, /mongodb/i,
+      /\/db\//i, /\/database\//i,
+      /schema\.(ts|js|py|sql)$/i, /migration/i,
+      /\.sql$/i, /query\.(ts|js|py)$/i,
+    ],
+  },
+  {
+    tag: 'testing',
+    patterns: [
+      /\.test\./i, /\.spec\./i, /__tests__\//i,
+      /\/test\//i, /\/tests\//i, /\/e2e\//i,
+    ],
+  },
+  {
+    tag: 'infra',
+    patterns: [
+      /Dockerfile$/i, /docker-compose/i, /\.github\//i,
+      /\/k8s\//i, /\/kubernetes\//i, /\/ansible\//i,
+      /\/terraform\//i, /\.tf$/i, /\.yml$/, /\.yaml$/,
+    ],
+  },
+  {
+    tag: 'config',
+    patterns: [
+      /package\.json$/, /tsconfig/i, /pyproject\.toml$/,
+      /Makefile$/, /\.env(\.\w+)?$/, /webpack\.config\./,
+      /vite\.config\./, /eslint/, /prettier/, /Cargo\.toml$/,
+      /go\.mod$/, /requirements.*\.txt$/, /setup\.py$/,
+    ],
+  },
+  {
+    tag: 'frontend',
+    patterns: [
+      /\/web\//i, /\/client\//i, /\/ui\//i, /\/components\//i,
+      /\.html$/, /\.css$/, /\.scss$/, /\.tsx$/, /\.vue$/, /\.svelte$/,
+    ],
+  },
+  {
+    tag: 'api',
+    patterns: [
+      /\/api\//i, /\/routes\//i, /\/handlers\//i, /\/endpoints\//i,
+      /router\.(ts|js|py|go)$/i, /server\.(ts|js|py|go)$/i,
+      /\.http$/, /openapi/, /swagger/,
+    ],
+  },
+];
+
+const TAG_BASH_RULES: Array<{ pattern: RegExp; tag: ObservationTag }> = [
+  { tag: 'git',     pattern: /^git\s+(commit|merge|rebase|cherry-pick|push|pull|fetch|tag)\b/ },
+  { tag: 'build',   pattern: /\b(npm\s+(run\s+)?build|tsc|cargo\s+build|go\s+build|make\b)\b/ },
+  { tag: 'testing', pattern: /\b(npm\s+(run\s+)?test|pytest|cargo\s+test|go\s+test|jest|vitest)\b/ },
+  { tag: 'deps',    pattern: /\b(npm\s+install|npm\s+i\b|yarn\s+add|pip\s+install|cargo\s+add|go\s+get)\b/ },
+];
+
+/**
+ * Infer domain tags from file paths and Bash command.
+ * Tags are additive — a single observation can have multiple.
+ */
+export function inferTags(
+  toolName: string,
+  files: string[],
+  command?: string,
+): ObservationTag[] {
+  const tags = new Set<ObservationTag>();
+
+  // File path rules apply to all tools
+  for (const file of files) {
+    for (const rule of TAG_FILE_RULES) {
+      if (rule.patterns.some(p => p.test(file))) {
+        tags.add(rule.tag);
+      }
+    }
+  }
+
+  // Bash command rules
+  if (toolName === 'Bash' && command) {
+    for (const rule of TAG_BASH_RULES) {
+      if (rule.pattern.test(command)) {
+        tags.add(rule.tag);
+      }
+    }
+  }
+
+  return [...tags];
+}
+
+// --- Importance scoring ---
+
 /**
  * Config file patterns that get an importance boost
  */
@@ -710,6 +813,12 @@ export function processToolCapture(capture: ToolCapture): Omit<Observation, 'id'
     filesTouched
   );
 
+  // Infer domain tags from file paths and command
+  const command = (capture.tool_input && typeof capture.tool_input === 'object')
+    ? (capture.tool_input as Record<string, unknown>).command as string | undefined
+    : undefined;
+  const tags = inferTags(capture.tool_name, filesTouched, command);
+
   // Build metadata with enhanced output storage
   const metadata: Record<string, unknown> = {
     tool_input: capture.tool_input,
@@ -727,6 +836,7 @@ export function processToolCapture(capture: ToolCapture): Omit<Observation, 'id'
     token_estimate: tokenEstimate,
     importance,
     importance_score,
+    tags: tags.length > 0 ? tags : undefined,
     created_at: new Date().toISOString(),
   };
 }

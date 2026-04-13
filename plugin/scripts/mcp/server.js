@@ -30257,6 +30257,7 @@ var SQLiteStorage = class {
     this.migrateAddSessionVectorSearch();
     this.migrateAddFileEncounterCounts();
     this.migrateAddObservationRelationships();
+    this.migrateAddTagsColumn();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -30325,6 +30326,7 @@ var SQLiteStorage = class {
       importance_score: row.importance_score ?? 0.5,
       is_compacted: row.is_compacted === 1,
       exported_at: row.exported_at || void 0,
+      tags: row.tags ? row.tags.split(",").filter(Boolean) : void 0,
       created_at: row.created_at
     };
   }
@@ -30373,9 +30375,10 @@ var SQLiteStorage = class {
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    const tagsValue = observation.tags && observation.tags.length > 0 ? observation.tags.join(",") : null;
     const info = stmt.run(
       observation.session_id,
       observation.project,
@@ -30387,6 +30390,7 @@ var SQLiteStorage = class {
       observation.token_estimate,
       observation.importance || "medium",
       observation.importance_score ?? 0.5,
+      tagsValue,
       observation.created_at
     );
     const insertedId = Number(info.lastInsertRowid);
@@ -30448,6 +30452,30 @@ var SQLiteStorage = class {
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
+    return rows.map((row) => this.mapRow(row));
+  }
+  async searchByTag(tag, project, limit = 50) {
+    const likePattern = `%${tag}%`;
+    let sql;
+    let params;
+    if (project) {
+      sql = `
+        SELECT * FROM observations
+        WHERE tags LIKE ? AND project LIKE ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [likePattern, project + "%", limit];
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE tags LIKE ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [likePattern, limit];
+    }
+    const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
   }
   async getStats(project) {
@@ -31132,6 +31160,20 @@ var SQLiteStorage = class {
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_obs_rel_unique
       ON observation_relationships(source_id, target_id, relationship)
+    `);
+  }
+  /**
+   * Migration: add tags column to observations for domain classification.
+   */
+  migrateAddTagsColumn() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("tags")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN tags TEXT`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_tags
+      ON observations(tags) WHERE tags IS NOT NULL
     `);
   }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
@@ -32506,7 +32548,7 @@ function formatConsolidationReport(report) {
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.8.5" : "0.5.0"
+    version: true ? "0.8.6" : "0.5.0"
   },
   {
     instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age \u2014 always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -32528,11 +32570,20 @@ function formatObservations(observations) {
   for (const obs of observations) {
     const date5 = new Date(obs.created_at);
     const fileInfo = obs.files_touched.length > 0 ? ` (${obs.files_touched.join(", ")})` : "";
+    const tagInfo = obs.tags && obs.tags.length > 0 ? ` [${obs.tags.join(", ")}]` : "";
     lines.push(
-      `[${date5.toISOString()}] ${obs.tool_name}: ${obs.summary}${fileInfo}`
+      `[${date5.toISOString()}] ${obs.tool_name}: ${obs.summary}${fileInfo}${tagInfo}`
     );
   }
   return lines.join("\n");
+}
+function parseTagPrefix(query) {
+  const match = query.match(/(?:^|\s)tag:(\w+)/i);
+  if (!match)
+    return { tag: null, remainingQuery: query };
+  const tag = match[1].toLowerCase();
+  const remainingQuery = query.replace(match[0], "").trim();
+  return { tag, remainingQuery };
 }
 function formatPrompts(prompts) {
   const lines = [];
@@ -32660,15 +32711,30 @@ function mergeWithRRF(ftsResults, vecResults, k = 60) {
 }
 server.tool(
   "context_search",
-  "Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations.",
+  "Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain (auth, database, testing, infra, config, frontend, api, git, build, deps).",
   {
-    query: external_exports3.string().describe("Search query (keywords, file names, tool names, natural language, etc.)"),
+    query: external_exports3.string().describe('Search query. Supports tag:X prefix to filter by domain tag (e.g. "tag:auth", "tag:database sqlite"). Available tags: auth, database, testing, infra, config, frontend, api, git, build, deps.'),
     project: external_exports3.string().optional().describe(
       "Project path to scope search. Omit to search all projects."
     )
   },
   async ({ query, project }) => {
     const db = await getStorage();
+    const { tag, remainingQuery } = parseTagPrefix(query);
+    if (tag) {
+      const tagObs = await db.searchByTag(tag, project);
+      let results = tagObs;
+      if (remainingQuery.length > 0) {
+        const ftsResults = await db.search(remainingQuery, project);
+        const ftsIds = new Set(ftsResults.map((o) => o.id));
+        results = tagObs.filter((o) => ftsIds.has(o.id));
+      }
+      const label = remainingQuery ? `tag:${tag} + keyword "${remainingQuery}"` : `tag:${tag}`;
+      const text = results.length > 0 ? `Found ${results.length} observations (${label}):
+
+${formatObservations(results)}` : `No observations found for ${label}.`;
+      return { content: [{ type: "text", text }] };
+    }
     const strategy = classifyQuery(query);
     let observations = [];
     let searchMethod = "";

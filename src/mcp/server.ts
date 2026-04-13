@@ -67,11 +67,26 @@ function formatObservations(observations: Observation[]): string {
     const date = new Date(obs.created_at);
     const fileInfo =
       obs.files_touched.length > 0 ? ` (${obs.files_touched.join(', ')})` : '';
+    const tagInfo = obs.tags && obs.tags.length > 0 ? ` [${obs.tags.join(', ')}]` : '';
     lines.push(
-      `[${date.toISOString()}] ${obs.tool_name}: ${obs.summary}${fileInfo}`
+      `[${date.toISOString()}] ${obs.tool_name}: ${obs.summary}${fileInfo}${tagInfo}`
     );
   }
   return lines.join('\n');
+}
+
+/**
+ * Parse a tag: prefix from a query string.
+ * Returns { tag, remainingQuery } where tag may be null.
+ * Examples: "tag:auth" → { tag: "auth", remainingQuery: "" }
+ *           "tag:database sqlite" → { tag: "database", remainingQuery: "sqlite" }
+ */
+function parseTagPrefix(query: string): { tag: string | null; remainingQuery: string } {
+  const match = query.match(/(?:^|\s)tag:(\w+)/i);
+  if (!match) return { tag: null, remainingQuery: query };
+  const tag = match[1]!.toLowerCase();
+  const remainingQuery = query.replace(match[0]!, '').trim();
+  return { tag, remainingQuery };
 }
 
 /**
@@ -256,9 +271,9 @@ function mergeWithRRF(
 
 server.tool(
   'context_search',
-  'Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations.',
+  'Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain (auth, database, testing, infra, config, frontend, api, git, build, deps).',
   {
-    query: z.string().describe('Search query (keywords, file names, tool names, natural language, etc.)'),
+    query: z.string().describe('Search query. Supports tag:X prefix to filter by domain tag (e.g. "tag:auth", "tag:database sqlite"). Available tags: auth, database, testing, infra, config, frontend, api, git, build, deps.'),
     project: z
       .string()
       .optional()
@@ -268,6 +283,27 @@ server.tool(
   },
   async ({ query, project }) => {
     const db = await getStorage();
+
+    // Check for tag: prefix — routes to tag search, optionally combined with keyword
+    const { tag, remainingQuery } = parseTagPrefix(query);
+    if (tag) {
+      const tagObs = await db.searchByTag(tag, project);
+      // If there's remaining query text, further filter via FTS5
+      let results = tagObs;
+      if (remainingQuery.length > 0) {
+        const ftsResults = await db.search(remainingQuery, project);
+        const ftsIds = new Set(ftsResults.map(o => o.id));
+        results = tagObs.filter(o => ftsIds.has(o.id));
+      }
+      const label = remainingQuery
+        ? `tag:${tag} + keyword "${remainingQuery}"`
+        : `tag:${tag}`;
+      const text = results.length > 0
+        ? `Found ${results.length} observations (${label}):\n\n${formatObservations(results)}`
+        : `No observations found for ${label}.`;
+      return { content: [{ type: 'text' as const, text }] };
+    }
+
     const strategy = classifyQuery(query);
 
     let observations: Observation[] = [];

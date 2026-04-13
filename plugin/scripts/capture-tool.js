@@ -169,6 +169,7 @@ var SQLiteStorage = class {
     this.migrateAddSessionVectorSearch();
     this.migrateAddFileEncounterCounts();
     this.migrateAddObservationRelationships();
+    this.migrateAddTagsColumn();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -237,6 +238,7 @@ var SQLiteStorage = class {
       importance_score: row.importance_score ?? 0.5,
       is_compacted: row.is_compacted === 1,
       exported_at: row.exported_at || void 0,
+      tags: row.tags ? row.tags.split(",").filter(Boolean) : void 0,
       created_at: row.created_at
     };
   }
@@ -285,9 +287,10 @@ var SQLiteStorage = class {
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    const tagsValue = observation.tags && observation.tags.length > 0 ? observation.tags.join(",") : null;
     const info = stmt.run(
       observation.session_id,
       observation.project,
@@ -299,6 +302,7 @@ var SQLiteStorage = class {
       observation.token_estimate,
       observation.importance || "medium",
       observation.importance_score ?? 0.5,
+      tagsValue,
       observation.created_at
     );
     const insertedId = Number(info.lastInsertRowid);
@@ -360,6 +364,30 @@ var SQLiteStorage = class {
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
+    return rows.map((row) => this.mapRow(row));
+  }
+  async searchByTag(tag, project, limit = 50) {
+    const likePattern = `%${tag}%`;
+    let sql;
+    let params;
+    if (project) {
+      sql = `
+        SELECT * FROM observations
+        WHERE tags LIKE ? AND project LIKE ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [likePattern, project + "%", limit];
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE tags LIKE ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params = [likePattern, limit];
+    }
+    const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
   }
   async getStats(project) {
@@ -1044,6 +1072,20 @@ var SQLiteStorage = class {
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_obs_rel_unique
       ON observation_relationships(source_id, target_id, relationship)
+    `);
+  }
+  /**
+   * Migration: add tags column to observations for domain classification.
+   */
+  migrateAddTagsColumn() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("tags")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN tags TEXT`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_tags
+      ON observations(tags) WHERE tags IS NOT NULL
     `);
   }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
@@ -1874,6 +1916,136 @@ function isVersionBumpEdit(input) {
   }
   return false;
 }
+var TAG_FILE_RULES = [
+  {
+    tag: "auth",
+    patterns: [
+      /\/auth\//i,
+      /\/authentication\//i,
+      /\/authorization\//i,
+      /auth\.(ts|js|py|go|rs)$/i,
+      /login\.(ts|js|py|go|rs)$/i,
+      /session\.(ts|js|py|go|rs)$/i,
+      /jwt\.(ts|js|py|go|rs)$/i,
+      /oauth/i,
+      /token/i,
+      /credential/i,
+      /password/i
+    ]
+  },
+  {
+    tag: "database",
+    patterns: [
+      /sqlite/i,
+      /postgres/i,
+      /mysql/i,
+      /mongodb/i,
+      /\/db\//i,
+      /\/database\//i,
+      /schema\.(ts|js|py|sql)$/i,
+      /migration/i,
+      /\.sql$/i,
+      /query\.(ts|js|py)$/i
+    ]
+  },
+  {
+    tag: "testing",
+    patterns: [
+      /\.test\./i,
+      /\.spec\./i,
+      /__tests__\//i,
+      /\/test\//i,
+      /\/tests\//i,
+      /\/e2e\//i
+    ]
+  },
+  {
+    tag: "infra",
+    patterns: [
+      /Dockerfile$/i,
+      /docker-compose/i,
+      /\.github\//i,
+      /\/k8s\//i,
+      /\/kubernetes\//i,
+      /\/ansible\//i,
+      /\/terraform\//i,
+      /\.tf$/i,
+      /\.yml$/,
+      /\.yaml$/
+    ]
+  },
+  {
+    tag: "config",
+    patterns: [
+      /package\.json$/,
+      /tsconfig/i,
+      /pyproject\.toml$/,
+      /Makefile$/,
+      /\.env(\.\w+)?$/,
+      /webpack\.config\./,
+      /vite\.config\./,
+      /eslint/,
+      /prettier/,
+      /Cargo\.toml$/,
+      /go\.mod$/,
+      /requirements.*\.txt$/,
+      /setup\.py$/
+    ]
+  },
+  {
+    tag: "frontend",
+    patterns: [
+      /\/web\//i,
+      /\/client\//i,
+      /\/ui\//i,
+      /\/components\//i,
+      /\.html$/,
+      /\.css$/,
+      /\.scss$/,
+      /\.tsx$/,
+      /\.vue$/,
+      /\.svelte$/
+    ]
+  },
+  {
+    tag: "api",
+    patterns: [
+      /\/api\//i,
+      /\/routes\//i,
+      /\/handlers\//i,
+      /\/endpoints\//i,
+      /router\.(ts|js|py|go)$/i,
+      /server\.(ts|js|py|go)$/i,
+      /\.http$/,
+      /openapi/,
+      /swagger/
+    ]
+  }
+];
+var TAG_BASH_RULES = [
+  { tag: "git", pattern: /^git\s+(commit|merge|rebase|cherry-pick|push|pull|fetch|tag)\b/ },
+  { tag: "build", pattern: /\b(npm\s+(run\s+)?build|tsc|cargo\s+build|go\s+build|make\b)\b/ },
+  { tag: "testing", pattern: /\b(npm\s+(run\s+)?test|pytest|cargo\s+test|go\s+test|jest|vitest)\b/ },
+  { tag: "deps", pattern: /\b(npm\s+install|npm\s+i\b|yarn\s+add|pip\s+install|cargo\s+add|go\s+get)\b/ }
+];
+function inferTags(toolName, files, command) {
+  const tags = /* @__PURE__ */ new Set();
+  for (const file of files) {
+    for (const rule of TAG_FILE_RULES) {
+      if (rule.patterns.some((p) => p.test(file))) {
+        tags.add(rule.tag);
+      }
+    }
+  }
+  if (toolName === "Bash" && command) {
+    for (const rule of TAG_BASH_RULES) {
+      if (rule.pattern.test(command)) {
+        tags.add(rule.tag);
+      }
+    }
+  }
+  return [...tags];
+}
 var CONFIG_FILE_PATTERNS = [
   /package\.json$/,
   /tsconfig.*\.json$/,
@@ -2027,6 +2199,8 @@ ${extracted.stored_output}`;
     sanitizedResponse,
     filesTouched
   );
+  const command = capture.tool_input && typeof capture.tool_input === "object" ? capture.tool_input.command : void 0;
+  const tags = inferTags(capture.tool_name, filesTouched, command);
   const metadata = {
     tool_input: capture.tool_input,
     stored_output: extracted.stored_output,
@@ -2042,6 +2216,7 @@ ${extracted.stored_output}`;
     token_estimate: tokenEstimate,
     importance,
     importance_score,
+    tags: tags.length > 0 ? tags : void 0,
     created_at: (/* @__PURE__ */ new Date()).toISOString()
   };
 }
