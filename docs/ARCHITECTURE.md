@@ -164,6 +164,8 @@ export interface Observation {
   is_compacted?: boolean;           // True if this is a compacted summary
   exported_at?: string;             // When exported to auto-memory
   tags?: string[];                  // Domain tags inferred at capture time (v0.8.6)
+  content_hash?: string;            // SHA256 of summary+files_touched+stored_output, for exact dedup
+  similarity_score?: number;        // Cosine similarity [0,1], only present on vector search results
   created_at: string;
 }
 
@@ -265,6 +267,7 @@ erDiagram
         INTEGER is_compacted
         TEXT exported_at
         TEXT tags
+        TEXT content_hash
         BLOB embedding
         TEXT created_at
     }
@@ -334,6 +337,7 @@ CREATE TABLE observations (
   is_compacted INTEGER DEFAULT 0,   -- 1 if compacted summary
   exported_at TEXT,                 -- ISO 8601, set after auto-memory export
   tags TEXT,                        -- Comma-separated domain tags (v0.8.6)
+  content_hash TEXT,                -- SHA256 of summary+files_touched+stored_output, for exact dedup
   embedding BLOB,                   -- 384-dim float32 observation vector (v0.5.5)
   created_at TEXT NOT NULL,
   FOREIGN KEY (session_id) REFERENCES sessions(id)
@@ -346,6 +350,8 @@ CREATE INDEX idx_observations_project_score
   ON observations(project, importance_score DESC, created_at DESC);
 CREATE INDEX idx_observations_tags
   ON observations(tags) WHERE tags IS NOT NULL;  -- partial index (v0.8.6)
+CREATE INDEX idx_observations_project_hash
+  ON observations(project, content_hash) WHERE content_hash IS NOT NULL;  -- partial index for exact dedup
 
 -- User prompts table
 CREATE TABLE user_prompts (
@@ -440,9 +446,11 @@ flowchart TD
     FE --> ADJ["adjust importance_score\ncap −0.15 to +0.20"]
 
     ADJ --> DB["SQLiteStorage.save()"]
-    DB --> DED{duplicate\nwithin window?}
-    DED -->|yes| SK2([skip])
-    DED -->|no| INS["INSERT observation\nimportance · tags · score"]
+    DB --> L1{"Layer 1: SHA256\ncontent_hash match\n(same project)?"}
+    L1 -->|yes| SK2([skip])
+    L1 -->|no| L0{"Layer 0: prefix match\nwithin time window?"}
+    L0 -->|yes| SK3([skip])
+    L0 -->|no| INS["INSERT observation\nimportance · tags · score · content_hash"]
     INS --> FTS[FTS5 trigger]
     INS --> REL["inferRelationships()\nfollowed_by · same_file"]
     FTS & REL --> DONE([captured])
@@ -684,12 +692,19 @@ flowchart TD
     VEC2 -->|yes| RRF["FTS5 + vectorSearch\nmergeWithRRF(k=60)"]
     VEC2 -->|no| FB2[FTS5 fallback]
 
-    KW & VS & RRF & FB1 & FB2 --> ENR["enrich top 3\nwith getRelatedObservations()"]
+    VS --> FLOOR1["abstention floor\nsimilarity_score >= 0.25\nFTS5 results always pass"]
+    RRF --> FLOOR1
+
+    KW & FLOOR1 & FB1 & FB2 --> ENR["enrich top 3\nwith getRelatedObservations()"]
     ENR --> OUT([results + related + prompts])
     TAGF --> OUT
 ```
 
 **Reciprocal Rank Fusion (RRF)**: Each result's score = Σ 1/(k + rank) across all lists where it appears. k=60 per the original paper. Results sorted by fused score, top 20 returned.
+
+**Abstention floor**: Semantic results (observations and sessions) with `similarity_score < SEARCH_MIN_SCORE` (default `0.25`, override via `CONTEXT_SEARCH_MIN_SCORE` env var) are discarded before returning. In hybrid mode, FTS5-matched results always pass; only vector-only results are subject to the floor. Keyword (FTS5) results are never filtered — exact lexical matches are always valid. When the floor suppresses all results, the empty-result message explains why.
+
+**Layer 2 semantic dedup**: When `context_embed` runs, `saveEmbedding()` checks cosine similarity of the new embedding against the already-embedded corpus (same project). If similarity >= 0.85, the observation is demoted to `importance='low'` and `importance_score=0.05` rather than deleted, preserving relational integrity. This runs at embed time (not capture time) to avoid loading the model in the hook process.
 
 **Graceful degradation**: Semantic and hybrid fall back to keyword-only if sqlite-vec is not loaded or embeddings haven't been generated.
 
@@ -753,6 +768,7 @@ function stripPrivateTags(content: string): string {
 |----------|---------|-------------|
 | `CONTEXT_MANAGER_DB` | `~/.claude-context/context.db` | Database path |
 | `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens to inject |
+| `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic/hybrid search results; FTS5 results are not filtered |
 
 ### Allowed Project Roots
 

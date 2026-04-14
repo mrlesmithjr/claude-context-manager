@@ -30104,6 +30104,15 @@ import { mkdirSync } from "fs";
 var load = __sqliteVec.load;
 var sqlite_vec_default = __sqliteVec;
 
+// src/utils/hash.ts
+import { createHash } from "crypto";
+function sha256(content) {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+function l2DistanceToCosine(l2Distance) {
+  return Math.max(0, Math.min(1, 1 - l2Distance * l2Distance / 2));
+}
+
 // src/storage/sqlite.ts
 var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
 var SQLiteStorage = class {
@@ -30258,6 +30267,7 @@ var SQLiteStorage = class {
     this.migrateAddFileEncounterCounts();
     this.migrateAddObservationRelationships();
     this.migrateAddTagsColumn();
+    this.migrateAddContentHash();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -30327,10 +30337,23 @@ var SQLiteStorage = class {
       is_compacted: row.is_compacted === 1,
       exported_at: row.exported_at || void 0,
       tags: row.tags ? row.tags.split(",").filter(Boolean) : void 0,
+      content_hash: row.content_hash || void 0,
       created_at: row.created_at
     };
   }
   async save(observation) {
+    const storedOutput = typeof observation.metadata?.stored_output === "string" ? observation.metadata.stored_output : "";
+    const hashInput = `${observation.summary}
+${JSON.stringify(observation.files_touched)}
+${storedOutput}`;
+    const contentHash = sha256(hashInput);
+    const hashCheck = this.db.prepare(`
+      SELECT COUNT(*) as count FROM observations
+      WHERE project LIKE ? AND content_hash = ?
+    `).get(observation.project + "%", contentHash);
+    if (hashCheck.count > 0) {
+      return void 0;
+    }
     const summaryPrefix = this.normalizeSummaryForDedup(observation.summary, observation.tool_name);
     let dedupeWindowMs = 3e5;
     let crossSession = false;
@@ -30375,8 +30398,8 @@ var SQLiteStorage = class {
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tagsValue = observation.tags && observation.tags.length > 0 ? observation.tags.join(",") : null;
     const info = stmt.run(
@@ -30391,6 +30414,7 @@ var SQLiteStorage = class {
       observation.importance || "medium",
       observation.importance_score ?? 0.5,
       tagsValue,
+      contentHash,
       observation.created_at
     );
     const insertedId = Number(info.lastInsertRowid);
@@ -31032,9 +31056,43 @@ var SQLiteStorage = class {
   isVectorSearchEnabled() {
     return this.vecEnabled;
   }
+  /**
+   * Layer 2 semantic dedup: cosine similarity check against already-embedded corpus.
+   * Only runs when sqlite-vec is enabled. Returns true if a near-duplicate exists.
+   *
+   * Runs at embed time (not capture time) to avoid loading the model in the hook process.
+   * When a near-duplicate is detected, the caller demotes importance rather than deleting,
+   * preserving relational integrity (observation_relationships may reference this row).
+   */
+  checkSemanticDuplicate(embedding, project, id, threshold = 0.85) {
+    if (!this.vecEnabled)
+      return false;
+    const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+    const row = this.db.prepare(`
+      SELECT v.distance
+      FROM vec_observations v
+      INNER JOIN observations o ON o.id = v.observation_id
+      WHERE v.embedding MATCH ? AND k = ?
+        AND o.project LIKE ?
+        AND v.observation_id != CAST(? AS INTEGER)
+      ORDER BY v.distance ASC
+      LIMIT 1
+    `).get(embeddingBuf, 10, project + "%", id);
+    if (!row)
+      return false;
+    return l2DistanceToCosine(row.distance) >= threshold;
+  }
   async saveEmbedding(id, embedding) {
     if (!this.vecEnabled) {
       throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
+    }
+    const obs = this.db.prepare(
+      `SELECT project FROM observations WHERE id = ?`
+    ).get(id);
+    if (obs && this.checkSemanticDuplicate(embedding, obs.project, id)) {
+      this.db.prepare(
+        `UPDATE observations SET importance = 'low', importance_score = 0.05 WHERE id = ?`
+      ).run(id);
     }
     const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
     const saveTransaction = this.db.transaction(() => {
@@ -31075,7 +31133,14 @@ var SQLiteStorage = class {
       params = [embeddingBuf, topK];
     }
     const rows = this.db.prepare(sql).all(...params);
-    return rows.map((row) => this.mapRow(row));
+    return rows.map((row) => {
+      const obs = this.mapRow(row);
+      const distance = row.distance;
+      if (distance != null) {
+        obs.similarity_score = l2DistanceToCosine(distance);
+      }
+      return obs;
+    });
   }
   /**
    * Count observations missing embeddings (efficient SQL COUNT)
@@ -31176,6 +31241,21 @@ var SQLiteStorage = class {
       ON observations(tags) WHERE tags IS NOT NULL
     `);
   }
+  /**
+   * Migration: add content_hash column for SHA256-based exact deduplication.
+   * Partial index scoped by project keeps hash lookups fast without scanning NULLs.
+   */
+  migrateAddContentHash() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("content_hash")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN content_hash TEXT`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_project_hash
+      ON observations(project, content_hash) WHERE content_hash IS NOT NULL
+    `);
+  }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
       throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
@@ -31262,14 +31342,18 @@ var SQLiteStorage = class {
       }
       rows = this.db.prepare(sql).all(...params);
     }
-    return rows.map((row) => ({
-      id: row.id,
-      project: row.project,
-      started_at: row.started_at,
-      ended_at: row.ended_at || void 0,
-      summary: row.summary || void 0,
-      status: row.status
-    }));
+    return rows.map((row) => {
+      const distance = row.distance;
+      return {
+        id: row.id,
+        project: row.project,
+        started_at: row.started_at,
+        ended_at: row.ended_at || void 0,
+        summary: row.summary || void 0,
+        status: row.status,
+        similarity_score: distance != null ? l2DistanceToCosine(distance) : void 0
+      };
+    });
   }
   countUnembeddedSessions(project) {
     const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete'`;
@@ -32545,10 +32629,11 @@ function formatConsolidationReport(report) {
 }
 
 // src/mcp/server.ts
+var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.8.6" : "0.5.0"
+    version: true ? "0.8.7" : "0.5.0"
   },
   {
     instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age \u2014 always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -32747,9 +32832,15 @@ ${formatObservations(results)}` : `No observations found for ${label}.`;
         const embeddingService = getEmbeddingService();
         const queryEmbedding = await embeddingService.embed(query);
         if (queryEmbedding) {
-          sessionResults = await db.vectorSearchSessions(queryEmbedding, project, 10);
+          const rawSessions = await db.vectorSearchSessions(queryEmbedding, project, 10);
+          sessionResults = rawSessions.filter(
+            (s) => s.similarity_score == null || s.similarity_score >= SEARCH_MIN_SCORE
+          );
           if (sessionResults.length === 0) {
-            observations = await db.vectorSearch(queryEmbedding, project, 20);
+            const rawObs = await db.vectorSearch(queryEmbedding, project, 20);
+            observations = rawObs.filter(
+              (o) => o.similarity_score == null || o.similarity_score >= SEARCH_MIN_SCORE
+            );
           }
           searchMethod = "semantic";
         } else {
@@ -32767,7 +32858,10 @@ ${formatObservations(results)}` : `No observations found for ${label}.`;
         const queryEmbedding = await embeddingService.embed(query);
         if (queryEmbedding) {
           const vecResults = await db.vectorSearch(queryEmbedding, project, 20);
-          observations = mergeWithRRF(ftsResults, vecResults);
+          const ftsIds = new Set(ftsResults.map((o) => o.id));
+          observations = mergeWithRRF(ftsResults, vecResults).filter(
+            (o) => ftsIds.has(o.id) || (o.similarity_score == null || o.similarity_score >= SEARCH_MIN_SCORE)
+          );
           searchMethod = "hybrid (RRF)";
         } else {
           observations = ftsResults;
@@ -32822,11 +32916,12 @@ ${formatObservations(relatedObs.slice(0, 10))}`);
 ${formatPrompts(prompts)}`);
     }
     if (sections.length === 0) {
+      const floorNote = strategy === "semantic" || strategy === "hybrid" && searchMethod === "hybrid (RRF)" ? ` Results may exist but scored below the relevance threshold (${SEARCH_MIN_SCORE}). Try a more specific query or use a keyword search.` : "";
       return {
         content: [
           {
             type: "text",
-            text: `No observations found matching "${query}" (${searchMethod}).`
+            text: `No observations found matching "${query}" (${searchMethod}).${floorNote}`
           }
         ]
       };

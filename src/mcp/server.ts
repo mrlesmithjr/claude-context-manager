@@ -28,6 +28,12 @@ import {
   formatShortDate,
 } from '../utils/session-format.js';
 
+// Minimum cosine similarity score for semantic/hybrid search results.
+// Results below this threshold are suppressed to avoid returning low-signal noise.
+// Applies to semantic path only — FTS5 (keyword) results are exact matches and always pass.
+// Override via CONTEXT_SEARCH_MIN_SCORE env var.
+const SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? '0.25');
+
 // Version injected by esbuild
 declare const PLUGIN_VERSION: string;
 
@@ -320,9 +326,15 @@ server.tool(
         const queryEmbedding = await embeddingService.embed(query);
         if (queryEmbedding) {
           // Try session-level first (enriched, higher quality)
-          sessionResults = await db.vectorSearchSessions(queryEmbedding, project, 10);
+          const rawSessions = await db.vectorSearchSessions(queryEmbedding, project, 10);
+          sessionResults = rawSessions.filter(
+            s => s.similarity_score == null || s.similarity_score >= SEARCH_MIN_SCORE
+          );
           if (sessionResults.length === 0) {
-            observations = await db.vectorSearch(queryEmbedding, project, 20);
+            const rawObs = await db.vectorSearch(queryEmbedding, project, 20);
+            observations = rawObs.filter(
+              o => o.similarity_score == null || o.similarity_score >= SEARCH_MIN_SCORE
+            );
           }
           searchMethod = 'semantic';
         } else {
@@ -342,7 +354,11 @@ server.tool(
         const queryEmbedding = await embeddingService.embed(query);
         if (queryEmbedding) {
           const vecResults = await db.vectorSearch(queryEmbedding, project, 20);
-          observations = mergeWithRRF(ftsResults, vecResults);
+          const ftsIds = new Set(ftsResults.map(o => o.id));
+          // FTS5-matched results always pass; vector-only results must clear the floor
+          observations = mergeWithRRF(ftsResults, vecResults).filter(
+            o => ftsIds.has(o.id!) || (o.similarity_score == null || o.similarity_score >= SEARCH_MIN_SCORE)
+          );
           searchMethod = 'hybrid (RRF)';
         } else {
           observations = ftsResults;
@@ -403,11 +419,15 @@ server.tool(
     }
 
     if (sections.length === 0) {
+      const floorNote =
+        strategy === 'semantic' || (strategy === 'hybrid' && searchMethod === 'hybrid (RRF)')
+          ? ` Results may exist but scored below the relevance threshold (${SEARCH_MIN_SCORE}). Try a more specific query or use a keyword search.`
+          : '';
       return {
         content: [
           {
             type: 'text' as const,
-            text: `No observations found matching "${query}" (${searchMethod}).`,
+            text: `No observations found matching "${query}" (${searchMethod}).${floorNote}`,
           },
         ],
       };

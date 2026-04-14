@@ -13,6 +13,7 @@ import { homedir } from 'os';
 import path from 'path';
 import { mkdirSync } from 'fs';
 import * as sqliteVec from 'sqlite-vec';
+import { sha256, l2DistanceToCosine } from '../utils/hash.js';
 import type {
   ContextStorage,
   Observation,
@@ -231,6 +232,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add domain tags column
     this.migrateAddTagsColumn();
+
+    // Migration: add content_hash column for exact dedup
+    this.migrateAddContentHash();
   }
 
   /**
@@ -311,11 +315,32 @@ export class SQLiteStorage implements ContextStorage {
       is_compacted: (row.is_compacted as number) === 1,
       exported_at: (row.exported_at as string) || undefined,
       tags: row.tags ? (row.tags as string).split(',').filter(Boolean) : undefined,
+      content_hash: (row.content_hash as string) || undefined,
       created_at: row.created_at as string,
     };
   }
 
   async save(observation: Omit<Observation, 'id'>): Promise<number | undefined> {
+    // --- Layer 1: Exact SHA256 dedup (same project, no time window) ---
+    // Hash covers summary + files_touched + stored_output so that same-content
+    // tool results are detected even when called at different times.
+    const storedOutput =
+      typeof (observation.metadata as Record<string, unknown>)?.stored_output === 'string'
+        ? ((observation.metadata as Record<string, unknown>).stored_output as string)
+        : '';
+    const hashInput = `${observation.summary}\n${JSON.stringify(observation.files_touched)}\n${storedOutput}`;
+    const contentHash = sha256(hashInput);
+
+    const hashCheck = this.db.prepare(`
+      SELECT COUNT(*) as count FROM observations
+      WHERE project LIKE ? AND content_hash = ?
+    `).get(observation.project + '%', contentHash) as { count: number };
+
+    if (hashCheck.count > 0) {
+      return undefined;
+    }
+
+    // --- Layer 0: Time-windowed prefix dedup (existing logic) ---
     // Deduplication: skip if very similar observation exists recently
     // CROSS-SESSION deduplication within same project (not just same session)
     // Window varies by command type based on data analysis:
@@ -381,8 +406,8 @@ export class SQLiteStorage implements ContextStorage {
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const tagsValue = observation.tags && observation.tags.length > 0
@@ -401,6 +426,7 @@ export class SQLiteStorage implements ContextStorage {
       observation.importance || 'medium',
       observation.importance_score ?? 0.5,
       tagsValue,
+      contentHash,
       observation.created_at
     );
 
@@ -1312,9 +1338,60 @@ export class SQLiteStorage implements ContextStorage {
     return this.vecEnabled;
   }
 
+  /**
+   * Layer 2 semantic dedup: cosine similarity check against already-embedded corpus.
+   * Only runs when sqlite-vec is enabled. Returns true if a near-duplicate exists.
+   *
+   * Runs at embed time (not capture time) to avoid loading the model in the hook process.
+   * When a near-duplicate is detected, the caller demotes importance rather than deleting,
+   * preserving relational integrity (observation_relationships may reference this row).
+   */
+  private checkSemanticDuplicate(
+    embedding: Float32Array,
+    project: string,
+    id: number,
+    threshold: number = 0.85
+  ): boolean {
+    if (!this.vecEnabled) return false;
+
+    const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+
+    // Fetch the nearest neighbor from vec_observations, scoped to same project,
+    // excluding the observation itself (it may already have an old embedding).
+    // k=10 gives a pool large enough to cover same-project results after the
+    // JOIN + exclusion filter. k=1 would only return the global nearest neighbor,
+    // which may be from a different project and get filtered out entirely.
+    const row = this.db.prepare(`
+      SELECT v.distance
+      FROM vec_observations v
+      INNER JOIN observations o ON o.id = v.observation_id
+      WHERE v.embedding MATCH ? AND k = ?
+        AND o.project LIKE ?
+        AND v.observation_id != CAST(? AS INTEGER)
+      ORDER BY v.distance ASC
+      LIMIT 1
+    `).get(embeddingBuf, 10, project + '%', id) as { distance: number } | undefined;
+
+    if (!row) return false;
+    return l2DistanceToCosine(row.distance) >= threshold;
+  }
+
   async saveEmbedding(id: number, embedding: Float32Array): Promise<void> {
     if (!this.vecEnabled) {
       throw new Error('Vector search is not enabled (sqlite-vec not loaded)');
+    }
+
+    // Layer 2: semantic dedup — demote near-duplicates before indexing.
+    // Runs here rather than in save() because the embedding model isn't loaded
+    // in the hook process (would add >100ms latency per capture).
+    const obs = this.db.prepare(
+      `SELECT project FROM observations WHERE id = ?`
+    ).get(id) as { project: string } | undefined;
+
+    if (obs && this.checkSemanticDuplicate(embedding, obs.project, id)) {
+      this.db.prepare(
+        `UPDATE observations SET importance = 'low', importance_score = 0.05 WHERE id = ?`
+      ).run(id);
     }
 
     const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
@@ -1367,7 +1444,14 @@ export class SQLiteStorage implements ContextStorage {
     }
 
     const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-    return rows.map(row => this.mapRow(row));
+    return rows.map(row => {
+      const obs = this.mapRow(row);
+      const distance = row.distance as number | undefined;
+      if (distance != null) {
+        obs.similarity_score = l2DistanceToCosine(distance);
+      }
+      return obs;
+    });
   }
 
   /**
@@ -1488,6 +1572,24 @@ export class SQLiteStorage implements ContextStorage {
     `);
   }
 
+  /**
+   * Migration: add content_hash column for SHA256-based exact deduplication.
+   * Partial index scoped by project keeps hash lookups fast without scanning NULLs.
+   */
+  private migrateAddContentHash(): void {
+    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('content_hash')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN content_hash TEXT`);
+    }
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_project_hash
+      ON observations(project, content_hash) WHERE content_hash IS NOT NULL
+    `);
+  }
+
   async saveSessionEmbedding(sessionId: string, embedding: Float32Array, enrichedText: string): Promise<void> {
     if (!this.vecEnabled) {
       throw new Error('Vector search is not enabled (sqlite-vec not loaded)');
@@ -1591,14 +1693,18 @@ export class SQLiteStorage implements ContextStorage {
       rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
     }
 
-    return rows.map(row => ({
-      id: row.id as string,
-      project: row.project as string,
-      started_at: row.started_at as string,
-      ended_at: (row.ended_at as string) || undefined,
-      summary: (row.summary as string) || undefined,
-      status: row.status as 'active' | 'complete',
-    }));
+    return rows.map(row => {
+      const distance = row.distance as number | undefined;
+      return {
+        id: row.id as string,
+        project: row.project as string,
+        started_at: row.started_at as string,
+        ended_at: (row.ended_at as string) || undefined,
+        summary: (row.summary as string) || undefined,
+        status: row.status as 'active' | 'complete',
+        similarity_score: distance != null ? l2DistanceToCosine(distance) : undefined,
+      };
+    });
   }
 
   countUnembeddedSessions(project?: string): number {

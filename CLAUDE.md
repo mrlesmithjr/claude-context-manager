@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: April 13, 2026 (v0.8.6)
+**Last Updated**: April 14, 2026 (v0.8.7)
 
 ---
 
@@ -170,6 +170,7 @@ claude-context-manager/
 |   |   +-- interface.ts       # Storage interface definition
 |   |   +-- sqlite.ts          # SQLite implementation + sqlite-vec
 |   +-- utils/
+|       +-- hash.ts            # sha256() for exact dedup, l2DistanceToCosine() for vector search
 |       +-- sanitize.ts        # Privacy tag stripping
 |       +-- validation.ts      # Input validation
 +-- web/
@@ -415,6 +416,7 @@ Environment variables (optional):
 | `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens for context injection |
 | `CONTEXT_MANAGER_PORT` | `3847` | Web dashboard port |
 | `CONTEXT_MANAGER_HOST` | `localhost` | Web dashboard host |
+| `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic/hybrid search results; FTS5 results are never filtered |
 
 ---
 

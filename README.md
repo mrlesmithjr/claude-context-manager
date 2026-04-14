@@ -475,6 +475,7 @@ Optional environment variables:
 |----------|---------|-------------|
 | `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens to inject at session start |
 | `CONTEXT_MANAGER_DB` | `~/.claude-context/context.db` | Database path |
+| `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic/hybrid search results; FTS5 results are never filtered |
 
 ---
 

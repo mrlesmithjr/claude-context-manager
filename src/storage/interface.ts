@@ -34,6 +34,8 @@ export interface Observation {
   is_compacted?: boolean;
   exported_at?: string; // ISO 8601 timestamp — when exported to auto-memory
   tags?: string[]; // Domain tags inferred at capture time (auth, database, testing, etc.)
+  content_hash?: string; // SHA256 of summary+files_touched+stored_output, used for exact dedup
+  similarity_score?: number; // Cosine similarity [0,1], only present on vector search results
   created_at: string; // ISO 8601 timestamp
 }
 
@@ -44,6 +46,7 @@ export interface Session {
   ended_at?: string;
   summary?: string;
   status: 'active' | 'complete';
+  similarity_score?: number; // Cosine similarity [0,1], only present on vector search results
 }
 
 export interface UserPrompt {
