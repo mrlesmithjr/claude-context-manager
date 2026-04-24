@@ -30684,6 +30684,22 @@ ${storedOutput}`;
     const compactionResult = await this.compactObservations(7);
     this.db.prepare(`
       DELETE FROM user_prompts
+      WHERE session_id IN (
+        SELECT id FROM sessions
+        WHERE ended_at IS NULL
+          AND started_at < datetime('now', '-1 day')
+          AND id NOT IN (SELECT DISTINCT session_id FROM observations)
+      )
+    `).run();
+    const ghostResult = this.db.prepare(`
+      DELETE FROM sessions
+      WHERE ended_at IS NULL
+        AND started_at < datetime('now', '-1 day')
+        AND id NOT IN (SELECT DISTINCT session_id FROM observations)
+    `).run();
+    const deletedGhostSessions = ghostResult.changes;
+    this.db.prepare(`
+      DELETE FROM user_prompts
       WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)
     `).run();
     const orphanStmt = this.db.prepare(`
@@ -30692,7 +30708,7 @@ ${storedOutput}`;
         AND id NOT IN (SELECT DISTINCT session_id FROM user_prompts)
     `);
     const orphanResult = orphanStmt.run();
-    const deletedSessions = orphanResult.changes;
+    const deletedSessions = orphanResult.changes + deletedGhostSessions;
     this.db.pragma("foreign_keys = OFF");
     this.db.exec("ANALYZE");
     this.db.exec("VACUUM");
@@ -32633,7 +32649,7 @@ var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25"
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.8.10" : "0.5.0"
+    version: true ? "0.8.11" : "0.5.0"
   },
   {
     instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age \u2014 always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."

@@ -814,6 +814,26 @@ export class SQLiteStorage implements ContextStorage {
     // Run compaction on observations older than 7 days
     const compactionResult = await this.compactObservations(7);
 
+    // Clean up ghost sessions: never closed, 0 observations, older than 24h.
+    // These accumulate when a conversation starts but Claude Code is closed before
+    // any tool calls are made (Stop hook never fires, session stays open forever).
+    this.db.prepare(`
+      DELETE FROM user_prompts
+      WHERE session_id IN (
+        SELECT id FROM sessions
+        WHERE ended_at IS NULL
+          AND started_at < datetime('now', '-1 day')
+          AND id NOT IN (SELECT DISTINCT session_id FROM observations)
+      )
+    `).run();
+    const ghostResult = this.db.prepare(`
+      DELETE FROM sessions
+      WHERE ended_at IS NULL
+        AND started_at < datetime('now', '-1 day')
+        AND id NOT IN (SELECT DISTINCT session_id FROM observations)
+    `).run();
+    const deletedGhostSessions = ghostResult.changes;
+
     // Clean up orphaned user_prompts (sessions with no remaining observations)
     this.db.prepare(`
       DELETE FROM user_prompts
@@ -827,7 +847,7 @@ export class SQLiteStorage implements ContextStorage {
         AND id NOT IN (SELECT DISTINCT session_id FROM user_prompts)
     `);
     const orphanResult = orphanStmt.run();
-    const deletedSessions = orphanResult.changes;
+    const deletedSessions = orphanResult.changes + deletedGhostSessions;
 
     // Update query planner statistics and reclaim space
     // Temporarily disable FK checks for VACUUM (pre-existing violations may remain)

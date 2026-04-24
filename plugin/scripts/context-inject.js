@@ -596,6 +596,22 @@ ${storedOutput}`;
     const compactionResult = await this.compactObservations(7);
     this.db.prepare(`
       DELETE FROM user_prompts
+      WHERE session_id IN (
+        SELECT id FROM sessions
+        WHERE ended_at IS NULL
+          AND started_at < datetime('now', '-1 day')
+          AND id NOT IN (SELECT DISTINCT session_id FROM observations)
+      )
+    `).run();
+    const ghostResult = this.db.prepare(`
+      DELETE FROM sessions
+      WHERE ended_at IS NULL
+        AND started_at < datetime('now', '-1 day')
+        AND id NOT IN (SELECT DISTINCT session_id FROM observations)
+    `).run();
+    const deletedGhostSessions = ghostResult.changes;
+    this.db.prepare(`
+      DELETE FROM user_prompts
       WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)
     `).run();
     const orphanStmt = this.db.prepare(`
@@ -604,7 +620,7 @@ ${storedOutput}`;
         AND id NOT IN (SELECT DISTINCT session_id FROM user_prompts)
     `);
     const orphanResult = orphanStmt.run();
-    const deletedSessions = orphanResult.changes;
+    const deletedSessions = orphanResult.changes + deletedGhostSessions;
     this.db.pragma("foreign_keys = OFF");
     this.db.exec("ANALYZE");
     this.db.exec("VACUUM");
@@ -1530,11 +1546,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.10") {
+    if (installedVersion !== "0.8.11") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.10"}
+   Source:    v${"0.8.11"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1565,7 +1581,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.10"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.11"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     const context = lines.join("\n");
     console.error(`[context-manager] ${count} observations tracked, activity exported to auto-memory`);
