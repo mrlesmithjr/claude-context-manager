@@ -2014,7 +2014,10 @@ var TAG_FILE_RULES = [
       /oauth/i,
       /token/i,
       /credential/i,
-      /password/i
+      /password/i,
+      /ssh_config$/i,
+      /\.pem$/i,
+      /\.key$/i
     ]
   },
   {
@@ -2044,6 +2047,14 @@ var TAG_FILE_RULES = [
     ]
   },
   {
+    tag: "git",
+    patterns: [
+      /\.gitignore$/i,
+      /\.gitattributes$/i,
+      /\.gitmodules$/i
+    ]
+  },
+  {
     tag: "infra",
     patterns: [
       /Dockerfile$/i,
@@ -2055,7 +2066,9 @@ var TAG_FILE_RULES = [
       /\/terraform\//i,
       /\.tf$/i,
       /\.yml$/,
-      /\.yaml$/
+      /\.yaml$/,
+      /\/molecule\//i,
+      /ansible\.cfg$/i
     ]
   },
   {
@@ -2107,10 +2120,14 @@ var TAG_FILE_RULES = [
   }
 ];
 var TAG_BASH_RULES = [
-  { tag: "git", pattern: /^git\s+(commit|merge|rebase|cherry-pick|push|pull|fetch|tag)\b/ },
-  { tag: "build", pattern: /\b(npm\s+(run\s+)?build|tsc|cargo\s+build|go\s+build|make\b)\b/ },
-  { tag: "testing", pattern: /\b(npm\s+(run\s+)?test|pytest|cargo\s+test|go\s+test|jest|vitest)\b/ },
-  { tag: "deps", pattern: /\b(npm\s+install|npm\s+i\b|yarn\s+add|pip\s+install|cargo\s+add|go\s+get)\b/ }
+  { tag: "git", pattern: /^git\s+\w/ },
+  { tag: "git", pattern: /^gh\s+(pr|issue|repo|release|run|workflow|auth|gist)\b/ },
+  { tag: "build", pattern: /\b(npm\s+(run\s+)?build|tsc\b|cargo\s+build|go\s+build|make\b|uv\s+build)\b/ },
+  { tag: "testing", pattern: /\b(npm\s+(run\s+)?test|pytest\b|cargo\s+test|go\s+test|jest\b|vitest\b)\b/ },
+  { tag: "deps", pattern: /\b(npm\s+install|npm\s+i\b|yarn\s+add|pip\s+install|pip3\s+install|cargo\s+add|go\s+get|uv\s+add|uv\s+install|poetry\s+add|poetry\s+install)\b/ },
+  { tag: "build", pattern: /\buv\s+run\b/ },
+  { tag: "infra", pattern: /\b(docker\s+(build|run|compose|push|pull|tag)|kubectl\b|helm\b|terraform\b)\b/ },
+  { tag: "infra", pattern: /\b(ansible-playbook\b|ansible-galaxy\b|ansible\b)\b/ }
 ];
 function inferTags(toolName, files, command) {
   const tags = /* @__PURE__ */ new Set();
