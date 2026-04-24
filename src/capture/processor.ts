@@ -539,7 +539,7 @@ const TAG_FILE_RULES: Array<{ patterns: RegExp[]; tag: ObservationTag }> = [
 ];
 
 const TAG_BASH_RULES: Array<{ pattern: RegExp; tag: ObservationTag }> = [
-  { tag: 'git',     pattern: /^git\s+\w/ },
+  { tag: 'git',     pattern: /^git\s+/ },
   { tag: 'git',     pattern: /^gh\s+(pr|issue|repo|release|run|workflow|auth|gist)\b/ },
   { tag: 'build',   pattern: /\b(npm\s+(run\s+)?build|tsc\b|cargo\s+build|go\s+build|make\b|uv\s+build)\b/ },
   { tag: 'testing', pattern: /\b(npm\s+(run\s+)?test|pytest\b|cargo\s+test|go\s+test|jest\b|vitest\b)\b/ },

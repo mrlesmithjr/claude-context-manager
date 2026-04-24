@@ -2120,7 +2120,7 @@ var TAG_FILE_RULES = [
   }
 ];
 var TAG_BASH_RULES = [
-  { tag: "git", pattern: /^git\s+\w/ },
+  { tag: "git", pattern: /^git\s+/ },
   { tag: "git", pattern: /^gh\s+(pr|issue|repo|release|run|workflow|auth|gist)\b/ },
   { tag: "build", pattern: /\b(npm\s+(run\s+)?build|tsc\b|cargo\s+build|go\s+build|make\b|uv\s+build)\b/ },
   { tag: "testing", pattern: /\b(npm\s+(run\s+)?test|pytest\b|cargo\s+test|go\s+test|jest\b|vitest\b)\b/ },
