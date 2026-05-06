@@ -468,6 +468,21 @@ function isVersionBumpEdit(input: Record<string, unknown>): boolean {
   return false;
 }
 
+function isNearNoOpEdit(input: Record<string, unknown>): boolean {
+  const oldStr = typeof input.old_string === 'string' ? input.old_string : '';
+  const newStr = typeof input.new_string === 'string' ? input.new_string : '';
+  if (!oldStr && !newStr) return false;
+  // Pure whitespace/formatting change — same content, different spacing
+  if (oldStr.replace(/\s/g, '') === newStr.replace(/\s/g, '')) return true;
+  // Comment-only additions
+  const oldLines = oldStr.split('\n').map(l => l.trim()).filter(Boolean);
+  const newLines = newStr.split('\n').map(l => l.trim()).filter(Boolean);
+  const oldSet = new Set(oldLines);
+  const addedLines = newLines.filter(l => !oldSet.has(l));
+  if (addedLines.length === 0) return true;
+  return addedLines.every(l => /^(\/\/|#|\/\*|\*|\*\/)/.test(l));
+}
+
 // --- Tag inference ---
 
 const TAG_FILE_RULES: Array<{ patterns: RegExp[]; tag: ObservationTag }> = [
@@ -640,10 +655,11 @@ export function calculateImportance(
   // Base score by tool type
   switch (toolName) {
     case 'Edit': {
-      // Demote version bump edits — they're boilerplate
       const editInput = toolInput as Record<string, unknown> | undefined;
       if (editInput && isVersionBumpEdit(editInput)) {
         score = 0.40;
+      } else if (editInput && isNearNoOpEdit(editInput)) {
+        score = 0.15;
       } else {
         score = 0.80;
       }

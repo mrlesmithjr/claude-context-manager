@@ -128,13 +128,34 @@ async function main() {
     // Check for version mismatch
     const versionWarning = checkVersionMismatch();
 
-    // Build minimal status hint (~30 tokens instead of ~1,400)
+    // Build status hint
     const lines: string[] = [];
     if (versionWarning) {
       lines.push(versionWarning);
     }
     lines.push(`context-manager v${PLUGIN_VERSION} active. ${count} observations tracked.`);
     lines.push('Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.');
+
+    // Inject recent session summaries for project continuity (~100-150 additional tokens)
+    try {
+      const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 5);
+      const withSummaries = recentSessions
+        .map(r => r.session)
+        .filter(s => s.summary && s.summary.trim().length > 20 && s.status === 'complete');
+      if (withSummaries.length > 0) {
+        const sessionLines = withSummaries.slice(0, 3).map(s => {
+          const date = new Date(s.started_at);
+          const label = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const snippet = s.summary!.replace(/\n+/g, ' ').substring(0, 120);
+          return `- [${label}] ${snippet}`;
+        });
+        lines.push('');
+        lines.push('Recent sessions:');
+        lines.push(...sessionLines);
+      }
+    } catch {
+      // Non-critical — skip if session lookup fails
+    }
 
     const context = lines.join('\n');
 

@@ -2016,6 +2016,21 @@ function isVersionBumpEdit(input) {
   }
   return false;
 }
+function isNearNoOpEdit(input) {
+  const oldStr = typeof input.old_string === "string" ? input.old_string : "";
+  const newStr = typeof input.new_string === "string" ? input.new_string : "";
+  if (!oldStr && !newStr)
+    return false;
+  if (oldStr.replace(/\s/g, "") === newStr.replace(/\s/g, ""))
+    return true;
+  const oldLines = oldStr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const newLines = newStr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const oldSet = new Set(oldLines);
+  const addedLines = newLines.filter((l) => !oldSet.has(l));
+  if (addedLines.length === 0)
+    return true;
+  return addedLines.every((l) => /^(\/\/|#|\/\*|\*|\*\/)/.test(l));
+}
 var TAG_FILE_RULES = [
   {
     tag: "auth",
@@ -2201,6 +2216,8 @@ function calculateImportance(toolName, toolInput, toolResponse, filesTouched) {
       const editInput = toolInput;
       if (editInput && isVersionBumpEdit(editInput)) {
         score = 0.4;
+      } else if (editInput && isNearNoOpEdit(editInput)) {
+        score = 0.15;
       } else {
         score = 0.8;
       }

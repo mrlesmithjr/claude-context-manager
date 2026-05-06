@@ -596,6 +596,22 @@ ${storedOutput}`;
     const compactionResult = await this.compactObservations(7);
     this.db.prepare(`
       DELETE FROM user_prompts
+      WHERE session_id IN (
+        SELECT id FROM sessions
+        WHERE ended_at IS NULL
+          AND started_at < datetime('now', '-1 day')
+          AND id NOT IN (SELECT DISTINCT session_id FROM observations)
+      )
+    `).run();
+    const ghostResult = this.db.prepare(`
+      DELETE FROM sessions
+      WHERE ended_at IS NULL
+        AND started_at < datetime('now', '-1 day')
+        AND id NOT IN (SELECT DISTINCT session_id FROM observations)
+    `).run();
+    const deletedGhostSessions = ghostResult.changes;
+    this.db.prepare(`
+      DELETE FROM user_prompts
       WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)
     `).run();
     const orphanStmt = this.db.prepare(`
@@ -604,7 +620,7 @@ ${storedOutput}`;
         AND id NOT IN (SELECT DISTINCT session_id FROM user_prompts)
     `);
     const orphanResult = orphanStmt.run();
-    const deletedSessions = orphanResult.changes;
+    const deletedSessions = orphanResult.changes + deletedGhostSessions;
     this.db.pragma("foreign_keys = OFF");
     this.db.exec("ANALYZE");
     this.db.exec("VACUUM");
@@ -1989,7 +2005,7 @@ function extractSummaryFromTranscript(transcriptPath) {
         continue;
       }
     }
-    const chosen = bestScore >= 0.25 ? bestText : lastAssistantContent;
+    const chosen = bestScore >= 0 ? bestText : lastAssistantContent;
     if (chosen) {
       const summary = chosen.length > 1500 ? chosen.substring(0, 1500) + "..." : chosen;
       debugLog("EXTRACTED_SUMMARY", { score: bestScore, length: summary.length, preview: summary.substring(0, 200) });

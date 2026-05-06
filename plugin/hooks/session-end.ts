@@ -151,8 +151,8 @@ function extractSummaryFromTranscript(transcriptPath: string): string | undefine
       }
     }
 
-    // Use best-scoring message if it clears a minimum threshold
-    const chosen = bestScore >= 0.25 ? bestText : lastAssistantContent;
+    // Prefer highest-scoring message; only fall back to lastAssistantContent if nothing was scored
+    const chosen = bestScore >= 0 ? bestText : lastAssistantContent;
 
     if (chosen) {
       const summary = chosen.length > 1500 ? chosen.substring(0, 1500) + '...' : chosen;
