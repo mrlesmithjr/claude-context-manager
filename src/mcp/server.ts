@@ -482,6 +482,15 @@ server.tool(
         : `Session ${shortId} (${date}, ${duration})`;
       lines.push(header);
 
+      // Extended narrative for multi-beat sessions (top-3 scored messages)
+      if (session.summary_extended) {
+        const beats = session.summary_extended.split('\n\n---\n\n');
+        for (const beat of beats) {
+          const preview = beat.replace(/\n+/g, ' ').substring(0, 200);
+          lines.push(`  [NARRATIVE] ${preview}`);
+        }
+      }
+
       // High-importance observations inline
       const highObs = observations.filter(o => o.importance === 'high' && o.tool_name !== 'Conversation');
       for (const obs of highObs.slice(0, 5)) {

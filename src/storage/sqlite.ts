@@ -235,6 +235,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add content_hash column for exact dedup
     this.migrateAddContentHash();
+
+    // Migration: add summary_extended column for multi-beat session narratives
+    this.migrateAddSummaryExtended();
   }
 
   /**
@@ -734,14 +737,14 @@ export class SQLiteStorage implements ContextStorage {
     stmt.run(sessionId, project, new Date().toISOString());
   }
 
-  async endSession(sessionId: string, summary?: string): Promise<void> {
+  async endSession(sessionId: string, summary?: string, summaryExtended?: string): Promise<void> {
     const stmt = this.db.prepare(`
       UPDATE sessions
-      SET ended_at = ?, summary = ?, status = 'complete'
+      SET ended_at = ?, summary = ?, summary_extended = ?, status = 'complete'
       WHERE id = ?
     `);
 
-    stmt.run(new Date().toISOString(), summary || null, sessionId);
+    stmt.run(new Date().toISOString(), summary || null, summaryExtended || null, sessionId);
   }
 
   async getRecentSessions(project: string, limit: number): Promise<Session[]> {
@@ -768,6 +771,7 @@ export class SQLiteStorage implements ContextStorage {
       started_at: string;
       ended_at: string | null;
       summary: string | null;
+      summary_extended: string | null;
       status: 'active' | 'complete';
     }>;
 
@@ -777,6 +781,7 @@ export class SQLiteStorage implements ContextStorage {
       started_at: row.started_at,
       ended_at: row.ended_at || undefined,
       summary: row.summary || undefined,
+      summary_extended: row.summary_extended || undefined,
       status: row.status,
     }));
   }
@@ -1608,6 +1613,15 @@ export class SQLiteStorage implements ContextStorage {
       CREATE INDEX IF NOT EXISTS idx_observations_project_hash
       ON observations(project, content_hash) WHERE content_hash IS NOT NULL
     `);
+  }
+
+  private migrateAddSummaryExtended(): void {
+    const columns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('summary_extended')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN summary_extended TEXT`);
+    }
   }
 
   async saveSessionEmbedding(sessionId: string, embedding: Float32Array, enrichedText: string): Promise<void> {

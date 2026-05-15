@@ -136,17 +136,29 @@ async function main() {
     lines.push(`context-manager v${PLUGIN_VERSION} active. ${count} observations tracked.`);
     lines.push('Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.');
 
-    // Inject recent session summaries for project continuity (~100-150 additional tokens)
+    // Inject recent session summaries for project continuity
     try {
-      const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 5);
+      const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
       const withSummaries = recentSessions
         .map(r => r.session)
         .filter(s => s.summary && s.summary.trim().length > 20 && s.status === 'complete');
-      if (withSummaries.length > 0) {
-        const sessionLines = withSummaries.slice(0, 3).map(s => {
+
+      // Diversify by parent project path — one session per unique parent directory
+      const seen = new Set<string>();
+      const diverse = withSummaries.filter(s => {
+        const parts = s.project.split('/');
+        const parentKey = parts.slice(0, -1).join('/') || s.project;
+        if (seen.has(parentKey)) return false;
+        seen.add(parentKey);
+        return true;
+      });
+
+      if (diverse.length > 0) {
+        const sessionLines = diverse.slice(0, 5).map(s => {
           const date = new Date(s.started_at);
           const label = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-          const snippet = s.summary!.replace(/\n+/g, ' ').substring(0, 120);
+          const raw = s.summary!.replace(/\n+/g, ' ');
+          const snippet = raw.length > 250 ? raw.substring(0, 250) + '...' : raw;
           return `- [${label}] ${snippet}`;
         });
         lines.push('');

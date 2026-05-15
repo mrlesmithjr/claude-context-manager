@@ -45,6 +45,7 @@ export interface Session {
   started_at: string; // ISO 8601 timestamp
   ended_at?: string;
   summary?: string;
+  summary_extended?: string; // Top-3 scored narrative messages joined with separators
   status: 'active' | 'complete';
   similarity_score?: number; // Cosine similarity [0,1], only present on vector search results
 }
@@ -148,7 +149,7 @@ export interface ContextStorage {
   /**
    * End a session with optional summary
    */
-  endSession(sessionId: string, summary?: string): Promise<void>;
+  endSession(sessionId: string, summary?: string, summaryExtended?: string): Promise<void>;
 
   /**
    * Get recent sessions for a project

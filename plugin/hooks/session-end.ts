@@ -93,18 +93,23 @@ function extractTextFromMessage(msg: TranscriptMessage): string {
 }
 
 /**
- * Extract a summary from the transcript file.
+ * Extract summary and extended summary from the transcript file.
  *
  * The transcript is JSONL format. We look for:
  * 1. First line may contain a summary field
- * 2. Best-scoring assistant message (by narrative quality)
+ * 2. Best-scoring assistant message (by narrative quality, threshold 0.25)
  * 3. Falls back to last assistant message if no good candidate
+ *
+ * summary_extended: top-3 scoring messages joined with separators, for multi-beat sessions.
  */
-function extractSummaryFromTranscript(transcriptPath: string): string | undefined {
+function extractSummaryFromTranscript(transcriptPath: string): {
+  summary: string | undefined;
+  summaryExtended: string | undefined;
+} {
   try {
     if (!fs.existsSync(transcriptPath)) {
       debugLog('TRANSCRIPT_NOT_FOUND', transcriptPath);
-      return undefined;
+      return { summary: undefined, summaryExtended: undefined };
     }
 
     const content = fs.readFileSync(transcriptPath, 'utf8');
@@ -112,7 +117,7 @@ function extractSummaryFromTranscript(transcriptPath: string): string | undefine
 
     if (lines.length === 0) {
       debugLog('TRANSCRIPT_EMPTY', transcriptPath);
-      return undefined;
+      return { summary: undefined, summaryExtended: undefined };
     }
 
     // Check first line for summary field (Claude Code sometimes includes this)
@@ -120,15 +125,14 @@ function extractSummaryFromTranscript(transcriptPath: string): string | undefine
       const firstLine = JSON.parse(lines[0]) as TranscriptMessage;
       if (firstLine.summary && typeof firstLine.summary === 'string') {
         debugLog('FOUND_SUMMARY_IN_FIRST_LINE', firstLine.summary.substring(0, 200));
-        return firstLine.summary;
+        return { summary: firstLine.summary, summaryExtended: undefined };
       }
     } catch {
       // First line might not be valid JSON, continue
     }
 
     // Collect all assistant messages with narrative scores
-    let bestText = '';
-    let bestScore = -1;
+    const scored: Array<{ text: string; score: number }> = [];
     let lastAssistantContent = '';
 
     for (const rawLine of lines) {
@@ -142,29 +146,42 @@ function extractSummaryFromTranscript(transcriptPath: string): string | undefine
         lastAssistantContent = text;
 
         const score = scoreForNarrative(text);
-        if (score > bestScore) {
-          bestScore = score;
-          bestText = text;
-        }
+        scored.push({ text, score });
       } catch {
         continue;
       }
     }
 
-    // Prefer highest-scoring message; only fall back to lastAssistantContent if nothing was scored
-    const chosen = bestScore >= 0 ? bestText : lastAssistantContent;
+    // Sort by score descending; use threshold 0.25 to avoid 0-score messages beating the fallback
+    scored.sort((a, b) => b.score - a.score);
+    const qualifying = scored.filter(m => m.score >= 0.25);
 
-    if (chosen) {
-      const summary = chosen.length > 1500 ? chosen.substring(0, 1500) + '...' : chosen;
-      debugLog('EXTRACTED_SUMMARY', { score: bestScore, length: summary.length, preview: summary.substring(0, 200) });
-      return summary;
+    // Primary summary: best single message, fall back to last assistant message
+    const bestText = qualifying.length > 0 ? qualifying[0].text : lastAssistantContent;
+    const bestScore = qualifying.length > 0 ? qualifying[0].score : -1;
+
+    if (!bestText) {
+      debugLog('NO_ASSISTANT_MESSAGE_FOUND', { lineCount: lines.length });
+      return { summary: undefined, summaryExtended: undefined };
     }
 
-    debugLog('NO_ASSISTANT_MESSAGE_FOUND', { lineCount: lines.length });
-    return undefined;
+    const summary = bestText.length > 1500 ? bestText.substring(0, 1500) + '...' : bestText;
+    debugLog('EXTRACTED_SUMMARY', { score: bestScore, length: summary.length, preview: summary.substring(0, 200) });
+
+    // Extended summary: top-3 qualifying messages joined, only when there are multiple beats
+    let summaryExtended: string | undefined;
+    if (qualifying.length >= 2) {
+      const beats = qualifying.slice(0, 3).map(m =>
+        m.text.length > 800 ? m.text.substring(0, 800) + '...' : m.text
+      );
+      summaryExtended = beats.join('\n\n---\n\n');
+      debugLog('EXTRACTED_SUMMARY_EXTENDED', { beats: beats.length, length: summaryExtended.length });
+    }
+
+    return { summary, summaryExtended };
   } catch (error) {
     debugLog('TRANSCRIPT_READ_ERROR', { error: String(error), path: transcriptPath });
-    return undefined;
+    return { summary: undefined, summaryExtended: undefined };
   }
 }
 
@@ -435,8 +452,9 @@ async function main() {
 
     // Extract summary from transcript file
     let summary: string | undefined;
+    let summaryExtended: string | undefined;
     if (input.transcript_path) {
-      summary = extractSummaryFromTranscript(input.transcript_path);
+      ({ summary, summaryExtended } = extractSummaryFromTranscript(input.transcript_path));
     }
 
     debugLog('SUMMARY_RESULT', {
@@ -480,7 +498,7 @@ async function main() {
     }
 
     // End session with summary
-    await storage.endSession(input.session_id, summary);
+    await storage.endSession(input.session_id, summary, summaryExtended);
 
     // Export high-importance observations to auto-memory topic file
     try {

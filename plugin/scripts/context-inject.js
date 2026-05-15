@@ -180,6 +180,7 @@ var SQLiteStorage = class {
     this.migrateAddObservationRelationships();
     this.migrateAddTagsColumn();
     this.migrateAddContentHash();
+    this.migrateAddSummaryExtended();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -544,13 +545,13 @@ ${storedOutput}`;
     `);
     stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
   }
-  async endSession(sessionId, summary) {
+  async endSession(sessionId, summary, summaryExtended) {
     const stmt = this.db.prepare(`
       UPDATE sessions
-      SET ended_at = ?, summary = ?, status = 'complete'
+      SET ended_at = ?, summary = ?, summary_extended = ?, status = 'complete'
       WHERE id = ?
     `);
-    stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, sessionId);
+    stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, summaryExtended || null, sessionId);
   }
   async getRecentSessions(project, limit) {
     const stmt = this.db.prepare(`
@@ -573,6 +574,7 @@ ${storedOutput}`;
       started_at: row.started_at,
       ended_at: row.ended_at || void 0,
       summary: row.summary || void 0,
+      summary_extended: row.summary_extended || void 0,
       status: row.status
     }));
   }
@@ -1184,6 +1186,13 @@ ${storedOutput}`;
       ON observations(project, content_hash) WHERE content_hash IS NOT NULL
     `);
   }
+  migrateAddSummaryExtended() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("summary_extended")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN summary_extended TEXT`);
+    }
+  }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
       throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
@@ -1546,11 +1555,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.12") {
+    if (installedVersion !== "0.8.13") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.12"}
+   Source:    v${"0.8.13"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1581,16 +1590,26 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.12"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.13"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
-      const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 5);
+      const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
       const withSummaries = recentSessions.map((r) => r.session).filter((s) => s.summary && s.summary.trim().length > 20 && s.status === "complete");
-      if (withSummaries.length > 0) {
-        const sessionLines = withSummaries.slice(0, 3).map((s) => {
+      const seen = /* @__PURE__ */ new Set();
+      const diverse = withSummaries.filter((s) => {
+        const parts = s.project.split("/");
+        const parentKey = parts.slice(0, -1).join("/") || s.project;
+        if (seen.has(parentKey))
+          return false;
+        seen.add(parentKey);
+        return true;
+      });
+      if (diverse.length > 0) {
+        const sessionLines = diverse.slice(0, 5).map((s) => {
           const date = new Date(s.started_at);
           const label = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-          const snippet = s.summary.replace(/\n+/g, " ").substring(0, 120);
+          const raw = s.summary.replace(/\n+/g, " ");
+          const snippet = raw.length > 250 ? raw.substring(0, 250) + "..." : raw;
           return `- [${label}] ${snippet}`;
         });
         lines.push("");

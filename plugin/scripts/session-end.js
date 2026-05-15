@@ -180,6 +180,7 @@ var SQLiteStorage = class {
     this.migrateAddObservationRelationships();
     this.migrateAddTagsColumn();
     this.migrateAddContentHash();
+    this.migrateAddSummaryExtended();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -544,13 +545,13 @@ ${storedOutput}`;
     `);
     stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
   }
-  async endSession(sessionId, summary) {
+  async endSession(sessionId, summary, summaryExtended) {
     const stmt = this.db.prepare(`
       UPDATE sessions
-      SET ended_at = ?, summary = ?, status = 'complete'
+      SET ended_at = ?, summary = ?, summary_extended = ?, status = 'complete'
       WHERE id = ?
     `);
-    stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, sessionId);
+    stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, summaryExtended || null, sessionId);
   }
   async getRecentSessions(project, limit) {
     const stmt = this.db.prepare(`
@@ -573,6 +574,7 @@ ${storedOutput}`;
       started_at: row.started_at,
       ended_at: row.ended_at || void 0,
       summary: row.summary || void 0,
+      summary_extended: row.summary_extended || void 0,
       status: row.status
     }));
   }
@@ -1183,6 +1185,13 @@ ${storedOutput}`;
       CREATE INDEX IF NOT EXISTS idx_observations_project_hash
       ON observations(project, content_hash) WHERE content_hash IS NOT NULL
     `);
+  }
+  migrateAddSummaryExtended() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("summary_extended")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN summary_extended TEXT`);
+    }
   }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
@@ -1968,24 +1977,23 @@ function extractSummaryFromTranscript(transcriptPath) {
   try {
     if (!fs.existsSync(transcriptPath)) {
       debugLog("TRANSCRIPT_NOT_FOUND", transcriptPath);
-      return void 0;
+      return { summary: void 0, summaryExtended: void 0 };
     }
     const content = fs.readFileSync(transcriptPath, "utf8");
     const lines = content.trim().split("\n").filter((line) => line.trim());
     if (lines.length === 0) {
       debugLog("TRANSCRIPT_EMPTY", transcriptPath);
-      return void 0;
+      return { summary: void 0, summaryExtended: void 0 };
     }
     try {
       const firstLine = JSON.parse(lines[0]);
       if (firstLine.summary && typeof firstLine.summary === "string") {
         debugLog("FOUND_SUMMARY_IN_FIRST_LINE", firstLine.summary.substring(0, 200));
-        return firstLine.summary;
+        return { summary: firstLine.summary, summaryExtended: void 0 };
       }
     } catch {
     }
-    let bestText = "";
-    let bestScore = -1;
+    const scored = [];
     let lastAssistantContent = "";
     for (const rawLine of lines) {
       try {
@@ -1997,25 +2005,33 @@ function extractSummaryFromTranscript(transcriptPath) {
           continue;
         lastAssistantContent = text;
         const score = scoreForNarrative(text);
-        if (score > bestScore) {
-          bestScore = score;
-          bestText = text;
-        }
+        scored.push({ text, score });
       } catch {
         continue;
       }
     }
-    const chosen = bestScore >= 0 ? bestText : lastAssistantContent;
-    if (chosen) {
-      const summary = chosen.length > 1500 ? chosen.substring(0, 1500) + "..." : chosen;
-      debugLog("EXTRACTED_SUMMARY", { score: bestScore, length: summary.length, preview: summary.substring(0, 200) });
-      return summary;
+    scored.sort((a, b) => b.score - a.score);
+    const qualifying = scored.filter((m) => m.score >= 0.25);
+    const bestText = qualifying.length > 0 ? qualifying[0].text : lastAssistantContent;
+    const bestScore = qualifying.length > 0 ? qualifying[0].score : -1;
+    if (!bestText) {
+      debugLog("NO_ASSISTANT_MESSAGE_FOUND", { lineCount: lines.length });
+      return { summary: void 0, summaryExtended: void 0 };
     }
-    debugLog("NO_ASSISTANT_MESSAGE_FOUND", { lineCount: lines.length });
-    return void 0;
+    const summary = bestText.length > 1500 ? bestText.substring(0, 1500) + "..." : bestText;
+    debugLog("EXTRACTED_SUMMARY", { score: bestScore, length: summary.length, preview: summary.substring(0, 200) });
+    let summaryExtended;
+    if (qualifying.length >= 2) {
+      const beats = qualifying.slice(0, 3).map(
+        (m) => m.text.length > 800 ? m.text.substring(0, 800) + "..." : m.text
+      );
+      summaryExtended = beats.join("\n\n---\n\n");
+      debugLog("EXTRACTED_SUMMARY_EXTENDED", { beats: beats.length, length: summaryExtended.length });
+    }
+    return { summary, summaryExtended };
   } catch (error) {
     debugLog("TRANSCRIPT_READ_ERROR", { error: String(error), path: transcriptPath });
-    return void 0;
+    return { summary: void 0, summaryExtended: void 0 };
   }
 }
 var HIGH_SIGNAL_PATTERNS = {
@@ -2235,8 +2251,9 @@ async function main() {
     });
     const input = validateStopInput(rawInput);
     let summary;
+    let summaryExtended;
     if (input.transcript_path) {
-      summary = extractSummaryFromTranscript(input.transcript_path);
+      ({ summary, summaryExtended } = extractSummaryFromTranscript(input.transcript_path));
     }
     debugLog("SUMMARY_RESULT", {
       hasTranscriptPath: !!input.transcript_path,
@@ -2269,7 +2286,7 @@ async function main() {
         console.error("[context-manager] Conversation insight extraction failed:", insightError);
       }
     }
-    await storage.endSession(input.session_id, summary);
+    await storage.endSession(input.session_id, summary, summaryExtended);
     try {
       const result = await exportToAutoMemory(storage, input.cwd, input.session_id);
       if (result.exported > 0) {

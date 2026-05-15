@@ -30268,6 +30268,7 @@ var SQLiteStorage = class {
     this.migrateAddObservationRelationships();
     this.migrateAddTagsColumn();
     this.migrateAddContentHash();
+    this.migrateAddSummaryExtended();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -30632,13 +30633,13 @@ ${storedOutput}`;
     `);
     stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
   }
-  async endSession(sessionId, summary) {
+  async endSession(sessionId, summary, summaryExtended) {
     const stmt = this.db.prepare(`
       UPDATE sessions
-      SET ended_at = ?, summary = ?, status = 'complete'
+      SET ended_at = ?, summary = ?, summary_extended = ?, status = 'complete'
       WHERE id = ?
     `);
-    stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, sessionId);
+    stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, summaryExtended || null, sessionId);
   }
   async getRecentSessions(project, limit) {
     const stmt = this.db.prepare(`
@@ -30661,6 +30662,7 @@ ${storedOutput}`;
       started_at: row.started_at,
       ended_at: row.ended_at || void 0,
       summary: row.summary || void 0,
+      summary_extended: row.summary_extended || void 0,
       status: row.status
     }));
   }
@@ -31271,6 +31273,13 @@ ${storedOutput}`;
       CREATE INDEX IF NOT EXISTS idx_observations_project_hash
       ON observations(project, content_hash) WHERE content_hash IS NOT NULL
     `);
+  }
+  migrateAddSummaryExtended() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("summary_extended")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN summary_extended TEXT`);
+    }
   }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
@@ -32649,7 +32658,7 @@ var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25"
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.8.12" : "0.5.0"
+    version: true ? "0.8.13" : "0.5.0"
   },
   {
     instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age \u2014 always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -32976,6 +32985,13 @@ server.tool(
       const counts = countByImportance(observations);
       const header = narrative ? `Session ${shortId} (${date5}, ${duration3}) \u2014 ${narrative}` : `Session ${shortId} (${date5}, ${duration3})`;
       lines.push(header);
+      if (session.summary_extended) {
+        const beats = session.summary_extended.split("\n\n---\n\n");
+        for (const beat of beats) {
+          const preview = beat.replace(/\n+/g, " ").substring(0, 200);
+          lines.push(`  [NARRATIVE] ${preview}`);
+        }
+      }
       const highObs = observations.filter((o) => o.importance === "high" && o.tool_name !== "Conversation");
       for (const obs of highObs.slice(0, 5)) {
         const fileInfo = obs.files_touched.length > 0 ? ` (${obs.files_touched.map((f) => f.split("/").pop()).join(", ")})` : "";
