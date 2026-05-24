@@ -637,9 +637,12 @@ server.tool(
   {
     days: z
       .number()
+      .int()
+      .min(1)
+      .max(3650)
       .optional()
       .describe(
-        'Delete observations older than this many days. Omit to only clean orphaned sessions and optimize.'
+        'Delete observations older than this many days (1-3650). Omit to only clean orphaned sessions and optimize.'
       ),
   },
   async ({ days }) => {
@@ -872,14 +875,20 @@ server.tool(
       .describe('Project path to scope embedding. Omit to embed all projects.'),
     batch_size: z
       .number()
+      .int()
+      .min(1)
+      .max(500)
       .optional()
       .default(50)
-      .describe('Number of observations to embed per batch (default: 50)'),
+      .describe('Number of observations to embed per batch (default: 50, max: 500)'),
     limit: z
       .number()
+      .int()
+      .min(1)
+      .max(10000)
       .optional()
       .default(500)
-      .describe('Maximum total observations to embed in this call (default: 500)'),
+      .describe('Maximum total observations to embed in this call (default: 500, max: 10000)'),
   },
   async ({ project, batch_size, limit }) => {
     const db = await getStorage();

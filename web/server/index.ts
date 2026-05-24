@@ -60,10 +60,10 @@ async function main() {
 
   // Health check endpoint
   fastify.get('/api/health', async (request, reply) => {
+    // Do not expose DB_PATH — filesystem layout is not public information
     reply.send({
       status: 'ok',
       version: process.env.npm_package_version || 'unknown',
-      database: DB_PATH,
     });
   });
 
