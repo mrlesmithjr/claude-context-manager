@@ -2404,6 +2404,26 @@ ${extracted.stored_output}`;
   };
 }
 
+// src/capture/remote-client.ts
+async function post(client, path3, body) {
+  const response = await fetch(`${client.url}${path3}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${client.token}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Remote ${path3} returned ${response.status}: ${text}`);
+  }
+  return response.json().catch(() => ({}));
+}
+async function remoteSaveObservation(client, observation) {
+  await post(client, "/capture/observation", observation);
+}
+
 // plugin/hooks/capture-tool.ts
 async function readStdin() {
   return new Promise((resolve) => {
@@ -2425,7 +2445,7 @@ function writeResponse(data) {
   });
 }
 async function main() {
-  const storage = new SQLiteStorage();
+  let storage = null;
   try {
     const inputStr = await readStdin();
     let rawInput;
@@ -2441,7 +2461,6 @@ async function main() {
       await writeResponse({ status: "skipped" });
       return;
     }
-    await storage.initialize();
     const observation = processToolCapture({
       session_id: input.session_id,
       project: input.cwd,
@@ -2449,6 +2468,27 @@ async function main() {
       tool_input: input.tool_input,
       tool_response: input.tool_response
     });
+    const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
+    const remoteToken = (process.env["CONTEXT_MANAGER_TOKEN"] ?? "").trim();
+    if (remoteUrl) {
+      if (!remoteToken) {
+        console.error(
+          "[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing \u2014 remote capture skipped"
+        );
+        await writeResponse({ status: "error", error: "CONTEXT_MANAGER_TOKEN required when CONTEXT_MANAGER_URL is set" });
+        return;
+      }
+      try {
+        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, observation);
+        await writeResponse({ status: "captured" });
+      } catch (error) {
+        console.error("[context-manager] Remote capture error:", error);
+        await writeResponse({ status: "error" });
+      }
+      return;
+    }
+    storage = new SQLiteStorage();
+    await storage.initialize();
     if (observation.files_touched.length > 0) {
       let surpriseAdj = 0;
       for (const file of observation.files_touched) {
@@ -2473,7 +2513,8 @@ async function main() {
     console.error("[context-manager] Capture error:", error);
     await writeResponse({ status: "error" });
   } finally {
-    await storage.close();
+    if (storage)
+      await storage.close();
   }
 }
 main();

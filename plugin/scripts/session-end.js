@@ -1980,6 +1980,47 @@ function estimateTokens(text) {
 
 // plugin/hooks/session-end.ts
 import * as fs from "fs";
+
+// src/capture/remote-client.ts
+async function post(client, path3, body) {
+  const response = await fetch(`${client.url}${path3}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${client.token}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Remote ${path3} returned ${response.status}: ${text}`);
+  }
+  return response.json().catch(() => ({}));
+}
+async function remoteEndSession(client, sessionId, summary, summaryExtended) {
+  await post(client, "/capture/session", {
+    action: "end",
+    session_id: sessionId,
+    summary,
+    summary_extended: summaryExtended
+  });
+}
+async function remoteSaveObservation(client, observation) {
+  await post(client, "/capture/observation", observation);
+}
+async function remoteExportMemory(client, project, sessionId) {
+  try {
+    const data = await post(client, "/capture/export", {
+      project,
+      ...sessionId !== void 0 ? { session_id: sessionId } : {}
+    });
+    return typeof data.content === "string" ? data.content : "";
+  } catch {
+    return "";
+  }
+}
+
+// plugin/hooks/session-end.ts
 var debugLog = createDebugLogger("stop-hook-debug.log");
 function scoreForNarrative(text) {
   if (text.length < 50)
@@ -2270,7 +2311,7 @@ function writeResponse(data) {
   });
 }
 async function main() {
-  const storage = new SQLiteStorage();
+  let storage = null;
   try {
     const inputStr = await readStdin();
     let rawInput;
@@ -2307,6 +2348,52 @@ async function main() {
       hasSummary: !!summary,
       summaryLength: summary?.length
     });
+    const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
+    const remoteToken = (process.env["CONTEXT_MANAGER_TOKEN"] ?? "").trim();
+    if (remoteUrl) {
+      if (!remoteToken) {
+        console.error(
+          "[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing \u2014 remote session end skipped"
+        );
+        await writeResponse({ status: "error" });
+        return;
+      }
+      const client = { url: remoteUrl, token: remoteToken };
+      if (transcriptLines) {
+        try {
+          const insights = extractConversationInsights(
+            transcriptLines,
+            input.session_id,
+            input.cwd
+          );
+          for (const insight of insights) {
+            try {
+              await remoteSaveObservation(client, insight);
+            } catch (err) {
+              console.error("[context-manager] Remote insight save failed:", err);
+            }
+          }
+          if (insights.length > 0) {
+            debugLog("CONVERSATION_INSIGHTS_REMOTE", { count: insights.length });
+            console.error(`[context-manager] Sent ${insights.length} conversation insights to server`);
+          }
+        } catch (insightError) {
+          console.error("[context-manager] Conversation insight extraction failed:", insightError);
+        }
+      }
+      try {
+        await remoteEndSession(client, input.session_id, summary, summaryExtended);
+      } catch (err) {
+        console.error("[context-manager] Remote session end failed:", err);
+      }
+      const exportedContent = await remoteExportMemory(client, input.cwd, input.session_id);
+      if (exportedContent.trim().length > 0) {
+        console.error("[context-manager] Server-side memory export triggered");
+      }
+      await writeResponse({ status: "complete" });
+      return;
+    }
+    storage = new SQLiteStorage();
     await storage.initialize();
     if (transcriptLines) {
       try {
@@ -2348,7 +2435,8 @@ async function main() {
     console.error("[context-manager] Session end error:", error);
     await writeResponse({ status: "error" });
   } finally {
-    await storage.close();
+    if (storage)
+      await storage.close();
   }
 }
 main();

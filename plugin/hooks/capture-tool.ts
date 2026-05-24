@@ -26,6 +26,7 @@ import {
   shouldCaptureTool,
 } from '../../src/utils/validation.js';
 import { processToolCapture } from '../../src/capture/processor.js';
+import { remoteSaveObservation } from '../../src/capture/remote-client.js';
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -50,7 +51,8 @@ function writeResponse(data: Record<string, unknown>): Promise<void> {
 }
 
 async function main() {
-  const storage = new SQLiteStorage();
+  // Storage is only opened in local mode; remote mode has no local SQLite footprint.
+  let storage: SQLiteStorage | null = null;
 
   try {
     const inputStr = await readStdin();
@@ -67,16 +69,13 @@ async function main() {
     // Validate and sanitize input
     const input = validatePostToolUseInput(rawInput);
 
-    // Skip low-value tools (now also checks command patterns for Bash)
+    // Skip low-value tools (also checks command patterns for Bash)
     if (!shouldCaptureTool(input.tool_name, input.tool_input)) {
       await writeResponse({ status: 'skipped' });
       return;
     }
 
-    // Initialize storage
-    await storage.initialize();
-
-    // Process tool capture into observation
+    // Process tool capture into observation (pure computation, no storage needed)
     const observation = processToolCapture({
       session_id: input.session_id,
       project: input.cwd,
@@ -84,6 +83,36 @@ async function main() {
       tool_input: input.tool_input,
       tool_response: input.tool_response,
     });
+
+    // --- Remote mode: POST observation to the central server ---
+    // When CONTEXT_MANAGER_URL is set, write to the remote server instead of local SQLite.
+    // Surprise scoring is skipped in remote mode: it requires DB access to get per-file
+    // encounter counts, which are stored on the remote server.
+    const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
+    const remoteToken = (process.env['CONTEXT_MANAGER_TOKEN'] ?? '').trim();
+
+    if (remoteUrl) {
+      if (!remoteToken) {
+        console.error(
+          '[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing — remote capture skipped'
+        );
+        await writeResponse({ status: 'error', error: 'CONTEXT_MANAGER_TOKEN required when CONTEXT_MANAGER_URL is set' });
+        return;
+      }
+      try {
+        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, observation);
+        await writeResponse({ status: 'captured' });
+      } catch (error) {
+        console.error('[context-manager] Remote capture error:', error);
+        await writeResponse({ status: 'error' });
+      }
+      // No storage to close in remote mode
+      return;
+    }
+
+    // --- Local mode: write to SQLite directly ---
+    storage = new SQLiteStorage();
+    await storage.initialize();
 
     // Surprise scoring: boost novel file encounters, decay frequent ones
     if (observation.files_touched.length > 0) {
@@ -111,7 +140,7 @@ async function main() {
     console.error('[context-manager] Capture error:', error);
     await writeResponse({ status: 'error' });
   } finally {
-    await storage.close();
+    if (storage) await storage.close();
   }
 }
 

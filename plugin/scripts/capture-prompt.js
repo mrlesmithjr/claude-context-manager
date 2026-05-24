@@ -1675,6 +1675,26 @@ function createDebugLogger(logFileName) {
   };
 }
 
+// src/capture/remote-client.ts
+async function post(client, path3, body) {
+  const response = await fetch(`${client.url}${path3}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${client.token}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Remote ${path3} returned ${response.status}: ${text}`);
+  }
+  return response.json().catch(() => ({}));
+}
+async function remoteSavePrompt(client, prompt) {
+  await post(client, "/capture/prompt", prompt);
+}
+
 // plugin/hooks/capture-prompt.ts
 async function readStdin() {
   return new Promise((resolve) => {
@@ -1696,7 +1716,7 @@ function writeResponse(data) {
   });
 }
 async function main() {
-  const storage = new SQLiteStorage();
+  let storage = null;
   const debugLog = createDebugLogger("prompt-hook-debug.log");
   try {
     const inputStr = await readStdin();
@@ -1710,26 +1730,48 @@ async function main() {
       return;
     }
     const input = validateUserPromptSubmitInput(rawInput);
-    await storage.initialize();
     const sanitizedPrompt = sanitizeContent(input.prompt);
     debugLog("PROMPT_CAPTURED", {
       sessionId: input.session_id,
       promptLength: sanitizedPrompt.length,
       project: input.cwd
     });
-    await storage.saveUserPrompt({
+    const promptPayload = {
       session_id: input.session_id,
       project: input.cwd,
       prompt_number: input.prompt_number,
       prompt_text: sanitizedPrompt,
       created_at: (/* @__PURE__ */ new Date()).toISOString()
-    });
+    };
+    const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
+    const remoteToken = (process.env["CONTEXT_MANAGER_TOKEN"] ?? "").trim();
+    if (remoteUrl) {
+      if (!remoteToken) {
+        console.error(
+          "[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing \u2014 remote prompt capture skipped"
+        );
+        await writeResponse({ status: "error" });
+        return;
+      }
+      try {
+        await remoteSavePrompt({ url: remoteUrl, token: remoteToken }, promptPayload);
+        await writeResponse({ status: "captured" });
+      } catch (error) {
+        console.error("[context-manager] Remote prompt capture error:", error);
+        await writeResponse({ status: "error" });
+      }
+      return;
+    }
+    storage = new SQLiteStorage();
+    await storage.initialize();
+    await storage.saveUserPrompt(promptPayload);
     await writeResponse({ status: "captured" });
   } catch (error) {
     console.error("[context-manager] Prompt capture error:", error);
     await writeResponse({ status: "error" });
   } finally {
-    await storage.close();
+    if (storage)
+      await storage.close();
   }
 }
 main();

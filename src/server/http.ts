@@ -17,9 +17,11 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { timingSafeEqual } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
+import { readFileSync } from 'fs';
 import { createContextManagerServer } from '../mcp/create-server.js';
 import { SQLiteStorage } from '../storage/sqlite.js';
-import { loadPathPrefixMap } from '../utils/path-map.js';
+import { loadPathPrefixMap, normalizePath } from '../utils/path-map.js';
+import { exportToAutoMemory, resolveMemoryDir } from '../export/memory.js';
 
 export interface HttpServerOptions {
   port?: number;
@@ -99,6 +101,239 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
   // Health check (no auth required)
   fastify.get('/health', async (_request, reply) => {
     await reply.send({ status: 'ok', mode: 'http-mcp' });
+  });
+
+  // --- Write endpoints: hooks in proxy mode POST here when CONTEXT_MANAGER_URL is set ---
+  //
+  // These are the server-side counterparts of the remote-client.ts helpers.
+  // All endpoints are protected by the same Bearer auth as the /mcp route.
+  // Payload size bounds prevent over-large writes from exhausting storage.
+
+  const SESSION_ID_MAX = 256;
+  const PROJECT_MAX = 1024;
+  const SUMMARY_MAX = 8000;
+  const SUMMARY_EXT_MAX = 16000;
+  const OBS_SUMMARY_MAX = 4000;
+  const FILES_MAX = 100;
+  const FILE_PATH_MAX = 512;
+  const PROMPT_TEXT_MAX = 20000;
+
+  /** Assert a field is a non-empty string within the given length limit. */
+  function strBound(val: unknown, max: number, field: string): string {
+    if (typeof val !== 'string' || val.length === 0) {
+      throw new Error(`${field} is required and must be a non-empty string`);
+    }
+    if (val.length > max) {
+      throw new Error(`${field} exceeds maximum length ${max}`);
+    }
+    return val;
+  }
+
+  // POST /capture/session — create or end a session
+  fastify.post('/capture/session', async (request, reply) => {
+    try {
+      const body = request.body as Record<string, unknown>;
+      const action = body['action'];
+
+      if (action === 'create') {
+        const sessionId = strBound(body['session_id'], SESSION_ID_MAX, 'session_id');
+        const project = strBound(body['project'], PROJECT_MAX, 'project');
+        const normalizedProject = normalizePath(project, pathMap);
+        await storage.createSession(sessionId, normalizedProject);
+        await reply.send({ status: 'ok' });
+      } else if (action === 'end') {
+        const sessionId = strBound(body['session_id'], SESSION_ID_MAX, 'session_id');
+        const summary = typeof body['summary'] === 'string'
+          ? body['summary'].substring(0, SUMMARY_MAX)
+          : undefined;
+        const summaryExtended = typeof body['summary_extended'] === 'string'
+          ? body['summary_extended'].substring(0, SUMMARY_EXT_MAX)
+          : undefined;
+        await storage.endSession(sessionId, summary, summaryExtended);
+        await reply.send({ status: 'ok' });
+      } else {
+        await reply.status(400).send({ error: 'action must be "create" or "end"' });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(400).send({ error: msg });
+    }
+  });
+
+  // POST /capture/observation — save one observation from a remote hook
+  fastify.post('/capture/observation', async (request, reply) => {
+    try {
+      const body = request.body as Record<string, unknown>;
+
+      const sessionId = strBound(body['session_id'], SESSION_ID_MAX, 'session_id');
+      const project = strBound(body['project'], PROJECT_MAX, 'project');
+      const toolName = strBound(body['tool_name'], 64, 'tool_name');
+      const summary = strBound(body['summary'], OBS_SUMMARY_MAX, 'summary');
+
+      const importance = body['importance'] as string;
+      if (!['high', 'medium', 'low'].includes(importance)) {
+        await reply.status(400).send({ error: 'importance must be "high", "medium", or "low"' });
+        return;
+      }
+
+      const importanceScore = typeof body['importance_score'] === 'number'
+        ? Math.max(0, Math.min(1, body['importance_score']))
+        : 0.5;
+
+      const tokenEstimate = typeof body['token_estimate'] === 'number'
+        ? Math.max(1, Math.min(50000, body['token_estimate']))
+        : 50;
+
+      const rawFiles = Array.isArray(body['files_touched']) ? body['files_touched'] : [];
+      const filesTouched = rawFiles
+        .slice(0, FILES_MAX)
+        .filter((f): f is string => typeof f === 'string')
+        .map((f) => f.substring(0, FILE_PATH_MAX));
+
+      const metadata =
+        typeof body['metadata'] === 'object' && body['metadata'] !== null
+          ? (body['metadata'] as Record<string, unknown>)
+          : {};
+
+      const rawTags = Array.isArray(body['tags']) ? body['tags'] : undefined;
+      const tags = rawTags
+        ? rawTags
+            .filter((t): t is string => typeof t === 'string')
+            .map((t) => t.substring(0, 32))
+        : undefined;
+
+      const contentHash =
+        typeof body['content_hash'] === 'string'
+          ? body['content_hash'].substring(0, 64)
+          : undefined;
+
+      // Validate ISO 8601 timestamp before accepting — arbitrary strings would corrupt date sorting
+      const rawCreatedAt = body['created_at'];
+      const createdAt =
+        typeof rawCreatedAt === 'string' && !isNaN(Date.parse(rawCreatedAt))
+          ? rawCreatedAt
+          : new Date().toISOString();
+
+      const normalizedProject = normalizePath(project, pathMap);
+
+      await storage.save({
+        session_id: sessionId,
+        project: normalizedProject,
+        tool_name: toolName,
+        summary,
+        files_touched: filesTouched,
+        metadata,
+        token_estimate: tokenEstimate,
+        importance: importance as 'high' | 'medium' | 'low',
+        importance_score: importanceScore,
+        tags,
+        content_hash: contentHash,
+        created_at: createdAt,
+      });
+
+      await reply.send({ status: 'ok' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(400).send({ error: msg });
+    }
+  });
+
+  // POST /capture/prompt — save one user prompt from a remote hook
+  fastify.post('/capture/prompt', async (request, reply) => {
+    try {
+      const body = request.body as Record<string, unknown>;
+
+      const sessionId = strBound(body['session_id'], SESSION_ID_MAX, 'session_id');
+      const project = strBound(body['project'], PROJECT_MAX, 'project');
+      const promptText = strBound(body['prompt_text'], PROMPT_TEXT_MAX, 'prompt_text');
+
+      const promptNumber =
+        typeof body['prompt_number'] === 'number'
+          ? Math.max(0, Math.floor(body['prompt_number']))
+          : 0;
+
+      const rawPromptCreatedAt = body['created_at'];
+      const createdAt =
+        typeof rawPromptCreatedAt === 'string' && !isNaN(Date.parse(rawPromptCreatedAt))
+          ? rawPromptCreatedAt
+          : new Date().toISOString();
+
+      const normalizedProject = normalizePath(project, pathMap);
+
+      await storage.saveUserPrompt({
+        session_id: sessionId,
+        project: normalizedProject,
+        prompt_number: promptNumber,
+        prompt_text: promptText,
+        created_at: createdAt,
+      });
+
+      await reply.send({ status: 'ok' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(400).send({ error: msg });
+    }
+  });
+
+  // POST /capture/export — trigger server-side memory export for a project.
+  // The server runs exportToAutoMemory(), writes its local memory file,
+  // and returns the full file content so the caller can inject it at SessionStart.
+  fastify.post('/capture/export', async (request, reply) => {
+    try {
+      const body = request.body as Record<string, unknown>;
+      const project = strBound(body['project'], PROJECT_MAX, 'project');
+      const sessionId =
+        typeof body['session_id'] === 'string' && body['session_id'].length > 0
+          ? body['session_id']
+          : undefined;
+
+      const normalizedProject = normalizePath(project, pathMap);
+      const result = await exportToAutoMemory(storage, normalizedProject, sessionId);
+
+      // Read the file (even if this call exported nothing, previous exports may exist)
+      let content = '';
+      const memFile = join(resolveMemoryDir(normalizedProject), 'context-manager-activity.md');
+      try {
+        content = readFileSync(memFile, 'utf-8');
+      } catch {
+        // File does not exist yet
+      }
+
+      await reply.send({ status: 'ok', exported: result.exported, content });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(500).send({ error: msg });
+    }
+  });
+
+  // GET /memory — return the current memory export file content for a project.
+  // Used by the SessionStart hook to fetch context from the server without
+  // triggering a new export (read-only, no side effects).
+  fastify.get('/memory', async (request, reply) => {
+    try {
+      const query = request.query as Record<string, string>;
+      const project = query['project'];
+
+      if (!project || project.length === 0 || project.length > PROJECT_MAX) {
+        await reply.status(400).send({ error: 'project query parameter is required' });
+        return;
+      }
+
+      const normalizedProject = normalizePath(project, pathMap);
+      const memFile = join(resolveMemoryDir(normalizedProject), 'context-manager-activity.md');
+
+      let content = '';
+      try {
+        content = readFileSync(memFile, 'utf-8');
+      } catch {
+        // File does not exist — return empty content (not an error)
+      }
+
+      await reply.send({ content });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(500).send({ error: msg });
+    }
   });
 
   // MCP endpoint: stateless mode, one transport instance per request.

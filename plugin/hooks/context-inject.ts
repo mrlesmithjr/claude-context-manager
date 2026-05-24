@@ -27,6 +27,11 @@ import { validateSessionStartInput } from '../../src/utils/validation.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import {
+  remoteCreateSession,
+  remoteGetMemory,
+  remoteMcpText,
+} from '../../src/capture/remote-client.js';
 
 // This will be injected by esbuild --define during build
 declare const PLUGIN_VERSION: string;
@@ -95,11 +100,16 @@ function checkVersionMismatch(): string {
 }
 
 
+// Maximum characters of server memory content to inject into additionalContext.
+// Keeps the session start hint within a reasonable token budget (~750 tokens).
+const REMOTE_MEMORY_INJECT_MAX = 3000;
+
 async function main() {
   // Debug: log that hook was invoked
   console.error('[context-manager] SessionStart hook invoked');
 
-  const storage = new SQLiteStorage();
+  // Storage is only opened in local mode; remote mode has no local SQLite footprint.
+  let storage: SQLiteStorage | null = null;
 
   try {
     const inputStr = await readStdin();
@@ -116,7 +126,75 @@ async function main() {
     // Validate and sanitize input
     const input = validateSessionStartInput(rawInput);
 
-    // Initialize storage
+    // --- Remote mode: create session + fetch context from central server ---
+    const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
+    const remoteToken = (process.env['CONTEXT_MANAGER_TOKEN'] ?? '').trim();
+
+    if (remoteUrl) {
+      if (!remoteToken) {
+        console.error(
+          '[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing'
+        );
+        await writeResponse({
+          hookSpecificOutput: {
+            hookEventName: 'SessionStart',
+            additionalContext: '[context-manager] Remote mode misconfigured: CONTEXT_MANAGER_TOKEN is required.',
+          },
+        });
+        return;
+      }
+
+      const client = { url: remoteUrl, token: remoteToken };
+
+      // Create session on the remote server (best-effort, non-blocking on failure)
+      try {
+        await remoteCreateSession(client, input.session_id, input.cwd);
+      } catch (err) {
+        console.error('[context-manager] Remote session create failed:', err);
+      }
+
+      // Build remote status hint
+      const versionWarning = checkVersionMismatch();
+      const lines: string[] = [];
+      if (versionWarning) lines.push(versionWarning);
+
+      // Get observation count from remote via context_stats.
+      // remoteMcpText never throws; it returns '' on any error.
+      let remoteCount = 0;
+      const statsText = await remoteMcpText(client, 'context_stats', { project: input.cwd });
+      const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
+      if (countMatch?.[1]) remoteCount = parseInt(countMatch[1], 10);
+
+      lines.push(`context-manager v${PLUGIN_VERSION} active (remote mode). ${remoteCount} observations on server.`);
+      lines.push(`Remote server: ${remoteUrl}`);
+      lines.push('MCP tools available: context_search, context_list, context_stats.');
+
+      // Fetch memory content exported by the previous session's Stop hook.
+      // remoteGetMemory never throws; it returns '' on any error.
+      const memoryContent = await remoteGetMemory(client, input.cwd);
+      if (memoryContent.trim().length > 0) {
+        lines.push('');
+        lines.push('Recent activity (from server memory):');
+        const capped = memoryContent.length > REMOTE_MEMORY_INJECT_MAX
+          ? memoryContent.substring(0, REMOTE_MEMORY_INJECT_MAX) + '\n... (truncated)'
+          : memoryContent;
+        lines.push(capped);
+      }
+
+      const context = lines.join('\n');
+      console.error(`[context-manager] Remote mode: ${remoteCount} observations on server`);
+
+      await writeResponse({
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext: context,
+        },
+      });
+      return;
+    }
+
+    // --- Local mode: direct SQLite access ---
+    storage = new SQLiteStorage();
     await storage.initialize();
 
     // Create session record
@@ -191,7 +269,7 @@ async function main() {
       }
     });
   } finally {
-    await storage.close();
+    if (storage) await storage.close();
   }
 }
 

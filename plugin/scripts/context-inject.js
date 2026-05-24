@@ -1561,6 +1561,75 @@ function validateSessionStartInput(input) {
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir as homedir3 } from "os";
+
+// src/capture/remote-client.ts
+import { randomUUID } from "crypto";
+async function post(client, path3, body) {
+  const response = await fetch(`${client.url}${path3}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${client.token}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Remote ${path3} returned ${response.status}: ${text}`);
+  }
+  return response.json().catch(() => ({}));
+}
+async function remoteCreateSession(client, sessionId, project) {
+  await post(client, "/capture/session", {
+    action: "create",
+    session_id: sessionId,
+    project
+  });
+}
+async function remoteGetMemory(client, project) {
+  try {
+    const response = await fetch(
+      `${client.url}/memory?project=${encodeURIComponent(project)}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${client.token}`
+        }
+      }
+    );
+    if (!response.ok)
+      return "";
+    const data = await response.json();
+    return typeof data.content === "string" ? data.content : "";
+  } catch {
+    return "";
+  }
+}
+async function remoteMcpText(client, toolName, args) {
+  try {
+    const response = await fetch(`${client.url}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${client.token}`,
+        "Accept": "application/json, text/event-stream"
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "tools/call",
+        id: randomUUID(),
+        params: { name: toolName, arguments: args }
+      })
+    });
+    if (!response.ok)
+      return "";
+    const data = await response.json();
+    return data.result?.content?.[0]?.text ?? "";
+  } catch {
+    return "";
+  }
+}
+
+// plugin/hooks/context-inject.ts
 async function readStdin() {
   return new Promise((resolve) => {
     let data = "";
@@ -1596,11 +1665,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.26") {
+    if (installedVersion !== "0.8.27") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.26"}
+   Source:    v${"0.8.27"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1610,9 +1679,10 @@ function checkVersionMismatch() {
     return "";
   }
 }
+var REMOTE_MEMORY_INJECT_MAX = 3e3;
 async function main() {
   console.error("[context-manager] SessionStart hook invoked");
-  const storage = new SQLiteStorage();
+  let storage = null;
   try {
     const inputStr = await readStdin();
     let rawInput;
@@ -1623,6 +1693,57 @@ async function main() {
       rawInput = {};
     }
     const input = validateSessionStartInput(rawInput);
+    const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
+    const remoteToken = (process.env["CONTEXT_MANAGER_TOKEN"] ?? "").trim();
+    if (remoteUrl) {
+      if (!remoteToken) {
+        console.error(
+          "[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing"
+        );
+        await writeResponse({
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext: "[context-manager] Remote mode misconfigured: CONTEXT_MANAGER_TOKEN is required."
+          }
+        });
+        return;
+      }
+      const client = { url: remoteUrl, token: remoteToken };
+      try {
+        await remoteCreateSession(client, input.session_id, input.cwd);
+      } catch (err) {
+        console.error("[context-manager] Remote session create failed:", err);
+      }
+      const versionWarning2 = checkVersionMismatch();
+      const lines2 = [];
+      if (versionWarning2)
+        lines2.push(versionWarning2);
+      let remoteCount = 0;
+      const statsText = await remoteMcpText(client, "context_stats", { project: input.cwd });
+      const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
+      if (countMatch?.[1])
+        remoteCount = parseInt(countMatch[1], 10);
+      lines2.push(`context-manager v${"0.8.27"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`Remote server: ${remoteUrl}`);
+      lines2.push("MCP tools available: context_search, context_list, context_stats.");
+      const memoryContent = await remoteGetMemory(client, input.cwd);
+      if (memoryContent.trim().length > 0) {
+        lines2.push("");
+        lines2.push("Recent activity (from server memory):");
+        const capped = memoryContent.length > REMOTE_MEMORY_INJECT_MAX ? memoryContent.substring(0, REMOTE_MEMORY_INJECT_MAX) + "\n... (truncated)" : memoryContent;
+        lines2.push(capped);
+      }
+      const context2 = lines2.join("\n");
+      console.error(`[context-manager] Remote mode: ${remoteCount} observations on server`);
+      await writeResponse({
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: context2
+        }
+      });
+      return;
+    }
+    storage = new SQLiteStorage();
     await storage.initialize();
     await storage.createSession(input.session_id, input.cwd);
     const count = await storage.countObservations(input.cwd);
@@ -1631,7 +1752,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.26"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.27"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
@@ -1676,7 +1797,8 @@ async function main() {
       }
     });
   } finally {
-    await storage.close();
+    if (storage)
+      await storage.close();
   }
 }
 main();

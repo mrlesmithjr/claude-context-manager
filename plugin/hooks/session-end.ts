@@ -30,6 +30,11 @@ import { exportToAutoMemory } from '../../src/export/memory.js';
 import { estimateTokens } from '../../src/utils/sanitize.js';
 import type { Observation, ImportanceLevel } from '../../src/storage/interface.js';
 import * as fs from 'fs';
+import {
+  remoteEndSession,
+  remoteSaveObservation,
+  remoteExportMemory,
+} from '../../src/capture/remote-client.js';
 
 const debugLog = createDebugLogger('stop-hook-debug.log');
 
@@ -425,7 +430,8 @@ function writeResponse(data: Record<string, unknown>): Promise<void> {
 }
 
 async function main() {
-  const storage = new SQLiteStorage();
+  // Storage is only opened in local mode; remote mode has no local SQLite footprint.
+  let storage: SQLiteStorage | null = null;
 
   try {
     const inputStr = await readStdin();
@@ -475,7 +481,66 @@ async function main() {
       summaryLength: summary?.length
     });
 
-    // Initialize storage
+    // --- Remote mode: send insights, end session, and trigger server export ---
+    const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
+    const remoteToken = (process.env['CONTEXT_MANAGER_TOKEN'] ?? '').trim();
+
+    if (remoteUrl) {
+      if (!remoteToken) {
+        console.error(
+          '[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing — remote session end skipped'
+        );
+        await writeResponse({ status: 'error' });
+        return;
+      }
+
+      const client = { url: remoteUrl, token: remoteToken };
+
+      // Extract conversation insights locally (pure computation from transcript)
+      if (transcriptLines) {
+        try {
+          const insights = extractConversationInsights(
+            transcriptLines,
+            input.session_id,
+            input.cwd
+          );
+          for (const insight of insights) {
+            try {
+              await remoteSaveObservation(client, insight);
+            } catch (err) {
+              console.error('[context-manager] Remote insight save failed:', err);
+            }
+          }
+          if (insights.length > 0) {
+            debugLog('CONVERSATION_INSIGHTS_REMOTE', { count: insights.length });
+            console.error(`[context-manager] Sent ${insights.length} conversation insights to server`);
+          }
+        } catch (insightError) {
+          console.error('[context-manager] Conversation insight extraction failed:', insightError);
+        }
+      }
+
+      // End session on the remote server
+      try {
+        await remoteEndSession(client, input.session_id, summary, summaryExtended);
+      } catch (err) {
+        console.error('[context-manager] Remote session end failed:', err);
+      }
+
+      // Trigger server-side memory export (writes to server's memory file).
+      // remoteExportMemory never throws; it returns '' on any error.
+      // The returned content is not used here: the next SessionStart fetches it via GET /memory.
+      const exportedContent = await remoteExportMemory(client, input.cwd, input.session_id);
+      if (exportedContent.trim().length > 0) {
+        console.error('[context-manager] Server-side memory export triggered');
+      }
+
+      await writeResponse({ status: 'complete' });
+      return;
+    }
+
+    // --- Local mode: direct SQLite access ---
+    storage = new SQLiteStorage();
     await storage.initialize();
 
     // Extract and save conversation insights before ending session
@@ -528,7 +593,7 @@ async function main() {
     console.error('[context-manager] Session end error:', error);
     await writeResponse({ status: 'error' });
   } finally {
-    await storage.close();
+    if (storage) await storage.close();
   }
 }
 

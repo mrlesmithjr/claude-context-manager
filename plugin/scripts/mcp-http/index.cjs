@@ -51146,6 +51146,7 @@ var StreamableHTTPServerTransport = class {
 var import_crypto4 = require("crypto");
 var import_os5 = require("os");
 var import_path6 = require("path");
+var import_fs6 = require("fs");
 
 // node_modules/zod/v3/helpers/util.js
 var util;
@@ -60397,7 +60398,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.26" : "unknown"
+      version: true ? "0.8.27" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -62646,6 +62647,153 @@ async function startHttpServer(options = {}) {
   });
   fastify.get("/health", async (_request, reply) => {
     await reply.send({ status: "ok", mode: "http-mcp" });
+  });
+  const SESSION_ID_MAX = 256;
+  const PROJECT_MAX = 1024;
+  const SUMMARY_MAX = 8e3;
+  const SUMMARY_EXT_MAX = 16e3;
+  const OBS_SUMMARY_MAX = 4e3;
+  const FILES_MAX = 100;
+  const FILE_PATH_MAX = 512;
+  const PROMPT_TEXT_MAX = 2e4;
+  function strBound(val, max, field) {
+    if (typeof val !== "string" || val.length === 0) {
+      throw new Error(`${field} is required and must be a non-empty string`);
+    }
+    if (val.length > max) {
+      throw new Error(`${field} exceeds maximum length ${max}`);
+    }
+    return val;
+  }
+  fastify.post("/capture/session", async (request, reply) => {
+    try {
+      const body = request.body;
+      const action = body["action"];
+      if (action === "create") {
+        const sessionId = strBound(body["session_id"], SESSION_ID_MAX, "session_id");
+        const project = strBound(body["project"], PROJECT_MAX, "project");
+        const normalizedProject = normalizePath(project, pathMap);
+        await storage.createSession(sessionId, normalizedProject);
+        await reply.send({ status: "ok" });
+      } else if (action === "end") {
+        const sessionId = strBound(body["session_id"], SESSION_ID_MAX, "session_id");
+        const summary = typeof body["summary"] === "string" ? body["summary"].substring(0, SUMMARY_MAX) : void 0;
+        const summaryExtended = typeof body["summary_extended"] === "string" ? body["summary_extended"].substring(0, SUMMARY_EXT_MAX) : void 0;
+        await storage.endSession(sessionId, summary, summaryExtended);
+        await reply.send({ status: "ok" });
+      } else {
+        await reply.status(400).send({ error: 'action must be "create" or "end"' });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(400).send({ error: msg });
+    }
+  });
+  fastify.post("/capture/observation", async (request, reply) => {
+    try {
+      const body = request.body;
+      const sessionId = strBound(body["session_id"], SESSION_ID_MAX, "session_id");
+      const project = strBound(body["project"], PROJECT_MAX, "project");
+      const toolName = strBound(body["tool_name"], 64, "tool_name");
+      const summary = strBound(body["summary"], OBS_SUMMARY_MAX, "summary");
+      const importance = body["importance"];
+      if (!["high", "medium", "low"].includes(importance)) {
+        await reply.status(400).send({ error: 'importance must be "high", "medium", or "low"' });
+        return;
+      }
+      const importanceScore = typeof body["importance_score"] === "number" ? Math.max(0, Math.min(1, body["importance_score"])) : 0.5;
+      const tokenEstimate = typeof body["token_estimate"] === "number" ? Math.max(1, Math.min(5e4, body["token_estimate"])) : 50;
+      const rawFiles = Array.isArray(body["files_touched"]) ? body["files_touched"] : [];
+      const filesTouched = rawFiles.slice(0, FILES_MAX).filter((f) => typeof f === "string").map((f) => f.substring(0, FILE_PATH_MAX));
+      const metadata = typeof body["metadata"] === "object" && body["metadata"] !== null ? body["metadata"] : {};
+      const rawTags = Array.isArray(body["tags"]) ? body["tags"] : void 0;
+      const tags = rawTags ? rawTags.filter((t) => typeof t === "string").map((t) => t.substring(0, 32)) : void 0;
+      const contentHash = typeof body["content_hash"] === "string" ? body["content_hash"].substring(0, 64) : void 0;
+      const rawCreatedAt = body["created_at"];
+      const createdAt = typeof rawCreatedAt === "string" && !isNaN(Date.parse(rawCreatedAt)) ? rawCreatedAt : (/* @__PURE__ */ new Date()).toISOString();
+      const normalizedProject = normalizePath(project, pathMap);
+      await storage.save({
+        session_id: sessionId,
+        project: normalizedProject,
+        tool_name: toolName,
+        summary,
+        files_touched: filesTouched,
+        metadata,
+        token_estimate: tokenEstimate,
+        importance,
+        importance_score: importanceScore,
+        tags,
+        content_hash: contentHash,
+        created_at: createdAt
+      });
+      await reply.send({ status: "ok" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(400).send({ error: msg });
+    }
+  });
+  fastify.post("/capture/prompt", async (request, reply) => {
+    try {
+      const body = request.body;
+      const sessionId = strBound(body["session_id"], SESSION_ID_MAX, "session_id");
+      const project = strBound(body["project"], PROJECT_MAX, "project");
+      const promptText = strBound(body["prompt_text"], PROMPT_TEXT_MAX, "prompt_text");
+      const promptNumber = typeof body["prompt_number"] === "number" ? Math.max(0, Math.floor(body["prompt_number"])) : 0;
+      const rawPromptCreatedAt = body["created_at"];
+      const createdAt = typeof rawPromptCreatedAt === "string" && !isNaN(Date.parse(rawPromptCreatedAt)) ? rawPromptCreatedAt : (/* @__PURE__ */ new Date()).toISOString();
+      const normalizedProject = normalizePath(project, pathMap);
+      await storage.saveUserPrompt({
+        session_id: sessionId,
+        project: normalizedProject,
+        prompt_number: promptNumber,
+        prompt_text: promptText,
+        created_at: createdAt
+      });
+      await reply.send({ status: "ok" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(400).send({ error: msg });
+    }
+  });
+  fastify.post("/capture/export", async (request, reply) => {
+    try {
+      const body = request.body;
+      const project = strBound(body["project"], PROJECT_MAX, "project");
+      const sessionId = typeof body["session_id"] === "string" && body["session_id"].length > 0 ? body["session_id"] : void 0;
+      const normalizedProject = normalizePath(project, pathMap);
+      const result = await exportToAutoMemory(storage, normalizedProject, sessionId);
+      let content = "";
+      const memFile = (0, import_path6.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
+      try {
+        content = (0, import_fs6.readFileSync)(memFile, "utf-8");
+      } catch {
+      }
+      await reply.send({ status: "ok", exported: result.exported, content });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(500).send({ error: msg });
+    }
+  });
+  fastify.get("/memory", async (request, reply) => {
+    try {
+      const query = request.query;
+      const project = query["project"];
+      if (!project || project.length === 0 || project.length > PROJECT_MAX) {
+        await reply.status(400).send({ error: "project query parameter is required" });
+        return;
+      }
+      const normalizedProject = normalizePath(project, pathMap);
+      const memFile = (0, import_path6.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
+      let content = "";
+      try {
+        content = (0, import_fs6.readFileSync)(memFile, "utf-8");
+      } catch {
+      }
+      await reply.send({ content });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(500).send({ error: msg });
+    }
   });
   fastify.route({
     method: ["GET", "POST", "DELETE"],
