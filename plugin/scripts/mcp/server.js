@@ -32658,7 +32658,7 @@ var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25"
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.8.14" : "0.5.0"
+    version: true ? "0.8.15" : "0.5.0"
   },
   {
     instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age \u2014 always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
