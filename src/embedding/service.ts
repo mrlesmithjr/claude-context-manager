@@ -12,7 +12,7 @@
  * Model: Xenova/all-MiniLM-L6-v2 (384-dim, ~80MB, cached to ~/.cache/huggingface/)
  */
 
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
@@ -82,22 +82,30 @@ export class EmbeddingService {
 
     console.error('[context-manager] Auto-installing @huggingface/transformers + onnxruntime-node...');
     console.error('[context-manager] This is a one-time setup (~265MB download, may take a few minutes)');
+    console.error('[context-manager] The MCP server will be unresponsive until installation completes.');
 
-    try {
-      execSync(
-        'npm install @huggingface/transformers onnxruntime-node --no-audit --no-fund --no-package-lock',
-        {
-          cwd: embeddingsDir,
-          stdio: 'pipe',
-          timeout: 300000, // 5 minute timeout
-          env: { ...process.env, npm_config_loglevel: 'error' },
-        }
-      );
+    // Use spawnSync (no shell) instead of execSync (shell) to eliminate the
+    // shell-injection surface: arguments are passed as a direct array to the OS,
+    // not interpolated through /bin/sh. spawnSync is still synchronous and blocks
+    // the event loop, but this code path runs only during the one-time dep install.
+    const result = spawnSync(
+      'npm',
+      ['install', '@huggingface/transformers', 'onnxruntime-node', '--no-fund', '--no-package-lock'],
+      {
+        cwd: embeddingsDir,
+        stdio: 'pipe',
+        timeout: 300000, // 5 minute timeout
+        env: { ...process.env, npm_config_loglevel: 'error' },
+      }
+    );
+
+    if (result.status === 0) {
       console.error('[context-manager] Dependencies installed successfully');
       this.didAutoInstall = true;
       return true;
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+    } else {
+      const stderr = result.stderr?.toString() || '';
+      const message = result.error ? result.error.message : (stderr || 'unknown error');
       console.error(`[context-manager] Auto-install failed: ${message}`);
       return false;
     }
