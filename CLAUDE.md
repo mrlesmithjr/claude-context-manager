@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 6, 2026 (v0.8.12)
+**Last Updated**: May 24, 2026 (v0.8.16)
 
 ---
 
@@ -14,6 +14,36 @@ This file provides guidance to Claude Code when working in this repository.
 **Owner**: Larry Smith Jr.
 **Email**: mrlesmithjr@gmail.com
 **Repository**: `github.com/mrlesmithjr/claude-context-manager`
+
+---
+
+## Development Workflow
+
+This is a TypeScript Claude Code plugin. All code changes follow the mandatory multi-agent sequence:
+
+**Feature or fix:**
+```
+typescript-developer → code-reviewer → doc-writer → version bump → commit
+```
+
+**Documentation only:**
+```
+doc-writer → commit (no version bump)
+```
+
+**Agent responsibilities:**
+- `typescript-developer` - implement changes in `src/`, `plugin/hooks/`, `web/`, `cli/`
+- `code-reviewer` - quality and security review before any commit (mandatory, never skip)
+- `doc-writer` - update this CLAUDE.md, README.md, and any affected skill/agent descriptions
+
+**Version management:**
+- Bump patch version after code review passes, before committing: `npm version patch --no-git-tag-version`
+- The plugin system caches by version number - if you change code without bumping the version, `/plugin update context-manager` will not apply the changes
+- Never bump version before code review is complete
+
+**Issue tracking:**
+- Every code change must reference a GitHub issue in the commit (`fixes #N` or `refs #N`)
+- Check open issues first: `gh issue list --repo mrlesmithjr/claude-context-manager --state open`
 
 ---
 
@@ -274,6 +304,7 @@ claude-context-manager/
 - Groups by session + tool, only compact groups of 3+
 - Never compacts high-importance observations
 - Format: `"Read x4: file1.ts, file2.ts, ..."` (~15 tokens vs ~80)
+- Vector rows in `vec_observations` are deleted before their source observation rows are deleted. Orphaned vector entries would otherwise accumulate silently across compaction cycles and never be cleaned up.
 
 ### 10. Surprise Scoring (v0.7.0)
 - File encounter frequency tracked in `file_encounter_counts` table (per file + project + tool)
@@ -323,6 +354,22 @@ claude-context-manager/
 - `tag:X keyword` syntax further filters tag results by FTS5 keyword (intersection)
 - Tags visible in `context_search` output as `[auth, config]` suffix on each observation line
 - Partial index on `tags WHERE tags IS NOT NULL` keeps tag queries fast without scanning NULL rows
+- **Tag matching uses delimiter-anchored LIKE** (`',' || tags || ','` matched against `%,tag,%`): prevents substring collisions where e.g. `api` would incorrectly match `api_key`, and correctly matches tags in all positions including first and last
+
+### 15. Security and Input Validation (Sprint 1 P0)
+
+**Hook input path validation:**
+- `validateStopInput`: `transcript_path` is resolved with `realpathSync` (symlink-safe) and must remain within `~/.claude/projects/` before use. Paths that resolve outside this boundary are silently dropped rather than used. This prevents directory traversal via crafted or symlinked paths.
+- `validateSessionStartInput`: when path validation fails, the fallback is `process.cwd()` then `homedir()`. Raw untrusted input is never used as the fallback, which would cause over-broad database scoping (a parent-directory path would expose unrelated project contexts).
+
+**Debug log discipline:**
+- `capture-prompt.ts` and `session-end.ts` no longer write raw prompt content or raw stdin to debug logs. Only metadata is logged (session ID, content length, key names). This prevents sensitive prompt content from appearing in log files.
+
+**Storage correctness fixes:**
+- `searchPrompts` uses `ftsQuery` (the FTS5-escaped form) in the `ELSE` branch, not the raw query string. Queries containing dots, hyphens, or FTS5 boolean operators no longer cause parse errors.
+- `getWithinBudget` has a `LIMIT 500` and orders by `importance_score DESC, created_at DESC`. Without the limit, context injection could grow unbounded on mature databases with thousands of observations.
+- `compactObservations` deletes rows from `vec_observations` before deleting the source observation rows. Without this, compaction leaves orphaned vector rows that accumulate and are never cleaned up.
+- `session-end.ts` error path uses `await writeResponse({ status: 'error' })` (async, consistent with all other exit paths) instead of synchronous `process.stdout.write`. The sync write could fail to flush before the process exited.
 
 ---
 
@@ -431,6 +478,10 @@ API_KEY=sk-abc123...
 ```
 
 Content within `<private>` tags is replaced with `[REDACTED]` before storage.
+
+**Hardened behaviors (Sprint 1 P0):**
+- **Unclosed `<private>` tag**: if the closing `</private>` is absent, all remaining content after the opening tag is redacted rather than stored verbatim. This closes the partial-tag leak vector.
+- **Edit/Write field stripping**: `old_string`, `new_string`, and `content` fields are removed from Edit/Write `tool_input` metadata before storage. These fields can contain diff content with secrets that would otherwise bypass `SENSITIVE_PATTERNS` matching. The observation still captures the file path and operation type.
 
 ---
 
