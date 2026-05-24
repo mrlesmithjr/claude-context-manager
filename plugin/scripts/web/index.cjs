@@ -44038,10 +44038,8 @@ ${storedOutput}`;
     return rows.map((row) => this.mapRow(row));
   }
   async getStats(project) {
-    const TOKEN_BUDGET = parseInt(
-      process.env.CONTEXT_MANAGER_TOKEN_BUDGET || "4000",
-      10
-    );
+    const parsed = parseInt(process.env.CONTEXT_MANAGER_TOKEN_BUDGET || "4000", 10);
+    const TOKEN_BUDGET = Number.isFinite(parsed) && parsed > 0 && parsed <= 1e5 ? parsed : 4e3;
     const baseSql = project ? `
         SELECT
           COUNT(*) as total_observations,
@@ -44198,6 +44196,36 @@ ${storedOutput}`;
       summary: row.summary || void 0,
       summary_extended: row.summary_extended || void 0,
       status: row.status
+    }));
+  }
+  async getRecentSessionsWithCounts(project, limit, offset, status) {
+    const statusClause = status ? "AND s.status = ?" : "";
+    const sql = `
+      SELECT
+        s.id, s.project, s.started_at, s.ended_at,
+        s.summary, s.summary_extended, s.status,
+        COUNT(o.id) AS observation_count,
+        COALESCE(SUM(o.token_estimate), 0) AS total_tokens
+      FROM sessions s
+      LEFT JOIN observations o ON o.session_id = s.id
+      WHERE s.project LIKE ? || '%'
+        ${statusClause}
+      GROUP BY s.id
+      ORDER BY s.started_at DESC
+      LIMIT ? OFFSET ?
+    `;
+    const params = status ? [project, status, limit, offset] : [project, limit, offset];
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => ({
+      id: row.id,
+      project: row.project,
+      started_at: row.started_at,
+      ended_at: row.ended_at || void 0,
+      summary: row.summary || void 0,
+      summary_extended: row.summary_extended || void 0,
+      status: row.status,
+      observation_count: row.observation_count,
+      total_tokens: row.total_tokens
     }));
   }
   async vacuum(olderThanDays) {
@@ -45105,35 +45133,17 @@ async function registerApiRoutes(fastify, storage) {
     async (request, reply) => {
       const { project, status, limit = 50, offset = 0 } = request.query;
       try {
-        const total = await storage.countSessions(project, status);
-        const allSessions = await storage.getRecentSessions(
-          project || "/",
-          1e3
-        );
-        let filtered = status ? allSessions.filter((s) => s.status === status) : allSessions;
-        const sessionsWithCounts = await Promise.all(
-          filtered.map(async (session) => {
-            const observations = await storage.getSessionObservations(
-              session.id
-            );
-            const observation_count = observations.length;
-            const total_tokens = observations.reduce(
-              (sum, obs) => sum + obs.token_estimate,
-              0
-            );
-            return {
-              ...session,
-              observation_count,
-              total_tokens
-            };
-          })
-        );
-        const paginatedSessions = sessionsWithCounts.slice(
-          offset,
-          offset + limit
-        );
+        const [total, sessions] = await Promise.all([
+          storage.countSessions(project, status),
+          storage.getRecentSessionsWithCounts(
+            project || "/",
+            limit,
+            offset,
+            status
+          )
+        ]);
         reply.send({
-          sessions: paginatedSessions,
+          sessions,
           total,
           limit,
           offset
@@ -45306,8 +45316,7 @@ async function main() {
   fastify.get("/api/health", async (request, reply) => {
     reply.send({
       status: "ok",
-      version: process.env.npm_package_version || "unknown",
-      database: DB_PATH
+      version: process.env.npm_package_version || "unknown"
     });
   });
   try {

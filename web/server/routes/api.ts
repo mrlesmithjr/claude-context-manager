@@ -53,49 +53,20 @@ export async function registerApiRoutes(
       const { project, status, limit = 50, offset = 0 } = request.query;
 
       try {
-        // Get total count
-        const total = await storage.countSessions(project, status);
-
-        // Get sessions - if no project filter, get from all projects
-        // The storage method uses prefix matching, so '/' matches everything
-        const allSessions = await storage.getRecentSessions(
-          project || '/',
-          1000
-        );
-
-        // Filter by status if specified
-        let filtered = status
-          ? allSessions.filter((s) => s.status === status)
-          : allSessions;
-
-        // Count observations per session and total tokens
-        const sessionsWithCounts = await Promise.all(
-          filtered.map(async (session) => {
-            const observations = await storage.getSessionObservations(
-              session.id
-            );
-            const observation_count = observations.length;
-            const total_tokens = observations.reduce(
-              (sum, obs) => sum + obs.token_estimate,
-              0
-            );
-
-            return {
-              ...session,
-              observation_count,
-              total_tokens,
-            };
-          })
-        );
-
-        // Apply pagination
-        const paginatedSessions = sessionsWithCounts.slice(
-          offset,
-          offset + limit
-        );
+        // Get total count and paginated sessions with observation stats in two
+        // queries instead of the previous N+1 pattern (1 + N per session).
+        const [total, sessions] = await Promise.all([
+          storage.countSessions(project, status),
+          storage.getRecentSessionsWithCounts(
+            project || '/',
+            limit,
+            offset,
+            status
+          ),
+        ]);
 
         reply.send({
-          sessions: paginatedSessions,
+          sessions,
           total,
           limit,
           offset,

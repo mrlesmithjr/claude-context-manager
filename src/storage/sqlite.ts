@@ -561,10 +561,8 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async getStats(project?: string): Promise<Stats> {
-    const TOKEN_BUDGET = parseInt(
-      process.env.CONTEXT_MANAGER_TOKEN_BUDGET || '4000',
-      10
-    );
+    const parsed = parseInt(process.env.CONTEXT_MANAGER_TOKEN_BUDGET || '4000', 10);
+    const TOKEN_BUDGET = Number.isFinite(parsed) && parsed > 0 && parsed <= 100000 ? parsed : 4000;
 
     // Base observation stats
     const baseSql = project
@@ -790,6 +788,59 @@ export class SQLiteStorage implements ContextStorage {
       summary: row.summary || undefined,
       summary_extended: row.summary_extended || undefined,
       status: row.status,
+    }));
+  }
+
+  async getRecentSessionsWithCounts(
+    project: string,
+    limit: number,
+    offset: number,
+    status?: string
+  ): Promise<Array<Session & { observation_count: number; total_tokens: number }>> {
+    // Single query that joins sessions with aggregated observation stats.
+    // Eliminates the N+1 pattern of loading each session's observations separately.
+    const statusClause = status ? 'AND s.status = ?' : '';
+    const sql = `
+      SELECT
+        s.id, s.project, s.started_at, s.ended_at,
+        s.summary, s.summary_extended, s.status,
+        COUNT(o.id) AS observation_count,
+        COALESCE(SUM(o.token_estimate), 0) AS total_tokens
+      FROM sessions s
+      LEFT JOIN observations o ON o.session_id = s.id
+      WHERE s.project LIKE ? || '%'
+        ${statusClause}
+      GROUP BY s.id
+      ORDER BY s.started_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    const params: unknown[] = status
+      ? [project, status, limit, offset]
+      : [project, limit, offset];
+
+    const rows = this.db.prepare(sql).all(...params) as Array<{
+      id: string;
+      project: string;
+      started_at: string;
+      ended_at: string | null;
+      summary: string | null;
+      summary_extended: string | null;
+      status: 'active' | 'complete';
+      observation_count: number;
+      total_tokens: number;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      project: row.project,
+      started_at: row.started_at,
+      ended_at: row.ended_at || undefined,
+      summary: row.summary || undefined,
+      summary_extended: row.summary_extended || undefined,
+      status: row.status,
+      observation_count: row.observation_count,
+      total_tokens: row.total_tokens,
     }));
   }
 

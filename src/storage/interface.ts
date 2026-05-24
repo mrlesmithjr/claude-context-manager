@@ -157,6 +157,21 @@ export interface ContextStorage {
   getRecentSessions(project: string, limit: number): Promise<Session[]>;
 
   /**
+   * Get paginated sessions with observation count and token total in one query.
+   * Replaces the N+1 pattern of getRecentSessions + per-session getSessionObservations.
+   * @param project - Project path prefix (use '/' for all projects)
+   * @param limit - Page size
+   * @param offset - Page offset
+   * @param status - Optional status filter ('active' | 'complete')
+   */
+  getRecentSessionsWithCounts(
+    project: string,
+    limit: number,
+    offset: number,
+    status?: string
+  ): Promise<Array<Session & { observation_count: number; total_tokens: number }>>;
+
+  /**
    * Vacuum old observations and orphaned sessions
    * @param olderThanDays - Delete observations older than this many days (optional)
    * @returns Count of deleted observations and orphaned sessions

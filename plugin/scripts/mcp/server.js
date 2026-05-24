@@ -30505,10 +30505,8 @@ ${storedOutput}`;
     return rows.map((row) => this.mapRow(row));
   }
   async getStats(project) {
-    const TOKEN_BUDGET = parseInt(
-      process.env.CONTEXT_MANAGER_TOKEN_BUDGET || "4000",
-      10
-    );
+    const parsed = parseInt(process.env.CONTEXT_MANAGER_TOKEN_BUDGET || "4000", 10);
+    const TOKEN_BUDGET = Number.isFinite(parsed) && parsed > 0 && parsed <= 1e5 ? parsed : 4e3;
     const baseSql = project ? `
         SELECT
           COUNT(*) as total_observations,
@@ -30665,6 +30663,36 @@ ${storedOutput}`;
       summary: row.summary || void 0,
       summary_extended: row.summary_extended || void 0,
       status: row.status
+    }));
+  }
+  async getRecentSessionsWithCounts(project, limit, offset, status) {
+    const statusClause = status ? "AND s.status = ?" : "";
+    const sql = `
+      SELECT
+        s.id, s.project, s.started_at, s.ended_at,
+        s.summary, s.summary_extended, s.status,
+        COUNT(o.id) AS observation_count,
+        COALESCE(SUM(o.token_estimate), 0) AS total_tokens
+      FROM sessions s
+      LEFT JOIN observations o ON o.session_id = s.id
+      WHERE s.project LIKE ? || '%'
+        ${statusClause}
+      GROUP BY s.id
+      ORDER BY s.started_at DESC
+      LIMIT ? OFFSET ?
+    `;
+    const params = status ? [project, status, limit, offset] : [project, limit, offset];
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => ({
+      id: row.id,
+      project: row.project,
+      started_at: row.started_at,
+      ended_at: row.ended_at || void 0,
+      summary: row.summary || void 0,
+      summary_extended: row.summary_extended || void 0,
+      status: row.status,
+      observation_count: row.observation_count,
+      total_tokens: row.total_tokens
     }));
   }
   async vacuum(olderThanDays) {
@@ -31826,6 +31854,9 @@ function mergeSessionBlocks(existingBody, newContent) {
   for (const newBlock of newBlocks) {
     const existing = existingBlocks.find((b) => b.sessionId === newBlock.sessionId);
     if (existing) {
+      if (!existing.narrative && newBlock.narrative) {
+        existing.narrative = newBlock.narrative;
+      }
       const existingItems = new Set(existing.items.map((l) => l.trim()));
       for (const item of newBlock.items) {
         if (!existingItems.has(item.trim())) {
@@ -31863,6 +31894,8 @@ function parseSessionBlocks(body) {
       };
     } else if (line.startsWith("- ") && currentBlock) {
       currentBlock.items.push(line);
+    } else if (line && !line.startsWith("#") && !line.startsWith("**") && currentBlock) {
+      currentBlock.narrative = ((currentBlock.narrative || "") + line + " ").trimEnd();
     }
   }
   if (currentBlock)
@@ -31882,6 +31915,8 @@ function rebuildFromBlocks(blocks) {
     lines.push("");
     for (const block of dateBlocks) {
       lines.push(block.heading);
+      if (block.narrative)
+        lines.push(block.narrative);
       lines.push(...block.items);
       lines.push("");
     }
@@ -31935,7 +31970,7 @@ async function exportToAutoMemory(storage2, projectPath, sessionId) {
 }
 
 // src/embedding/service.ts
-import { execSync } from "child_process";
+import { spawnSync } from "child_process";
 import { existsSync as existsSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3 } from "fs";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
@@ -31979,22 +32014,25 @@ var EmbeddingService = class {
     }
     console.error("[context-manager] Auto-installing @huggingface/transformers + onnxruntime-node...");
     console.error("[context-manager] This is a one-time setup (~265MB download, may take a few minutes)");
-    try {
-      execSync(
-        "npm install @huggingface/transformers onnxruntime-node --no-audit --no-fund --no-package-lock",
-        {
-          cwd: embeddingsDir,
-          stdio: "pipe",
-          timeout: 3e5,
-          // 5 minute timeout
-          env: { ...process.env, npm_config_loglevel: "error" }
-        }
-      );
+    console.error("[context-manager] The MCP server will be unresponsive until installation completes.");
+    const result = spawnSync(
+      "npm",
+      ["install", "@huggingface/transformers", "onnxruntime-node", "--no-fund", "--no-package-lock"],
+      {
+        cwd: embeddingsDir,
+        stdio: "pipe",
+        timeout: 3e5,
+        // 5 minute timeout
+        env: { ...process.env, npm_config_loglevel: "error" }
+      }
+    );
+    if (result.status === 0) {
       console.error("[context-manager] Dependencies installed successfully");
       this.didAutoInstall = true;
       return true;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+    } else {
+      const stderr = result.stderr?.toString() || "";
+      const message = result.error ? result.error.message : stderr || "unknown error";
       console.error(`[context-manager] Auto-install failed: ${message}`);
       return false;
     }
@@ -32665,7 +32703,7 @@ var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25"
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.8.16" : "0.5.0"
+    version: true ? "0.8.18" : "0.5.0"
   },
   {
     instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age \u2014 always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -33121,8 +33159,8 @@ server.tool(
   "context_vacuum",
   "Clean up old observations and optimize the context-manager database. Use for maintenance.",
   {
-    days: external_exports3.number().optional().describe(
-      "Delete observations older than this many days. Omit to only clean orphaned sessions and optimize."
+    days: external_exports3.number().int().min(1).max(3650).optional().describe(
+      "Delete observations older than this many days (1-3650). Omit to only clean orphaned sessions and optimize."
     )
   },
   async ({ days }) => {
@@ -33304,8 +33342,8 @@ server.tool(
   "Generate vector embeddings for observations that are missing them. Embeddings enable semantic search via context_semantic_search. First run auto-installs dependencies (~265MB) and downloads the model (~80MB) \u2014 this may take a few minutes.",
   {
     project: external_exports3.string().optional().describe("Project path to scope embedding. Omit to embed all projects."),
-    batch_size: external_exports3.number().optional().default(50).describe("Number of observations to embed per batch (default: 50)"),
-    limit: external_exports3.number().optional().default(500).describe("Maximum total observations to embed in this call (default: 500)")
+    batch_size: external_exports3.number().int().min(1).max(500).optional().default(50).describe("Number of observations to embed per batch (default: 50, max: 500)"),
+    limit: external_exports3.number().int().min(1).max(1e4).optional().default(500).describe("Maximum total observations to embed in this call (default: 500, max: 10000)")
   },
   async ({ project, batch_size, limit }) => {
     const db = await getStorage();
