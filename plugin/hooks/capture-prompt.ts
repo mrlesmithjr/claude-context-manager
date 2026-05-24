@@ -65,7 +65,63 @@ async function main() {
       return;
     }
 
-    // Validate and sanitize input
+    // Check remote mode FIRST — before filesystem-based path validation.
+    // In remote mode the project path is a server-side metadata label (not a local
+    // filesystem path), so validateProjectPath() must be skipped. Lightweight bounds
+    // checking is used instead.
+    const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
+    const remoteToken = (process.env['CONTEXT_MANAGER_TOKEN'] ?? '').trim();
+
+    if (remoteUrl) {
+      if (!remoteToken) {
+        console.error(
+          '[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing'
+        );
+        await writeResponse({ status: 'error' });
+        return;
+      }
+
+      // Lightweight parse — bounds check only, no filesystem validation
+      const obj = (typeof rawInput === 'object' && rawInput !== null)
+        ? rawInput as Record<string, unknown>
+        : {};
+
+      const sessionId = typeof obj.session_id === 'string' ? obj.session_id.slice(0, 256) : '';
+      const cwd = typeof obj.cwd === 'string' ? obj.cwd.slice(0, 1024) : '';
+      const rawPrompt = typeof obj.prompt === 'string' ? obj.prompt : '';
+      const promptNumber = typeof obj.prompt_number === 'number' ? obj.prompt_number : 0;
+
+      if (!sessionId || !cwd || !rawPrompt) {
+        await writeResponse({ status: 'error' });
+        return;
+      }
+
+      const sanitizedPrompt = sanitizeContent(rawPrompt);
+      debugLog('PROMPT_CAPTURED', {
+        sessionId,
+        promptLength: sanitizedPrompt.length,
+        project: cwd,
+      });
+
+      const remotePayload = {
+        session_id: sessionId,
+        project: cwd,
+        prompt_number: promptNumber,
+        prompt_text: sanitizedPrompt,
+        created_at: new Date().toISOString(),
+      };
+
+      try {
+        await remoteSavePrompt({ url: remoteUrl, token: remoteToken }, remotePayload);
+        await writeResponse({ status: 'captured' });
+      } catch (error) {
+        console.error('[context-manager] Remote prompt capture error:', error);
+        await writeResponse({ status: 'error' });
+      }
+      return;
+    }
+
+    // --- Local mode: full validation with filesystem path checks, then write to SQLite ---
     const input = validateUserPromptSubmitInput(rawInput);
 
     // Sanitize prompt text (strip <private> tags and sensitive data)
@@ -86,29 +142,6 @@ async function main() {
       created_at: new Date().toISOString(),
     };
 
-    // --- Remote mode: POST prompt to the central server ---
-    const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
-    const remoteToken = (process.env['CONTEXT_MANAGER_TOKEN'] ?? '').trim();
-
-    if (remoteUrl) {
-      if (!remoteToken) {
-        console.error(
-          '[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing — remote prompt capture skipped'
-        );
-        await writeResponse({ status: 'error' });
-        return;
-      }
-      try {
-        await remoteSavePrompt({ url: remoteUrl, token: remoteToken }, promptPayload);
-        await writeResponse({ status: 'captured' });
-      } catch (error) {
-        console.error('[context-manager] Remote prompt capture error:', error);
-        await writeResponse({ status: 'error' });
-      }
-      return;
-    }
-
-    // --- Local mode: write to SQLite directly ---
     storage = new SQLiteStorage();
     await storage.initialize();
     await storage.saveUserPrompt(promptPayload);

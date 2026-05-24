@@ -66,7 +66,73 @@ async function main() {
       return;
     }
 
-    // Validate and sanitize input
+    // Check remote mode FIRST — before filesystem-based path validation.
+    // In remote mode the project path is a server-side metadata label (not a local
+    // filesystem path), so validateProjectPath() must be skipped. Lightweight bounds
+    // checking is used instead.
+    // Surprise scoring is also skipped in remote mode: encounter counts live in the
+    // remote server's DB, not the local one.
+    const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
+    const remoteToken = (process.env['CONTEXT_MANAGER_TOKEN'] ?? '').trim();
+
+    if (remoteUrl) {
+      if (!remoteToken) {
+        console.error(
+          '[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing'
+        );
+        await writeResponse({ status: 'error', error: 'CONTEXT_MANAGER_TOKEN required when CONTEXT_MANAGER_URL is set' });
+        return;
+      }
+
+      // Lightweight parse — bounds check only, no filesystem validation
+      const obj = (typeof rawInput === 'object' && rawInput !== null)
+        ? rawInput as Record<string, unknown>
+        : {};
+
+      const sessionId = typeof obj.session_id === 'string' ? obj.session_id.slice(0, 256) : '';
+      const cwd = typeof obj.cwd === 'string' ? obj.cwd.slice(0, 1024) : '';
+      const toolName = typeof obj.tool_name === 'string' ? obj.tool_name.slice(0, 128) : '';
+
+      if (!sessionId || !cwd || !toolName) {
+        await writeResponse({ status: 'skipped' });
+        return;
+      }
+
+      if (!shouldCaptureTool(toolName, obj.tool_input)) {
+        await writeResponse({ status: 'skipped' });
+        return;
+      }
+
+      // Extract tool_response — same logic as the full validator
+      let toolResponse: string | undefined;
+      if (typeof obj.tool_response === 'string') {
+        toolResponse = obj.tool_response;
+      } else if (typeof obj.tool_response === 'object' && obj.tool_response !== null) {
+        const resp = obj.tool_response as Record<string, unknown>;
+        const stdout = typeof resp.stdout === 'string' ? resp.stdout : '';
+        const stderr = typeof resp.stderr === 'string' ? resp.stderr : '';
+        toolResponse = stderr ? `${stdout}\n[stderr]\n${stderr}` : stdout;
+      }
+
+      const observation = processToolCapture({
+        session_id: sessionId,
+        project: cwd,
+        tool_name: toolName,
+        tool_input: obj.tool_input,
+        tool_response: toolResponse,
+      });
+
+      try {
+        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, observation);
+        await writeResponse({ status: 'captured' });
+      } catch (error) {
+        console.error('[context-manager] Remote capture error:', error);
+        await writeResponse({ status: 'error' });
+      }
+      return;
+    }
+
+    // --- Local mode: full validation with filesystem path checks, then write to SQLite ---
     const input = validatePostToolUseInput(rawInput);
 
     // Skip low-value tools (also checks command patterns for Bash)
@@ -84,33 +150,6 @@ async function main() {
       tool_response: input.tool_response,
     });
 
-    // --- Remote mode: POST observation to the central server ---
-    // When CONTEXT_MANAGER_URL is set, write to the remote server instead of local SQLite.
-    // Surprise scoring is skipped in remote mode: it requires DB access to get per-file
-    // encounter counts, which are stored on the remote server.
-    const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
-    const remoteToken = (process.env['CONTEXT_MANAGER_TOKEN'] ?? '').trim();
-
-    if (remoteUrl) {
-      if (!remoteToken) {
-        console.error(
-          '[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing — remote capture skipped'
-        );
-        await writeResponse({ status: 'error', error: 'CONTEXT_MANAGER_TOKEN required when CONTEXT_MANAGER_URL is set' });
-        return;
-      }
-      try {
-        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, observation);
-        await writeResponse({ status: 'captured' });
-      } catch (error) {
-        console.error('[context-manager] Remote capture error:', error);
-        await writeResponse({ status: 'error' });
-      }
-      // No storage to close in remote mode
-      return;
-    }
-
-    // --- Local mode: write to SQLite directly ---
     storage = new SQLiteStorage();
     await storage.initialize();
 

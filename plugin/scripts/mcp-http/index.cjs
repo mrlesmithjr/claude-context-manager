@@ -60398,7 +60398,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.27" : "unknown"
+      version: true ? "0.8.28" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."

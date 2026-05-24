@@ -28,11 +28,16 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY cli/ ./cli/
 COPY src/ ./src/
+COPY plugin/ ./plugin/
+COPY scripts/ ./scripts/
+COPY web/ ./web/
 
-# Build: compile TypeScript to dist/ and bundle the CLI entry point.
-# build:src runs tsc; build:cli runs esbuild over cli/index.ts -> dist/cli.js.
-# build:hooks is NOT needed here (the plugin system is not used in E2E mode).
-RUN npm run build:src && npm run build:cli
+# Build everything:
+#   build:src   - tsc TypeScript to dist/ (used by start-server.mjs and hook tests)
+#   build:cli   - esbuild CLI entry point to dist/cli.js
+#   build:hooks - esbuild hook scripts to plugin/scripts/ (needed for scenario 06)
+# build:web is skipped (web dashboard not needed in E2E mode).
+RUN npm run build:src && npm run build:cli && npm run build:hooks
 
 # Copy test infrastructure so the test-runner has access to it.
 # chmod ensures scripts are executable regardless of git umask settings.

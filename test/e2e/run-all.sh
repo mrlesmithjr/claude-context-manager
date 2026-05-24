@@ -68,6 +68,7 @@ run_scenario "${SCRIPT_DIR}/02-cross-project.sh"
 run_scenario "${SCRIPT_DIR}/03-concurrent-writes.sh"
 run_scenario "${SCRIPT_DIR}/04-stats.sh"
 run_scenario "${SCRIPT_DIR}/05-remote-capture.sh"
+run_scenario "${SCRIPT_DIR}/06-hook-remote-mode.sh"
 
 # --- Phase 3: Summary ---
 echo "============================================"

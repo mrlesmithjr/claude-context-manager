@@ -315,8 +315,13 @@ function summarizeEdit(input: Record<string, unknown>, response?: string): strin
 
   // Look for high-signal patterns in added lines
   for (const line of addedLines) {
-    const funcMatch = line.match(/(?:function|async function|class|const|export)\s+(\w+)/);
-    if (funcMatch) return `Edited ${fileName}: Added ${funcMatch[0].substring(0, 50)}`;
+    // Treat `export` as an optional prefix so we capture the actual identifier.
+    // e.g. "export function remoteHookCapture()" -> "export function remoteHookCapture"
+    // not just "export function" (which hides the function name).
+    const funcMatch = line.match(
+      /(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|interface|type)\s+(\w+)/
+    );
+    if (funcMatch) return `Edited ${fileName}: Added ${funcMatch[0].substring(0, 60)}`;
 
     const importMatch = line.match(/import\s+.+from\s+['"](.+?)['"]/);
     if (importMatch) return `Edited ${fileName}: Added import from '${importMatch[1]}'`;

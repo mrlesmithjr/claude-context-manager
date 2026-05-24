@@ -1729,6 +1729,47 @@ async function main() {
       await writeResponse({ status: "error" });
       return;
     }
+    const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
+    const remoteToken = (process.env["CONTEXT_MANAGER_TOKEN"] ?? "").trim();
+    if (remoteUrl) {
+      if (!remoteToken) {
+        console.error(
+          "[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing"
+        );
+        await writeResponse({ status: "error" });
+        return;
+      }
+      const obj = typeof rawInput === "object" && rawInput !== null ? rawInput : {};
+      const sessionId = typeof obj.session_id === "string" ? obj.session_id.slice(0, 256) : "";
+      const cwd = typeof obj.cwd === "string" ? obj.cwd.slice(0, 1024) : "";
+      const rawPrompt = typeof obj.prompt === "string" ? obj.prompt : "";
+      const promptNumber = typeof obj.prompt_number === "number" ? obj.prompt_number : 0;
+      if (!sessionId || !cwd || !rawPrompt) {
+        await writeResponse({ status: "error" });
+        return;
+      }
+      const sanitizedPrompt2 = sanitizeContent(rawPrompt);
+      debugLog("PROMPT_CAPTURED", {
+        sessionId,
+        promptLength: sanitizedPrompt2.length,
+        project: cwd
+      });
+      const remotePayload = {
+        session_id: sessionId,
+        project: cwd,
+        prompt_number: promptNumber,
+        prompt_text: sanitizedPrompt2,
+        created_at: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      try {
+        await remoteSavePrompt({ url: remoteUrl, token: remoteToken }, remotePayload);
+        await writeResponse({ status: "captured" });
+      } catch (error) {
+        console.error("[context-manager] Remote prompt capture error:", error);
+        await writeResponse({ status: "error" });
+      }
+      return;
+    }
     const input = validateUserPromptSubmitInput(rawInput);
     const sanitizedPrompt = sanitizeContent(input.prompt);
     debugLog("PROMPT_CAPTURED", {
@@ -1743,25 +1784,6 @@ async function main() {
       prompt_text: sanitizedPrompt,
       created_at: (/* @__PURE__ */ new Date()).toISOString()
     };
-    const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
-    const remoteToken = (process.env["CONTEXT_MANAGER_TOKEN"] ?? "").trim();
-    if (remoteUrl) {
-      if (!remoteToken) {
-        console.error(
-          "[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing \u2014 remote prompt capture skipped"
-        );
-        await writeResponse({ status: "error" });
-        return;
-      }
-      try {
-        await remoteSavePrompt({ url: remoteUrl, token: remoteToken }, promptPayload);
-        await writeResponse({ status: "captured" });
-      } catch (error) {
-        console.error("[context-manager] Remote prompt capture error:", error);
-        await writeResponse({ status: "error" });
-      }
-      return;
-    }
     storage = new SQLiteStorage();
     await storage.initialize();
     await storage.saveUserPrompt(promptPayload);

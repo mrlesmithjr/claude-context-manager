@@ -1966,9 +1966,11 @@ function summarizeEdit(input, response) {
   const addedLines = newLines.filter((l) => !oldSet.has(l));
   const removedLines = oldLines.filter((l) => !newSet.has(l));
   for (const line of addedLines) {
-    const funcMatch = line.match(/(?:function|async function|class|const|export)\s+(\w+)/);
+    const funcMatch = line.match(
+      /(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|interface|type)\s+(\w+)/
+    );
     if (funcMatch)
-      return `Edited ${fileName}: Added ${funcMatch[0].substring(0, 50)}`;
+      return `Edited ${fileName}: Added ${funcMatch[0].substring(0, 60)}`;
     const importMatch = line.match(/import\s+.+from\s+['"](.+?)['"]/);
     if (importMatch)
       return `Edited ${fileName}: Added import from '${importMatch[1]}'`;
@@ -2456,6 +2458,55 @@ async function main() {
       await writeResponse({ status: "error", error: "Invalid JSON input" });
       return;
     }
+    const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
+    const remoteToken = (process.env["CONTEXT_MANAGER_TOKEN"] ?? "").trim();
+    if (remoteUrl) {
+      if (!remoteToken) {
+        console.error(
+          "[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing"
+        );
+        await writeResponse({ status: "error", error: "CONTEXT_MANAGER_TOKEN required when CONTEXT_MANAGER_URL is set" });
+        return;
+      }
+      const obj = typeof rawInput === "object" && rawInput !== null ? rawInput : {};
+      const sessionId = typeof obj.session_id === "string" ? obj.session_id.slice(0, 256) : "";
+      const cwd = typeof obj.cwd === "string" ? obj.cwd.slice(0, 1024) : "";
+      const toolName = typeof obj.tool_name === "string" ? obj.tool_name.slice(0, 128) : "";
+      if (!sessionId || !cwd || !toolName) {
+        await writeResponse({ status: "skipped" });
+        return;
+      }
+      if (!shouldCaptureTool(toolName, obj.tool_input)) {
+        await writeResponse({ status: "skipped" });
+        return;
+      }
+      let toolResponse;
+      if (typeof obj.tool_response === "string") {
+        toolResponse = obj.tool_response;
+      } else if (typeof obj.tool_response === "object" && obj.tool_response !== null) {
+        const resp = obj.tool_response;
+        const stdout = typeof resp.stdout === "string" ? resp.stdout : "";
+        const stderr = typeof resp.stderr === "string" ? resp.stderr : "";
+        toolResponse = stderr ? `${stdout}
+[stderr]
+${stderr}` : stdout;
+      }
+      const observation2 = processToolCapture({
+        session_id: sessionId,
+        project: cwd,
+        tool_name: toolName,
+        tool_input: obj.tool_input,
+        tool_response: toolResponse
+      });
+      try {
+        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, observation2);
+        await writeResponse({ status: "captured" });
+      } catch (error) {
+        console.error("[context-manager] Remote capture error:", error);
+        await writeResponse({ status: "error" });
+      }
+      return;
+    }
     const input = validatePostToolUseInput(rawInput);
     if (!shouldCaptureTool(input.tool_name, input.tool_input)) {
       await writeResponse({ status: "skipped" });
@@ -2468,25 +2519,6 @@ async function main() {
       tool_input: input.tool_input,
       tool_response: input.tool_response
     });
-    const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
-    const remoteToken = (process.env["CONTEXT_MANAGER_TOKEN"] ?? "").trim();
-    if (remoteUrl) {
-      if (!remoteToken) {
-        console.error(
-          "[context-manager] CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is missing \u2014 remote capture skipped"
-        );
-        await writeResponse({ status: "error", error: "CONTEXT_MANAGER_TOKEN required when CONTEXT_MANAGER_URL is set" });
-        return;
-      }
-      try {
-        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, observation);
-        await writeResponse({ status: "captured" });
-      } catch (error) {
-        console.error("[context-manager] Remote capture error:", error);
-        await writeResponse({ status: "error" });
-      }
-      return;
-    }
     storage = new SQLiteStorage();
     await storage.initialize();
     if (observation.files_touched.length > 0) {
