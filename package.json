@@ -1,6 +1,6 @@
 {
   "name": "claude-context-manager",
-  "version": "0.8.16",
+  "version": "0.8.17",
   "description": "Persistent memory for Claude Code sessions",
   "type": "module",
   "main": "dist/cli.js",
@@ -14,11 +14,15 @@
     "build:hooks": "node scripts/build-hooks.js",
     "build:cli": "esbuild cli/index.ts --bundle --outfile=dist/cli.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --banner:js=\"#!/usr/bin/env node\"",
     "build:web": "esbuild web/server/index.ts --bundle --outfile=dist/web/server.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --packages=external",
-    "build:plugin": "npm run build && node scripts/install.js",
+    "build:plugin": "npm run test:docker && npm run build && node scripts/install.js",
     "plugin:uninstall": "node scripts/uninstall.js",
     "plugin:uninstall:all": "node scripts/uninstall.js --remove-data",
     "clean": "rm -rf dist plugin/scripts",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:docker": "docker build -f Dockerfile.test -t context-manager-test . && docker run --rm context-manager-test",
     "cli": "node dist/cli.js",
     "import": "npx tsx scripts/import-transcripts.ts",
     "web": "node dist/web/server.js",
@@ -47,10 +51,12 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",
     "@types/node": "^20.10.0",
+    "@vitest/coverage-v8": "^4.1.7",
     "esbuild": "^0.19.0",
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.7"
   },
   "engines": {
     "node": ">=18.0.0"
