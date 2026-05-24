@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 24, 2026 (v0.8.16)
+**Last Updated**: May 24, 2026 (v0.8.26)
 
 ---
 
@@ -210,10 +210,23 @@ claude-context-manager/
 |       +-- index.ts           # Fastify server
 |       +-- routes/
 |           +-- api.ts         # REST API endpoints
++-- test/
+|   +-- e2e/
+|       +-- setup-data.mjs     # Seed test sessions/observations via SQLiteStorage
+|       +-- start-server.mjs   # HTTP server entry (tsc-compiled; avoids CJS/ESM issue with esbuild+fastify)
+|       +-- helpers.sh         # mcp_call, mcp_text, assert_* helpers
+|       +-- run-all.sh         # Test orchestrator
+|       +-- 01-basic-query.sh  # Basic HTTP MCP query scenario
+|       +-- 02-cross-project.sh # Cross-project isolation scenario
+|       +-- 03-concurrent-writes.sh # WAL concurrent writes scenario
+|       +-- 04-stats.sh        # context_stats output scenario
 +-- docs/
 |   +-- ARCHITECTURE.md        # Detailed architecture
 |   +-- ADR-001-web-ui-dashboard.md # Web UI design decision record
 +-- dist/                      # Built CLI and web server (gitignored)
++-- Makefile                   # E2E test targets (test-e2e, test-e2e-up, test-e2e-down, e2e-build, e2e-clean)
++-- Dockerfile.e2e             # Docker image for E2E tests (Node 20 slim, builds from source)
++-- docker-compose.e2e.yml     # E2E orchestration (context-server + test-runner)
 +-- package.json
 +-- tsconfig.json
 +-- CLAUDE.md                  # This file
@@ -449,6 +462,13 @@ npm run import -- --source <path> --project <target> [--filter <text>] [--dry-ru
 # Web dashboard
 npm run web        # Start server at http://localhost:3847
 npm run web:dev    # Development mode with live reload
+
+# E2E tests (Docker-based)
+make test-e2e      # Build, run all E2E scenarios, and tear down (CI-safe)
+make test-e2e-up   # Start E2E services only (for manual exploration)
+make test-e2e-down # Stop and remove E2E containers and ephemeral volume
+make e2e-build     # Build E2E Docker image only
+make e2e-clean     # Stop containers and remove the Docker image
 ```
 
 ---
@@ -519,6 +539,12 @@ When installed via `/plugin install context-manager`, Claude Code:
 ---
 
 ## Troubleshooting
+
+### E2E server uses tsc output, not the esbuild bundle
+
+`test/e2e/start-server.mjs` imports from `dist/` (tsc-compiled) rather than the esbuild-bundled `dist/cli.js`. esbuild inlines fastify's internal `require()` calls into an ESM bundle, which Node.js rejects at runtime with a CJS/ESM incompatibility error. The tsc output preserves the original module boundaries and avoids this.
+
+If E2E tests fail to start the server, ensure `npm run build` has run (it compiles both tsc and esbuild targets).
 
 ### Native module errors
 ```bash
