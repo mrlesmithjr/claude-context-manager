@@ -213,12 +213,12 @@ export class SessionList extends Component {
         </div>
 
         <!-- Expanded detail -->
-        ${isExpanded && this.renderSessionDetail()}
+        ${isExpanded && this.renderSessionDetail(session)}
       </div>
     `;
   }
 
-  renderSessionDetail() {
+  renderSessionDetail(session) {
     const { sessionDetail, loadingDetail } = this.state;
 
     if (loadingDetail) {
@@ -234,8 +234,30 @@ export class SessionList extends Component {
 
     const { observations, prompts } = sessionDetail;
 
+    // Parse summary_extended beats from the session list data (not the detail API, which lacks it)
+    const beats = session.summary_extended
+      ? session.summary_extended.split('\n\n---\n\n')
+      : [];
+
     return html`
       <div class="border-t border-gray-700 bg-gray-850">
+        <!-- Narrative Beats -->
+        ${beats.length > 0 && html`
+          <div class="px-4 py-3 border-b border-gray-700">
+            <h4 class="text-sm font-semibold text-indigo-400 mb-2">
+              Narrative Beats (${beats.length})
+            </h4>
+            <div class="space-y-3">
+              ${beats.map((beat, i) => html`
+                <div class="text-sm text-gray-300 leading-relaxed">
+                  ${i > 0 && html`<div class="border-t border-gray-700 mb-3"></div>`}
+                  ${beat}
+                </div>
+              `)}
+            </div>
+          </div>
+        `}
+
         <!-- Prompts -->
         ${prompts && prompts.length > 0 && html`
           <div class="px-4 py-3 border-b border-gray-700">
