@@ -19,6 +19,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { convertPathToDashed } from '../utils/transcript.js';
 import { computeSessionDuration, extractSessionNarrative } from '../utils/session-format.js';
+import { isVersionBump } from '../utils/version.js';
 import type { Observation, Session, ContextStorage } from '../storage/interface.js';
 
 const TOPIC_FILE = 'context-manager-activity.md';
@@ -215,31 +216,6 @@ function formatSessionBlock(
   return parts.join('\n');
 }
 
-/**
- * Extract a concise title from a session summary.
- * Session summaries are Claude's last response — often conversational.
- * Extract the first meaningful sentence or phrase.
- */
-function extractSessionTitle(summary: string): string {
-  // Strip markdown formatting
-  let text = summary.replace(/\*\*/g, '').replace(/`/g, '').trim();
-
-  // Take first sentence
-  const sentenceEnd = text.search(/[.!?\n]/);
-  if (sentenceEnd > 0 && sentenceEnd < 120) {
-    text = text.substring(0, sentenceEnd);
-  } else if (text.length > 80) {
-    // Truncate at word boundary
-    text = text.substring(0, 80).replace(/\s+\S*$/, '');
-  }
-
-  // Skip if it's a non-informative Claude response
-  if (text.match(/^(Let me|I'll|Here's the|Looking at|No response|Checking)/i)) {
-    return text.substring(0, 60);
-  }
-
-  return text;
-}
 
 /**
  * Describe an Edit observation by analyzing the old_string/new_string diff
@@ -258,7 +234,8 @@ function describeEdit(obs: Observation): string {
   if (!oldStr && !newStr) return '';
 
   // Skip version bump edits — low signal
-  if (isVersionBump(oldStr, newStr)) return '';
+  const filePath = obs.files_touched[0] ?? '';
+  if (filePath && isVersionBump(filePath)) return '';
 
   const oldLines = oldStr.split('\n').map(l => l.trim()).filter(Boolean);
   const newLines = newStr.split('\n').map(l => l.trim()).filter(Boolean);
@@ -315,23 +292,6 @@ function describeEdit(obs: Observation): string {
   return '';
 }
 
-/**
- * Check if an edit is just a version bump (e.g., "0.5.0" → "0.5.1")
- */
-function isVersionBump(oldStr: string, newStr: string): boolean {
-  // Single-line version changes in JSON or similar
-  const versionPattern = /["']?version["']?\s*[:=]\s*["']?\d+\.\d+\.\d+/;
-  const oldHasVersion = versionPattern.test(oldStr);
-  const newHasVersion = versionPattern.test(newStr);
-
-  if (oldHasVersion && newHasVersion) {
-    // If the only meaningful difference is the version number, it's a bump
-    const normalize = (s: string) => s.replace(/\d+\.\d+\.\d+/g, 'X.X.X').trim();
-    if (normalize(oldStr) === normalize(newStr)) return true;
-  }
-
-  return false;
-}
 
 /**
  * Merge new content into existing body, combining blocks for the same session ID.

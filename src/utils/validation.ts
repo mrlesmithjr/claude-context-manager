@@ -7,6 +7,7 @@
 import { realpathSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
+import { randomBytes } from 'crypto';
 
 /**
  * Allowed project root directories
@@ -109,7 +110,7 @@ export interface UserPromptSubmitInput {
  * Generate a simple unique ID for sessions when not provided
  */
 function generateSessionId(): string {
-  return `session-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  return `session-${Date.now()}-${randomBytes(8).toString('hex')}`;
 }
 
 /**

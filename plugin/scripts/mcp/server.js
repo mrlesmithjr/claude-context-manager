@@ -31500,8 +31500,8 @@ ${storedOutput}`;
     `).get(filePath, project, toolName, now, now);
     const recent = this.db.prepare(`
       SELECT COUNT(*) as cnt FROM observations
-      WHERE project = ? AND files_touched LIKE ? AND created_at > datetime('now', '-7 days')
-    `).get(project, `%${filePath.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
+      WHERE project = ? AND files_touched LIKE ? ESCAPE '\\' AND created_at > datetime('now', '-7 days')
+    `).get(project, `%${filePath.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
     return recent.cnt;
   }
   /**
@@ -31640,7 +31640,12 @@ function countByImportance(observations) {
 function formatShortDate(isoDate) {
   const date5 = new Date(isoDate);
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return `${months[date5.getMonth()]} ${date5.getDate()}`;
+  return `${months[date5.getUTCMonth()]} ${date5.getUTCDate()}`;
+}
+
+// src/utils/version.ts
+function isVersionBump(filePath) {
+  return /package\.json|pyproject\.toml|version\.ts/.test(filePath);
 }
 
 // src/export/memory.ts
@@ -31790,7 +31795,8 @@ function describeEdit(obs) {
   const newStr = toolInput.new_string || "";
   if (!oldStr && !newStr)
     return "";
-  if (isVersionBump(oldStr, newStr))
+  const filePath = obs.files_touched[0] ?? "";
+  if (filePath && isVersionBump(filePath))
     return "";
   const oldLines = oldStr.split("\n").map((l) => l.trim()).filter(Boolean);
   const newLines = newStr.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -31830,17 +31836,6 @@ function describeEdit(obs) {
     }
   }
   return "";
-}
-function isVersionBump(oldStr, newStr) {
-  const versionPattern = /["']?version["']?\s*[:=]\s*["']?\d+\.\d+\.\d+/;
-  const oldHasVersion = versionPattern.test(oldStr);
-  const newHasVersion = versionPattern.test(newStr);
-  if (oldHasVersion && newHasVersion) {
-    const normalize = (s) => s.replace(/\d+\.\d+\.\d+/g, "X.X.X").trim();
-    if (normalize(oldStr) === normalize(newStr))
-      return true;
-  }
-  return false;
 }
 function mergeSessionBlocks(existingBody, newContent) {
   if (!existingBody && !newContent)
@@ -32727,7 +32722,7 @@ var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25"
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.8.21" : "0.5.0"
+    version: true ? "0.8.22" : "0.5.0"
   },
   {
     instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age \u2014 always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."

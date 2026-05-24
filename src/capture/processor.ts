@@ -6,6 +6,7 @@
 
 import { sanitizeContent, estimateTokens } from '../utils/sanitize.js';
 import type { Observation, ImportanceLevel, ObservationTag } from '../storage/interface.js';
+import { isVersionBump } from '../utils/version.js';
 
 /**
  * Output storage thresholds
@@ -452,21 +453,6 @@ function summarizeTool(
   return summary;
 }
 
-/**
- * Check if an Edit tool input is a version bump (low signal for export)
- */
-function isVersionBumpEdit(input: Record<string, unknown>): boolean {
-  const oldStr = typeof input.old_string === 'string' ? input.old_string : '';
-  const newStr = typeof input.new_string === 'string' ? input.new_string : '';
-  if (!oldStr || !newStr) return false;
-
-  const versionPattern = /["']?version["']?\s*[:=]\s*["']?\d+\.\d+\.\d+/;
-  if (versionPattern.test(oldStr) && versionPattern.test(newStr)) {
-    const normalize = (s: string) => s.replace(/\d+\.\d+\.\d+/g, 'X.X.X').trim();
-    return normalize(oldStr) === normalize(newStr);
-  }
-  return false;
-}
 
 function isNearNoOpEdit(input: Record<string, unknown>): boolean {
   const oldStr = typeof input.old_string === 'string' ? input.old_string : '';
@@ -523,7 +509,7 @@ const TAG_FILE_RULES: Array<{ patterns: RegExp[]; tag: ObservationTag }> = [
     patterns: [
       /Dockerfile$/i, /docker-compose/i, /\.github\//i,
       /\/k8s\//i, /\/kubernetes\//i, /\/ansible\//i,
-      /\/terraform\//i, /\.tf$/i, /\.yml$/, /\.yaml$/,
+      /\/terraform\//i, /\.tf$/i, /\.ya?ml$/,
       /\/molecule\//i, /ansible\.cfg$/i,
     ],
   },
@@ -656,7 +642,8 @@ export function calculateImportance(
   switch (toolName) {
     case 'Edit': {
       const editInput = toolInput as Record<string, unknown> | undefined;
-      if (editInput && isVersionBumpEdit(editInput)) {
+      const editFilePath = typeof editInput?.file_path === 'string' ? editInput.file_path : '';
+      if (editFilePath && isVersionBump(editFilePath)) {
         score = 0.40;
       } else if (editInput && isNearNoOpEdit(editInput)) {
         score = 0.15;

@@ -80,7 +80,7 @@ function checkVersionMismatch(): string {
 
     // Compare versions
     if (installedVersion !== PLUGIN_VERSION) {
-      return `\n⚠️  **context-manager version mismatch detected**\n` +
+      return `\n[WARNING] **context-manager version mismatch detected**\n` +
              `   Installed: v${installedVersion}\n` +
              `   Source:    v${PLUGIN_VERSION}\n` +
              `   Run: \`npm run build:plugin && /plugin install context-manager\`\n`;

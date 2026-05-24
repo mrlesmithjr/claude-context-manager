@@ -45033,8 +45033,8 @@ ${storedOutput}`;
     `).get(filePath, project, toolName, now, now);
     const recent = this.db.prepare(`
       SELECT COUNT(*) as cnt FROM observations
-      WHERE project = ? AND files_touched LIKE ? AND created_at > datetime('now', '-7 days')
-    `).get(project, `%${filePath.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
+      WHERE project = ? AND files_touched LIKE ? ESCAPE '\\' AND created_at > datetime('now', '-7 days')
+    `).get(project, `%${filePath.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
     return recent.cnt;
   }
   /**

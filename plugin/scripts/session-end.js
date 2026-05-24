@@ -1412,8 +1412,8 @@ ${storedOutput}`;
     `).get(filePath, project, toolName, now, now);
     const recent = this.db.prepare(`
       SELECT COUNT(*) as cnt FROM observations
-      WHERE project = ? AND files_touched LIKE ? AND created_at > datetime('now', '-7 days')
-    `).get(project, `%${filePath.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
+      WHERE project = ? AND files_touched LIKE ? ESCAPE '\\' AND created_at > datetime('now', '-7 days')
+    `).get(project, `%${filePath.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
     return recent.cnt;
   }
   /**
@@ -1651,6 +1651,11 @@ function extractSessionNarrative(summary, maxLen = 120) {
   return text;
 }
 
+// src/utils/version.ts
+function isVersionBump(filePath) {
+  return /package\.json|pyproject\.toml|version\.ts/.test(filePath);
+}
+
 // src/export/memory.ts
 var TOPIC_FILE = "context-manager-activity.md";
 var DEFAULT_MAX_LINES = 150;
@@ -1798,7 +1803,8 @@ function describeEdit(obs) {
   const newStr = toolInput.new_string || "";
   if (!oldStr && !newStr)
     return "";
-  if (isVersionBump(oldStr, newStr))
+  const filePath = obs.files_touched[0] ?? "";
+  if (filePath && isVersionBump(filePath))
     return "";
   const oldLines = oldStr.split("\n").map((l) => l.trim()).filter(Boolean);
   const newLines = newStr.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -1838,17 +1844,6 @@ function describeEdit(obs) {
     }
   }
   return "";
-}
-function isVersionBump(oldStr, newStr) {
-  const versionPattern = /["']?version["']?\s*[:=]\s*["']?\d+\.\d+\.\d+/;
-  const oldHasVersion = versionPattern.test(oldStr);
-  const newHasVersion = versionPattern.test(newStr);
-  if (oldHasVersion && newHasVersion) {
-    const normalize = (s) => s.replace(/\d+\.\d+\.\d+/g, "X.X.X").trim();
-    if (normalize(oldStr) === normalize(newStr))
-      return true;
-  }
-  return false;
 }
 function mergeSessionBlocks(existingBody, newContent) {
   if (!existingBody && !newContent)

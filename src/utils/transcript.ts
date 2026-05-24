@@ -5,7 +5,7 @@
  */
 
 import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { homedir } from 'os';
 
 /**
@@ -31,12 +31,13 @@ export function convertPathToDashed(projectPath: string): string {
  */
 export function getTranscriptPath(project: string, sessionId: string): string {
   const dashedPath = convertPathToDashed(project);
+  const safeSessionId = basename(sessionId);
   return join(
     homedir(),
     '.claude',
     'projects',
     dashedPath,
-    `${sessionId}.jsonl`
+    `${safeSessionId}.jsonl`
   );
 }
 

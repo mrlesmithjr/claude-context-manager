@@ -77,5 +77,5 @@ export function countByImportance(observations: Observation[]): { high: number; 
 export function formatShortDate(isoDate: string): string {
   const date = new Date(isoDate);
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return `${months[date.getMonth()]} ${date.getDate()}`;
+  return `${months[date.getUTCMonth()]} ${date.getUTCDate()}`;
 }

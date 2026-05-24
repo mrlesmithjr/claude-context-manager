@@ -1412,8 +1412,8 @@ ${storedOutput}`;
     `).get(filePath, project, toolName, now, now);
     const recent = this.db.prepare(`
       SELECT COUNT(*) as cnt FROM observations
-      WHERE project = ? AND files_touched LIKE ? AND created_at > datetime('now', '-7 days')
-    `).get(project, `%${filePath.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
+      WHERE project = ? AND files_touched LIKE ? ESCAPE '\\' AND created_at > datetime('now', '-7 days')
+    `).get(project, `%${filePath.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
     return recent.cnt;
   }
   /**
@@ -1793,6 +1793,11 @@ function estimateTokens(text) {
   return Math.ceil(text.length / 4);
 }
 
+// src/utils/version.ts
+function isVersionBump(filePath) {
+  return /package\.json|pyproject\.toml|version\.ts/.test(filePath);
+}
+
 // src/capture/processor.ts
 var OUTPUT_THRESHOLDS = {
   FULL_STORAGE_LIMIT: 800,
@@ -2051,18 +2056,6 @@ function summarizeTool(toolName, toolInput, toolResponse) {
   }
   return summary;
 }
-function isVersionBumpEdit(input) {
-  const oldStr = typeof input.old_string === "string" ? input.old_string : "";
-  const newStr = typeof input.new_string === "string" ? input.new_string : "";
-  if (!oldStr || !newStr)
-    return false;
-  const versionPattern = /["']?version["']?\s*[:=]\s*["']?\d+\.\d+\.\d+/;
-  if (versionPattern.test(oldStr) && versionPattern.test(newStr)) {
-    const normalize = (s) => s.replace(/\d+\.\d+\.\d+/g, "X.X.X").trim();
-    return normalize(oldStr) === normalize(newStr);
-  }
-  return false;
-}
 function isNearNoOpEdit(input) {
   const oldStr = typeof input.old_string === "string" ? input.old_string : "";
   const newStr = typeof input.new_string === "string" ? input.new_string : "";
@@ -2143,8 +2136,7 @@ var TAG_FILE_RULES = [
       /\/ansible\//i,
       /\/terraform\//i,
       /\.tf$/i,
-      /\.yml$/,
-      /\.yaml$/,
+      /\.ya?ml$/,
       /\/molecule\//i,
       /ansible\.cfg$/i
     ]
@@ -2261,7 +2253,8 @@ function calculateImportance(toolName, toolInput, toolResponse, filesTouched) {
   switch (toolName) {
     case "Edit": {
       const editInput = toolInput;
-      if (editInput && isVersionBumpEdit(editInput)) {
+      const editFilePath = typeof editInput?.file_path === "string" ? editInput.file_path : "";
+      if (editFilePath && isVersionBump(editFilePath)) {
         score = 0.4;
       } else if (editInput && isNearNoOpEdit(editInput)) {
         score = 0.15;
