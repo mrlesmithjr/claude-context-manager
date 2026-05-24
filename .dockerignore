@@ -1,0 +1,13 @@
+node_modules/
+plugin/node_modules/
+dist/
+coverage/
+.env
+.env.local
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+.git/
+plugin/scripts/

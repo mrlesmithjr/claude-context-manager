@@ -14,7 +14,7 @@
     "build:hooks": "node scripts/build-hooks.js",
     "build:cli": "esbuild cli/index.ts --bundle --outfile=dist/cli.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --banner:js=\"#!/usr/bin/env node\"",
     "build:web": "esbuild web/server/index.ts --bundle --outfile=dist/web/server.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --packages=external",
-    "build:plugin": "npm run test:docker && npm run build && node scripts/install.js",
+    "build:plugin": "npm run typecheck && npm run test:docker && npm run build && node scripts/install.js",
     "plugin:uninstall": "node scripts/uninstall.js",
     "plugin:uninstall:all": "node scripts/uninstall.js --remove-data",
     "clean": "rm -rf dist plugin/scripts",

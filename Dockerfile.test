@@ -1,5 +1,7 @@
 FROM node:20-slim
 
+ENV NODE_ENV=test
+
 # Install build dependencies for native modules
 RUN apt-get update && apt-get install -y \
     python3 \

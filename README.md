@@ -657,6 +657,34 @@ npm run plugin:uninstall
 
 ---
 
+## Testing
+
+Tests live in `tests/` and cover `src/utils/sanitize.ts`, `src/utils/validation.ts`, and `src/capture/processor.ts`.
+
+```bash
+# Run tests once
+npm test
+
+# Watch mode during development
+npm run test:watch
+
+# Coverage report
+npm run test:coverage
+
+# Run tests inside Docker (Linux + native modules)
+npm run test:docker
+```
+
+The Docker-based run builds a `node:20-slim` container and compiles native modules (`better-sqlite3`, `sqlite-vec`) for Linux. This is the same environment used in CI, so it catches platform-specific failures that local macOS runs may not surface.
+
+`npm run build:plugin` runs `typecheck` and `test:docker` before producing the plugin bundle. Tests must pass before a plugin upgrade is produced.
+
+### CI
+
+GitHub Actions runs the full test suite on every push to `develop` or `main` and on all pull requests targeting those branches. The workflow file is `.github/workflows/test.yml`.
+
+---
+
 ## License
 
 MIT

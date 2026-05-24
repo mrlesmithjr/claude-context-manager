@@ -2,53 +2,63 @@
  * Tests for input validation utilities.
  *
  * validateProjectPath uses realpathSync which follows symlinks, so tests must
- * use paths that actually exist (or paths inside ALLOWED_PROJECT_ROOTS that
- * resolve correctly via path.resolve when they don't exist).
+ * use paths that actually exist on the filesystem.
+ *
+ * We use homedir() as the base for "valid" paths — it is always in
+ * ALLOWED_PROJECT_ROOTS and always exists (local dev, CI, Docker). Paths under
+ * ~/Projects or ~/Dev may not exist on every machine, so we avoid them.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { homedir } from 'os';
 import path from 'path';
+import { mkdtempSync, rmdirSync } from 'fs';
 import {
   validateProjectPath,
   validateSessionStartInput,
   validateStopInput,
 } from '../src/utils/validation.js';
 
-// ~/Projects is in ALLOWED_PROJECT_ROOTS and exists on this machine
-const PROJECT_ROOT = path.join(homedir(), 'Projects');
 const HOME = homedir();
 
+// Temp directory created under homedir — guaranteed to exist and be in ALLOWED_PROJECT_ROOTS
+let tmpDir: string;
+beforeEach(() => {
+  tmpDir = mkdtempSync(path.join(HOME, 'ctx-test-'));
+});
+afterEach(() => {
+  try { rmdirSync(tmpDir); } catch { /* already removed */ }
+});
+
 describe('validateProjectPath', () => {
-  it('accepts a valid path under ~/Projects', () => {
-    const input = path.join(PROJECT_ROOT, 'Personal', 'claude-context-manager');
-    // The path exists, so realpathSync resolves it
-    const result = validateProjectPath(input);
-    expect(result).toContain('Projects');
+  it('accepts a valid path that exists under homedir', () => {
+    // tmpDir exists and is under homedir — always in ALLOWED_PROJECT_ROOTS
+    const result = validateProjectPath(tmpDir);
+    expect(result).toBe(tmpDir);
   });
 
-  it('throws for a path with .. traversal that escapes allowed roots', () => {
-    // /tmp is not in ALLOWED_PROJECT_ROOTS — this should throw
-    expect(() => validateProjectPath('/tmp/evil')).toThrow();
+  it('accepts the home directory itself', () => {
+    const result = validateProjectPath(HOME);
+    expect(result).toBe(HOME);
+  });
+
+  it('accepts a non-existent path inside an allowed root (uses path.resolve fallback)', () => {
+    // Path does not exist so realpathSync throws, but path.resolve normalizes it,
+    // and homedir is in ALLOWED_PROJECT_ROOTS so the check passes
+    const input = path.join(HOME, 'NonExistentProject', 'subdir');
+    const result = validateProjectPath(input);
+    expect(result.startsWith(HOME)).toBe(true);
   });
 
   it('throws for a path clearly outside allowed roots', () => {
     expect(() => validateProjectPath('/etc/passwd')).toThrow(/outside allowed roots/);
   });
 
-  it('accepts the home directory itself (homedir is in ALLOWED_PROJECT_ROOTS)', () => {
-    const result = validateProjectPath(HOME);
-    expect(result).toBe(HOME);
+  it('throws for /tmp which is not under any allowed root', () => {
+    expect(() => validateProjectPath('/tmp/evil')).toThrow();
   });
 
-  it('accepts a non-existent path inside an allowed root (uses path.resolve fallback)', () => {
-    // Path does not exist so realpathSync throws, but path.resolve is used as fallback
-    const input = path.join(PROJECT_ROOT, 'NonExistentProject', 'subdir');
-    const result = validateProjectPath(input);
-    expect(result.startsWith(HOME)).toBe(true);
-  });
-
-  it('throws for a root-relative path that is not under any allowed root', () => {
+  it('throws for /var/log', () => {
     expect(() => validateProjectPath('/var/log')).toThrow();
   });
 });
@@ -57,7 +67,7 @@ describe('validateSessionStartInput', () => {
   it('accepts valid input with session_id and cwd', () => {
     const input = {
       session_id: 'test-session-123',
-      cwd: PROJECT_ROOT,
+      cwd: tmpDir,
     };
     const result = validateSessionStartInput(input);
     expect(result.session_id).toBe('test-session-123');
@@ -65,7 +75,7 @@ describe('validateSessionStartInput', () => {
   });
 
   it('generates a session_id when not provided', () => {
-    const input = { cwd: PROJECT_ROOT };
+    const input = { cwd: tmpDir };
     const result = validateSessionStartInput(input);
     expect(typeof result.session_id).toBe('string');
     expect(result.session_id.length).toBeGreaterThan(0);
@@ -106,7 +116,7 @@ describe('validateStopInput', () => {
   it('accepts valid input and returns validated object', () => {
     const input = {
       session_id: 'stop-session-1',
-      cwd: PROJECT_ROOT,
+      cwd: tmpDir,
     };
     const result = validateStopInput(input);
     expect(result.session_id).toBe('stop-session-1');
@@ -116,7 +126,7 @@ describe('validateStopInput', () => {
 
   it('throws for missing session_id', () => {
     expect(() =>
-      validateStopInput({ cwd: PROJECT_ROOT })
+      validateStopInput({ cwd: tmpDir })
     ).toThrow(/session_id/);
   });
 
@@ -140,7 +150,7 @@ describe('validateStopInput', () => {
     );
     const input = {
       session_id: 'session-abc',
-      cwd: PROJECT_ROOT,
+      cwd: tmpDir,
       transcript_path: nonExistentTranscript,
     };
     const result = validateStopInput(input);
@@ -152,7 +162,7 @@ describe('validateStopInput', () => {
     const outsidePath = path.join(HOME, 'Documents', 'some-transcript.jsonl');
     const input = {
       session_id: 'session-abc',
-      cwd: PROJECT_ROOT,
+      cwd: tmpDir,
       transcript_path: outsidePath,
     };
     const result = validateStopInput(input);
@@ -162,7 +172,7 @@ describe('validateStopInput', () => {
   it('returns transcript_path as undefined when transcript_path is missing', () => {
     const input = {
       session_id: 'session-no-transcript',
-      cwd: PROJECT_ROOT,
+      cwd: tmpDir,
     };
     const result = validateStopInput(input);
     expect(result.transcript_path).toBeUndefined();
