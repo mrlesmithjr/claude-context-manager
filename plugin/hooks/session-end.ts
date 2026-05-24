@@ -102,21 +102,17 @@ function extractTextFromMessage(msg: TranscriptMessage): string {
  *
  * summary_extended: top-3 scoring messages joined with separators, for multi-beat sessions.
  */
-function extractSummaryFromTranscript(transcriptPath: string): {
+/**
+ * Extract session summary and extended narrative from pre-parsed transcript lines.
+ * Accepts string[] (already read+split) so the caller controls the single file read.
+ */
+function extractSummaryFromLines(lines: string[]): {
   summary: string | undefined;
   summaryExtended: string | undefined;
 } {
   try {
-    if (!fs.existsSync(transcriptPath)) {
-      debugLog('TRANSCRIPT_NOT_FOUND', transcriptPath);
-      return { summary: undefined, summaryExtended: undefined };
-    }
-
-    const content = fs.readFileSync(transcriptPath, 'utf8');
-    const lines = content.trim().split('\n').filter(line => line.trim());
-
     if (lines.length === 0) {
-      debugLog('TRANSCRIPT_EMPTY', transcriptPath);
+      debugLog('TRANSCRIPT_EMPTY', { lineCount: 0 });
       return { summary: undefined, summaryExtended: undefined };
     }
 
@@ -180,7 +176,7 @@ function extractSummaryFromTranscript(transcriptPath: string): {
 
     return { summary, summaryExtended };
   } catch (error) {
-    debugLog('TRANSCRIPT_READ_ERROR', { error: String(error), path: transcriptPath });
+    debugLog('TRANSCRIPT_PARSE_ERROR', { error: String(error) });
     return { summary: undefined, summaryExtended: undefined };
   }
 }
@@ -306,19 +302,18 @@ function compressAssistantBlock(text: string): string {
  * Extract high-signal conversation insights from all assistant messages.
  * Returns observations ready to be saved.
  */
+/**
+ * Extract high-signal conversation insights from pre-parsed transcript lines.
+ * Accepts string[] (already read+split) so the caller controls the single file read.
+ */
 function extractConversationInsights(
-  transcriptPath: string,
+  lines: string[],
   sessionId: string,
   project: string
 ): Array<Omit<Observation, 'id'>> {
   const insights: Array<Omit<Observation, 'id'>> = [];
 
   try {
-    if (!fs.existsSync(transcriptPath)) return insights;
-
-    const content = fs.readFileSync(transcriptPath, 'utf8');
-    const lines = content.trim().split('\n').filter(line => line.trim());
-
     for (const line of lines) {
       try {
         const msg = JSON.parse(line) as TranscriptMessage;
@@ -450,11 +445,23 @@ async function main() {
     // Validate and sanitize input
     const input = validateStopInput(rawInput);
 
-    // Extract summary from transcript file
+    // Read and parse the transcript once — both summary extraction and insight
+    // extraction need it, and reading a large file twice wastes Stop hook timeout.
+    let transcriptLines: string[] | undefined;
+    if (input.transcript_path) {
+      try {
+        const content = fs.readFileSync(input.transcript_path, 'utf8');
+        transcriptLines = content.trim().split('\n').filter(line => line.trim());
+      } catch {
+        debugLog('TRANSCRIPT_READ_ERROR', { path: input.transcript_path });
+      }
+    }
+
+    // Extract summary from pre-read lines
     let summary: string | undefined;
     let summaryExtended: string | undefined;
-    if (input.transcript_path) {
-      ({ summary, summaryExtended } = extractSummaryFromTranscript(input.transcript_path));
+    if (transcriptLines) {
+      ({ summary, summaryExtended } = extractSummaryFromLines(transcriptLines));
     }
 
     debugLog('SUMMARY_RESULT', {
@@ -467,10 +474,10 @@ async function main() {
     await storage.initialize();
 
     // Extract and save conversation insights before ending session
-    if (input.transcript_path) {
+    if (transcriptLines) {
       try {
         const insights = extractConversationInsights(
-          input.transcript_path,
+          transcriptLines,
           input.session_id,
           input.cwd
         );
