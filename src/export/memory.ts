@@ -351,6 +351,12 @@ function mergeSessionBlocks(existingBody: string, newContent: string): string {
   for (const newBlock of newBlocks) {
     const existing = existingBlocks.find(b => b.sessionId === newBlock.sessionId);
     if (existing) {
+      // Backfill narrative if the existing block predates the narrative fix and has none.
+      // Sessions exported before the fix were parsed without a narrative field; the new
+      // export carries the correct narrative and should win in that case.
+      if (!existing.narrative && newBlock.narrative) {
+        existing.narrative = newBlock.narrative;
+      }
       // Append new items, deduplicating
       const existingItems = new Set(existing.items.map(l => l.trim()));
       for (const item of newBlock.items) {
@@ -377,6 +383,7 @@ interface SessionBlock {
   date: string;
   sessionId: string;
   heading: string;
+  narrative?: string; // Plain-text summary line under the heading (no bullet marker)
   items: string[];
 }
 
@@ -404,6 +411,10 @@ function parseSessionBlocks(body: string): SessionBlock[] {
       };
     } else if (line.startsWith('- ') && currentBlock) {
       currentBlock.items.push(line);
+    } else if (line && !line.startsWith('#') && !line.startsWith('**') && currentBlock) {
+      // Plain-text line after a heading is the session narrative.
+      // Previously dropped silently — now preserved so re-parse round-trips correctly.
+      currentBlock.narrative = ((currentBlock.narrative || '') + line + ' ').trimEnd();
     }
   }
   if (currentBlock) blocks.push(currentBlock);
@@ -427,6 +438,7 @@ function rebuildFromBlocks(blocks: SessionBlock[]): string {
     lines.push('');
     for (const block of dateBlocks) {
       lines.push(block.heading);
+      if (block.narrative) lines.push(block.narrative);
       lines.push(...block.items);
       lines.push('');
     }
