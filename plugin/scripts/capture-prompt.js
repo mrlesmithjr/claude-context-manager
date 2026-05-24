@@ -180,6 +180,7 @@ var SQLiteStorage = class {
     this.migrateAddObservationRelationships();
     this.migrateAddTagsColumn();
     this.migrateAddContentHash();
+    this.migrateAddSummaryExtended();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -544,13 +545,13 @@ ${storedOutput}`;
     `);
     stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
   }
-  async endSession(sessionId, summary) {
+  async endSession(sessionId, summary, summaryExtended) {
     const stmt = this.db.prepare(`
       UPDATE sessions
-      SET ended_at = ?, summary = ?, status = 'complete'
+      SET ended_at = ?, summary = ?, summary_extended = ?, status = 'complete'
       WHERE id = ?
     `);
-    stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, sessionId);
+    stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, summaryExtended || null, sessionId);
   }
   async getRecentSessions(project, limit) {
     const stmt = this.db.prepare(`
@@ -573,6 +574,7 @@ ${storedOutput}`;
       started_at: row.started_at,
       ended_at: row.ended_at || void 0,
       summary: row.summary || void 0,
+      summary_extended: row.summary_extended || void 0,
       status: row.status
     }));
   }
@@ -1183,6 +1185,13 @@ ${storedOutput}`;
       CREATE INDEX IF NOT EXISTS idx_observations_project_hash
       ON observations(project, content_hash) WHERE content_hash IS NOT NULL
     `);
+  }
+  migrateAddSummaryExtended() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("summary_extended")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN summary_extended TEXT`);
+    }
   }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
