@@ -1,6 +1,6 @@
 {
   "name": "claude-context-manager",
-  "version": "0.8.24",
+  "version": "0.8.25",
   "description": "Persistent memory for Claude Code sessions",
   "type": "module",
   "main": "dist/cli.js",
@@ -12,7 +12,7 @@
     "build:all": "npm run build",
     "build:src": "tsc",
     "build:hooks": "node scripts/build-hooks.js",
-    "build:cli": "esbuild cli/index.ts --bundle --outfile=dist/cli.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --banner:js=\"#!/usr/bin/env node\"",
+    "build:cli": "esbuild cli/index.ts --bundle --outfile=dist/cli.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --external:sqlite-vec --external:onnxruntime-node --banner:js=\"#!/usr/bin/env node\"",
     "build:web": "esbuild web/server/index.ts --bundle --outfile=dist/web/server.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --packages=external",
     "build:plugin": "npm run typecheck && npm run test:docker && npm run build && node scripts/install.js",
     "plugin:uninstall": "node scripts/uninstall.js",

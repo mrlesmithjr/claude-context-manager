@@ -177,6 +177,24 @@ await build({
 });
 console.log('[build-hooks] Web server built (plugin/scripts/web/index.cjs)');
 
+// Build HTTP MCP server into plugin/scripts/mcp-http/ so it ships with the plugin
+// Uses CJS format consistent with the web server above.
+await build({
+  entryPoints: ['src/server/http.ts'],
+  bundle: true,
+  outfile: 'plugin/scripts/mcp-http/index.cjs',
+  platform: 'node',
+  target: 'node18',
+  format: 'cjs',
+  external: ['better-sqlite3', 'sqlite-vec', '@huggingface/transformers', 'onnxruntime-node'],
+  define: { 'PLUGIN_VERSION': JSON.stringify(VERSION) },
+  banner: {
+    js: `const __betterSqlite3 = require('better-sqlite3');\nconst __sqliteVec = require('sqlite-vec');`
+  },
+  plugins: [nativeModuleShim]
+});
+console.log('[build-hooks] HTTP MCP server built (plugin/scripts/mcp-http/index.cjs)');
+
 // Copy web client files into plugin so the web server can find them
 const webClientSrc = join(PROJECT_ROOT, 'web', 'client');
 const webClientDest = join(PROJECT_ROOT, 'plugin', 'scripts', 'web', 'client');

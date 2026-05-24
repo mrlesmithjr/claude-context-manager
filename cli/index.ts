@@ -19,6 +19,13 @@ async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
 
+  // serve has its own storage lifecycle — exit before initializing the outer storage
+  // to avoid opening two connections to the same SQLite file simultaneously.
+  if (command === 'serve') {
+    await serveCommand(args.slice(1));
+    return;
+  }
+
   try {
     await storage.initialize();
 
@@ -301,6 +308,22 @@ async function exportCommand(args: string[]) {
   }
 }
 
+async function serveCommand(args: string[]) {
+  const portIndex = args.indexOf('--port');
+  const hostIndex = args.indexOf('--host');
+  const tokenIndex = args.indexOf('--token');
+  const dbIndex = args.indexOf('--db');
+
+  const port = portIndex !== -1 ? parseInt(args[portIndex + 1] ?? '4666', 10) : undefined;
+  const host = hostIndex !== -1 ? (args[hostIndex + 1] ?? undefined) : undefined;
+  const token = tokenIndex !== -1 ? (args[tokenIndex + 1] ?? undefined) : undefined;
+  const dbPath = dbIndex !== -1 ? (args[dbIndex + 1] ?? undefined) : undefined;
+
+  const { startHttpServer } = await import('../src/server/http.js');
+  // startHttpServer runs until SIGINT/SIGTERM and calls process.exit() on shutdown
+  await startHttpServer({ port, host, token, dbPath });
+}
+
 function printHelp() {
   console.log(`
 claude-context-manager CLI
@@ -323,6 +346,10 @@ Commands:
 
   export [--project PATH] [--dry-run]
     Export high-importance observations to auto-memory topic file
+
+  serve [--port N] [--host ADDR] [--token SECRET] [--db PATH]
+    Start an HTTP MCP server at /mcp (default port 4666)
+    Requires CONTEXT_MANAGER_TOKEN env var or --token flag
 
   help
     Show this help message
