@@ -32698,12 +32698,36 @@ function formatConsolidationReport(report) {
   return lines.join("\n");
 }
 
+// src/utils/classify.ts
+var nlStarters = [
+  "how",
+  "why",
+  "what",
+  "when",
+  "where",
+  "which",
+  "explain",
+  "describe",
+  "show me",
+  "similar to"
+];
+function classifyQuery(query) {
+  const words = query.trim().split(/\s+/);
+  if (words.length <= 2)
+    return "keyword";
+  if (nlStarters.some((s) => query.toLowerCase().startsWith(s)))
+    return "semantic";
+  if (words.length >= 5)
+    return "semantic";
+  return "hybrid";
+}
+
 // src/mcp/server.ts
 var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.8.18" : "0.5.0"
+    version: true ? "0.8.20" : "0.5.0"
   },
   {
     instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age \u2014 always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -32820,32 +32844,6 @@ function formatStats(stats, project, vectorStats, sessionEmbeddingStats) {
     }
   }
   return lines.join("\n");
-}
-function classifyQuery(query) {
-  const words = query.trim().split(/\s+/);
-  if (words.length <= 2) {
-    return "keyword";
-  }
-  const nlStarters = [
-    "how",
-    "why",
-    "what",
-    "when",
-    "where",
-    "which",
-    "explain",
-    "describe",
-    "show me",
-    "similar to"
-  ];
-  const lower = query.toLowerCase();
-  if (words.length >= 5 && nlStarters.some((s) => lower.startsWith(s) || lower.includes(` ${s} `))) {
-    return "semantic";
-  }
-  if (words.length >= 3) {
-    return "hybrid";
-  }
-  return "keyword";
 }
 function mergeWithRRF(ftsResults, vecResults, k = 60) {
   const scores = /* @__PURE__ */ new Map();

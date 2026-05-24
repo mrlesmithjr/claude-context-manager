@@ -27,6 +27,7 @@ import {
   countByImportance,
   formatShortDate,
 } from '../utils/session-format.js';
+import { classifyQuery, type QueryStrategy } from '../utils/classify.js';
 
 // Minimum cosine similarity score for semantic/hybrid search results.
 // Results below this threshold are suppressed to avoid returning low-signal noise.
@@ -207,38 +208,6 @@ function formatStats(stats: Stats, project?: string, vectorStats?: VectorStats, 
 
 // --- Retrieval Routing ---
 
-type QueryStrategy = 'keyword' | 'semantic' | 'hybrid';
-
-/**
- * Classify a search query to pick the optimal retrieval strategy.
- * Short/specific → keyword (fast), natural language → semantic, mixed → hybrid.
- */
-function classifyQuery(query: string): QueryStrategy {
-  const words = query.trim().split(/\s+/);
-
-  // Short queries: file names, identifiers, tool names → keyword
-  if (words.length <= 2) {
-    return 'keyword';
-  }
-
-  // Natural language questions → semantic
-  const nlStarters = [
-    'how', 'why', 'what', 'when', 'where', 'which',
-    'explain', 'describe', 'show me', 'similar to',
-  ];
-  const lower = query.toLowerCase();
-  if (words.length >= 5 && nlStarters.some(s => lower.startsWith(s) || lower.includes(` ${s} `))) {
-    return 'semantic';
-  }
-
-  // Medium-length queries → hybrid (both keyword + vector, merged with RRF)
-  if (words.length >= 3) {
-    return 'hybrid';
-  }
-
-  return 'keyword';
-}
-
 /**
  * Merge two ranked result lists using Reciprocal Rank Fusion.
  * Standard approach for combining results from different retrieval systems.
@@ -310,7 +279,7 @@ server.tool(
       return { content: [{ type: 'text' as const, text }] };
     }
 
-    const strategy = classifyQuery(query);
+    const strategy: QueryStrategy = classifyQuery(query);
 
     let observations: Observation[] = [];
     let searchMethod = '';
