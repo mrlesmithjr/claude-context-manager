@@ -30,8 +30,12 @@ export function stripPrivateTags(content: string): string {
         // Skip entire private section
         result += '[REDACTED]';
         i = closeIndex + closeTag.length;
-        continue;
+      } else {
+        // No closing tag — redact everything from the opening tag to end of string
+        result += '[REDACTED]';
+        i = content.length;
       }
+      continue;
     }
 
     // Copy character if not in private section

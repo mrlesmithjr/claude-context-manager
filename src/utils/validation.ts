@@ -133,15 +133,20 @@ export function validateSessionStartInput(input: unknown): SessionStartInput {
     ? obj.cwd
     : process.cwd();
 
-  // Try to validate project path, but don't fail if outside allowed roots
-  // (just use the raw cwd - we'll skip storage for non-project directories)
+  // Try to validate project path. Fall back to process.cwd() (never raw input)
+  // so the prefix-matching storage queries are scoped to the actual process
+  // location rather than an untrusted or over-broad path from hook input.
+  // Double-failure guard: if process.cwd() is also outside allowed roots
+  // (unusual environment), fall back to homedir() which is always in ALLOWED_PROJECT_ROOTS.
   let validatedCwd: string;
   try {
     validatedCwd = validateProjectPath(rawCwd);
   } catch {
-    // Path outside allowed roots - use raw path anyway
-    // The storage layer can handle this gracefully
-    validatedCwd = rawCwd;
+    try {
+      validatedCwd = validateProjectPath(process.cwd());
+    } catch {
+      validatedCwd = homedir();
+    }
   }
 
   return {
@@ -217,11 +222,29 @@ export function validateStopInput(input: unknown): StopInput {
   // Validate project path
   const validatedCwd = validateProjectPath(obj.cwd);
 
+  // Validate transcript_path is within the expected Claude projects directory.
+  // Use realpathSync (not path.resolve) to follow symlinks before comparing —
+  // a symlink inside ~/.claude/projects pointing outside would bypass a lexical check.
+  // Reject silently (undefined) rather than throwing — missing transcript is
+  // gracefully handled by the caller; a path traversal attempt must not succeed.
+  let transcriptPath: string | undefined;
+  if (typeof obj.transcript_path === 'string' && obj.transcript_path.length > 0) {
+    const expectedRoot = path.resolve(homedir(), '.claude', 'projects');
+    try {
+      const resolved = realpathSync(obj.transcript_path);
+      if (resolved.startsWith(expectedRoot + path.sep)) {
+        transcriptPath = resolved;
+      }
+      // else: path outside expected root — silently drop it
+    } catch {
+      // realpathSync throws if file does not exist — silently drop it
+    }
+  }
+
   return {
     session_id: obj.session_id,
     cwd: validatedCwd,
-    transcript_path:
-      typeof obj.transcript_path === 'string' ? obj.transcript_path : undefined,
+    transcript_path: transcriptPath,
   };
 }
 

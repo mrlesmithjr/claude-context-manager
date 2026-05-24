@@ -847,9 +847,22 @@ export function processToolCapture(capture: ToolCapture): Omit<Observation, 'id'
     : undefined;
   const tags = inferTags(capture.tool_name, filesTouched, command);
 
-  // Build metadata with enhanced output storage
+  // Build metadata with enhanced output storage.
+  // Strip large/sensitive fields from tool_input for Edit and Write — the summary
+  // already captures the meaningful diff, and old_string/new_string/content may
+  // contain secrets that are not matched by SENSITIVE_PATTERNS.
+  const sanitizedToolInput = capture.tool_input
+    ? { ...(capture.tool_input as Record<string, unknown>) }
+    : undefined;
+  if (sanitizedToolInput) {
+    if (capture.tool_name === 'Edit' || capture.tool_name === 'Write') {
+      delete sanitizedToolInput['old_string'];
+      delete sanitizedToolInput['new_string'];
+      delete sanitizedToolInput['content'];
+    }
+  }
   const metadata: Record<string, unknown> = {
-    tool_input: capture.tool_input,
+    tool_input: sanitizedToolInput,
     stored_output: extracted.stored_output,
     output_stats: extracted.output_stats,
   };

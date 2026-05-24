@@ -349,7 +349,8 @@ ${storedOutput}`;
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
-      ORDER BY created_at DESC
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT 500
     `);
     const rows = stmt.all(project + "%");
     const results = [];
@@ -392,13 +393,13 @@ ${storedOutput}`;
     return rows.map((row) => this.mapRow(row));
   }
   async searchByTag(tag, project, limit = 50) {
-    const likePattern = `%${tag}%`;
+    const likePattern = `%,${tag},%`;
     let sql;
     let params;
     if (project) {
       sql = `
         SELECT * FROM observations
-        WHERE tags LIKE ? AND project LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -406,7 +407,7 @@ ${storedOutput}`;
     } else {
       sql = `
         SELECT * FROM observations
-        WHERE tags LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -729,7 +730,7 @@ ${storedOutput}`;
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
-      params = [query];
+      params = [ftsQuery];
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
@@ -897,6 +898,9 @@ ${storedOutput}`;
     const deleteOriginals = this.db.prepare(`
       DELETE FROM observations WHERE id IN (SELECT value FROM json_each(?))
     `);
+    const deleteVec = this.vecEnabled ? this.db.prepare(
+      `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
+    ) : null;
     const compact = this.db.transaction(() => {
       for (const group of groups) {
         const fileEntries = group.all_files.split("|").flatMap((f) => {
@@ -920,6 +924,9 @@ ${storedOutput}`;
           group.earliest
         );
         const idList = group.ids.split(",").map(Number);
+        if (deleteVec) {
+          deleteVec.run(JSON.stringify(idList));
+        }
         deleteOriginals.run(JSON.stringify(idList));
         compactedCount++;
         originalsRemoved += group.cnt;
@@ -1534,8 +1541,11 @@ function stripPrivateTags(content) {
       if (closeIndex !== -1) {
         result += "[REDACTED]";
         i = closeIndex + closeTag.length;
-        continue;
+      } else {
+        result += "[REDACTED]";
+        i = content.length;
       }
+      continue;
     }
     result += content[i];
     i++;
@@ -1661,11 +1671,9 @@ async function main() {
   const debugLog = createDebugLogger("prompt-hook-debug.log");
   try {
     const inputStr = await readStdin();
-    debugLog("RAW_INPUT", inputStr.substring(0, 500));
     let rawInput;
     try {
       rawInput = JSON.parse(inputStr);
-      debugLog("PARSED_KEYS", Object.keys(rawInput).join(", "));
     } catch (parseError) {
       debugLog("PARSE_ERROR", String(parseError));
       console.error("[context-manager] Invalid JSON input");
@@ -1675,6 +1683,11 @@ async function main() {
     const input = validateUserPromptSubmitInput(rawInput);
     await storage.initialize();
     const sanitizedPrompt = sanitizeContent(input.prompt);
+    debugLog("PROMPT_CAPTURED", {
+      sessionId: input.session_id,
+      promptLength: sanitizedPrompt.length,
+      project: input.cwd
+    });
     await storage.saveUserPrompt({
       session_id: input.session_id,
       project: input.cwd,

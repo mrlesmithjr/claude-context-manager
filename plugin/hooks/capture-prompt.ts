@@ -52,12 +52,10 @@ async function main() {
 
   try {
     const inputStr = await readStdin();
-    debugLog('RAW_INPUT', inputStr.substring(0, 500));
 
     let rawInput;
     try {
       rawInput = JSON.parse(inputStr);
-      debugLog('PARSED_KEYS', Object.keys(rawInput).join(', '));
     } catch (parseError) {
       debugLog('PARSE_ERROR', String(parseError));
       console.error('[context-manager] Invalid JSON input');
@@ -73,6 +71,13 @@ async function main() {
 
     // Sanitize prompt text (strip <private> tags and sensitive data)
     const sanitizedPrompt = sanitizeContent(input.prompt);
+
+    // Log metadata only — never log prompt content even in debug mode
+    debugLog('PROMPT_CAPTURED', {
+      sessionId: input.session_id,
+      promptLength: sanitizedPrompt.length,
+      project: input.cwd,
+    });
 
     // Save user prompt
     await storage.saveUserPrompt({

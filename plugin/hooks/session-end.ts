@@ -429,22 +429,22 @@ async function main() {
 
   try {
     const inputStr = await readStdin();
-    debugLog('RAW_INPUT_STRING', inputStr);
 
     let rawInput;
     try {
       rawInput = JSON.parse(inputStr);
     } catch (parseError) {
-      debugLog('JSON_PARSE_ERROR', { error: String(parseError), input: inputStr });
+      debugLog('JSON_PARSE_ERROR', { error: String(parseError) });
       console.error('[context-manager] Invalid JSON input');
       await writeResponse({ status: 'error' });
       return;
     }
 
-    debugLog('PARSED_INPUT', rawInput);
+    // Log metadata only — raw input may contain file paths or session context
+    debugLog('PARSED_KEYS', Object.keys(rawInput).join(', '));
     debugLog('HAS_TRANSCRIPT_PATH', {
       has: 'transcript_path' in rawInput,
-      path: rawInput.transcript_path
+      hasValue: typeof rawInput.transcript_path === 'string' && rawInput.transcript_path.length > 0,
     });
 
     // Validate and sanitize input
@@ -514,7 +514,7 @@ async function main() {
   } catch (error) {
     debugLog('SESSION_END_ERROR', { error: String(error) });
     console.error('[context-manager] Session end error:', error);
-    process.stdout.write(JSON.stringify({ status: 'error' }));
+    await writeResponse({ status: 'error' });
   } finally {
     storage.close();
   }
