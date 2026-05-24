@@ -47,13 +47,30 @@ function getToolColor(toolName) {
 }
 
 /**
- * Highlight search matches in text
+ * Escape HTML special characters to prevent XSS.
+ * Must be applied before inserting any user-derived or stored content
+ * into dangerouslySetInnerHTML.
+ */
+function escapeHtml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
+/**
+ * Highlight search matches in text.
+ * HTML-encodes the source text before injecting so stored observation
+ * summaries cannot contain executable markup.
  */
 function highlightMatches(text, query) {
-  if (!query || query.trim() === '') return text;
-
-  const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-  return text.replace(regex, '<mark class="bg-yellow-500/30 text-yellow-200">$1</mark>');
+  if (!query || query.trim() === '') return escapeHtml(text);
+  const safeText = escapeHtml(text);
+  const safeQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`(${safeQuery})`, 'gi');
+  return safeText.replace(regex, '<mark class="bg-yellow-500/30 text-yellow-200">$1</mark>');
 }
 
 /**
