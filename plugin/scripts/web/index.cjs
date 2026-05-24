@@ -42360,7 +42360,7 @@ var require_accept_negotiator = __commonJS({
       return preferredEncoding;
     }
     var BEGIN = 0;
-    var TOKEN = 1;
+    var TOKEN2 = 1;
     var QUALITY = 2;
     var END = 3;
     function parse(header, processMatch) {
@@ -42372,13 +42372,13 @@ var require_accept_negotiator = __commonJS({
         if (char === " " || char === "	") {
           continue;
         } else if (char === ";") {
-          if (state === TOKEN) {
+          if (state === TOKEN2) {
             state = QUALITY;
             quality = "";
           }
           continue;
         } else if (char === ",") {
-          if (state === TOKEN) {
+          if (state === TOKEN2) {
             if (processMatch(str, 1)) {
               state = END;
               break;
@@ -42403,11 +42403,11 @@ var require_accept_negotiator = __commonJS({
             continue;
           }
         } else if (state === BEGIN) {
-          state = TOKEN;
+          state = TOKEN2;
           str += char;
           continue;
         }
-        if (state === TOKEN) {
+        if (state === TOKEN2) {
           const prevChar = header[i - 1];
           if (prevChar === " " || prevChar === "	") {
             str = "";
@@ -42423,7 +42423,7 @@ var require_accept_negotiator = __commonJS({
         str = char;
         quality = "";
       }
-      if (state === TOKEN) {
+      if (state === TOKEN2) {
         processMatch(str, 1);
       } else if (state === QUALITY) {
         processMatch(str, parseFloat(quality) || 0);
@@ -43615,10 +43615,408 @@ var require_cors = __commonJS({
   }
 });
 
+// node_modules/@fastify/rate-limit/store/LocalStore.js
+var require_LocalStore = __commonJS({
+  "node_modules/@fastify/rate-limit/store/LocalStore.js"(exports2, module2) {
+    "use strict";
+    var { LruMap: Lru } = require_toad_cache();
+    function LocalStore(continueExceeding, exponentialBackoff, cache = 5e3) {
+      this.continueExceeding = continueExceeding;
+      this.exponentialBackoff = exponentialBackoff;
+      this.lru = new Lru(cache);
+    }
+    LocalStore.prototype.incr = function(ip, cb, timeWindow, max) {
+      const nowInMs = Date.now();
+      let current = this.lru.get(ip);
+      if (!current) {
+        current = { current: 1, ttl: timeWindow, iterationStartMs: nowInMs };
+      } else if (current.iterationStartMs + timeWindow <= nowInMs) {
+        current.current = 1;
+        current.ttl = timeWindow;
+        current.iterationStartMs = nowInMs;
+      } else {
+        ++current.current;
+        if (this.continueExceeding && current.current > max) {
+          current.ttl = timeWindow;
+          current.iterationStartMs = nowInMs;
+        } else if (this.exponentialBackoff && current.current > max) {
+          const backoffExponent = current.current - max - 1;
+          const ttl = timeWindow * 2 ** backoffExponent;
+          current.ttl = Number.isSafeInteger(ttl) ? ttl : Number.MAX_SAFE_INTEGER;
+          current.iterationStartMs = nowInMs;
+        } else {
+          current.ttl = timeWindow - (nowInMs - current.iterationStartMs);
+        }
+      }
+      this.lru.set(ip, current);
+      cb(null, current);
+    };
+    LocalStore.prototype.child = function(routeOptions) {
+      return new LocalStore(routeOptions.continueExceeding, routeOptions.exponentialBackoff, routeOptions.cache);
+    };
+    module2.exports = LocalStore;
+  }
+});
+
+// node_modules/@fastify/rate-limit/store/RedisStore.js
+var require_RedisStore = __commonJS({
+  "node_modules/@fastify/rate-limit/store/RedisStore.js"(exports2, module2) {
+    "use strict";
+    var lua = `
+  -- Key to operate on
+  local key = KEYS[1]
+  -- Time window for the TTL
+  local timeWindow = tonumber(ARGV[1])
+  -- Max requests
+  local max = tonumber(ARGV[2])
+  -- Flag to determine if TTL should be reset after exceeding
+  local continueExceeding = ARGV[3] == 'true'
+  --Flag to determine if exponential backoff should be applied
+  local exponentialBackoff = ARGV[4] == 'true'
+
+  --Max safe integer
+  local MAX_SAFE_INTEGER = (2^53) - 1
+
+  -- Increment the key's value
+  local current = redis.call('INCR', key)
+
+  if current == 1 or (continueExceeding and current > max) then
+    redis.call('PEXPIRE', key, timeWindow)
+  elseif exponentialBackoff and current > max then
+    local backoffExponent = current - max - 1
+    timeWindow = math.min(timeWindow * (2 ^ backoffExponent), MAX_SAFE_INTEGER)
+    redis.call('PEXPIRE', key, timeWindow)
+  else
+    timeWindow = redis.call('PTTL', key)
+  end
+
+  return {current, timeWindow}
+`;
+    function RedisStore(continueExceeding, exponentialBackoff, redis, key = "fastify-rate-limit-") {
+      this.continueExceeding = continueExceeding;
+      this.exponentialBackoff = exponentialBackoff;
+      this.redis = redis;
+      this.key = key;
+      if (!this.redis.rateLimit) {
+        this.redis.defineCommand("rateLimit", {
+          numberOfKeys: 1,
+          lua
+        });
+      }
+    }
+    RedisStore.prototype.incr = function(ip, cb, timeWindow, max) {
+      this.redis.rateLimit(this.key + ip, timeWindow, max, this.continueExceeding, this.exponentialBackoff, (err, result) => {
+        err ? cb(err, null) : cb(null, { current: result[0], ttl: result[1] });
+      });
+    };
+    RedisStore.prototype.child = function(routeOptions) {
+      return new RedisStore(routeOptions.continueExceeding, routeOptions.exponentialBackoff, this.redis, `${this.key}${routeOptions.routeInfo.method}${routeOptions.routeInfo.url}-`);
+    };
+    module2.exports = RedisStore;
+  }
+});
+
+// node_modules/@fastify/rate-limit/index.js
+var require_rate_limit = __commonJS({
+  "node_modules/@fastify/rate-limit/index.js"(exports2, module2) {
+    "use strict";
+    var fp = require_plugin2();
+    var { parse, format } = require_dist5();
+    var LocalStore = require_LocalStore();
+    var RedisStore = require_RedisStore();
+    var defaultMax = 1e3;
+    var defaultTimeWindow = 6e4;
+    var defaultHook = "onRequest";
+    var defaultHeaders = {
+      rateLimit: "x-ratelimit-limit",
+      rateRemaining: "x-ratelimit-remaining",
+      rateReset: "x-ratelimit-reset",
+      retryAfter: "retry-after"
+    };
+    var draftSpecHeaders = {
+      rateLimit: "ratelimit-limit",
+      rateRemaining: "ratelimit-remaining",
+      rateReset: "ratelimit-reset",
+      retryAfter: "retry-after"
+    };
+    var defaultOnFn = () => {
+    };
+    var defaultKeyGenerator = (req) => req.ip;
+    var defaultErrorResponse = (_req, context) => {
+      const err = new Error(`Rate limit exceeded, retry in ${context.after}`);
+      err.statusCode = context.statusCode;
+      return err;
+    };
+    async function fastifyRateLimit2(fastify, settings) {
+      const globalParams = {
+        global: typeof settings.global === "boolean" ? settings.global : true
+      };
+      if (typeof settings.enableDraftSpec === "boolean" && settings.enableDraftSpec) {
+        globalParams.enableDraftSpec = true;
+        globalParams.labels = draftSpecHeaders;
+      } else {
+        globalParams.enableDraftSpec = false;
+        globalParams.labels = defaultHeaders;
+      }
+      globalParams.addHeaders = Object.assign({
+        [globalParams.labels.rateLimit]: true,
+        [globalParams.labels.rateRemaining]: true,
+        [globalParams.labels.rateReset]: true,
+        [globalParams.labels.retryAfter]: true
+      }, settings.addHeaders);
+      globalParams.addHeadersOnExceeding = Object.assign({
+        [globalParams.labels.rateLimit]: true,
+        [globalParams.labels.rateRemaining]: true,
+        [globalParams.labels.rateReset]: true
+      }, settings.addHeadersOnExceeding);
+      if (Number.isFinite(settings.max) && settings.max >= 0) {
+        globalParams.max = Math.trunc(settings.max);
+      } else if (typeof settings.max === "function") {
+        globalParams.max = settings.max;
+      } else {
+        globalParams.max = defaultMax;
+      }
+      if (Number.isFinite(settings.timeWindow) && settings.timeWindow >= 0) {
+        globalParams.timeWindow = Math.trunc(settings.timeWindow);
+      } else if (typeof settings.timeWindow === "string") {
+        globalParams.timeWindow = parse(settings.timeWindow);
+      } else if (typeof settings.timeWindow === "function") {
+        globalParams.timeWindow = settings.timeWindow;
+      } else {
+        globalParams.timeWindow = defaultTimeWindow;
+      }
+      globalParams.hook = settings.hook || defaultHook;
+      globalParams.allowList = settings.allowList || settings.whitelist || null;
+      globalParams.ban = Number.isFinite(settings.ban) && settings.ban >= 0 ? Math.trunc(settings.ban) : -1;
+      globalParams.onBanReach = typeof settings.onBanReach === "function" ? settings.onBanReach : defaultOnFn;
+      globalParams.onExceeding = typeof settings.onExceeding === "function" ? settings.onExceeding : defaultOnFn;
+      globalParams.onExceeded = typeof settings.onExceeded === "function" ? settings.onExceeded : defaultOnFn;
+      globalParams.continueExceeding = typeof settings.continueExceeding === "boolean" ? settings.continueExceeding : false;
+      globalParams.exponentialBackoff = typeof settings.exponentialBackoff === "boolean" ? settings.exponentialBackoff : false;
+      globalParams.keyGenerator = typeof settings.keyGenerator === "function" ? settings.keyGenerator : defaultKeyGenerator;
+      if (typeof settings.errorResponseBuilder === "function") {
+        globalParams.errorResponseBuilder = settings.errorResponseBuilder;
+        globalParams.isCustomErrorMessage = true;
+      } else {
+        globalParams.errorResponseBuilder = defaultErrorResponse;
+        globalParams.isCustomErrorMessage = false;
+      }
+      globalParams.skipOnError = typeof settings.skipOnError === "boolean" ? settings.skipOnError : false;
+      const pluginComponent = {
+        rateLimitRan: Symbol("fastify.request.rateLimitRan"),
+        store: null
+      };
+      if (settings.store) {
+        const Store = settings.store;
+        pluginComponent.store = new Store(globalParams);
+      } else {
+        if (settings.redis) {
+          pluginComponent.store = new RedisStore(globalParams.continueExceeding, globalParams.exponentialBackoff, settings.redis, settings.nameSpace);
+        } else {
+          pluginComponent.store = new LocalStore(globalParams.continueExceeding, globalParams.exponentialBackoff, settings.cache);
+        }
+      }
+      fastify.decorateRequest(pluginComponent.rateLimitRan, false);
+      if (!fastify.hasDecorator("createRateLimit")) {
+        fastify.decorate("createRateLimit", (options) => {
+          const args = createLimiterArgs(pluginComponent, globalParams, options);
+          return (req) => applyRateLimit.apply(this, args.concat(req));
+        });
+      }
+      if (!fastify.hasDecorator("rateLimit")) {
+        fastify.decorate("rateLimit", (options) => {
+          const args = createLimiterArgs(pluginComponent, globalParams, options);
+          return rateLimitRequestHandler(...args);
+        });
+      }
+      fastify.addHook("onRoute", (routeOptions) => {
+        if (routeOptions.config?.rateLimit != null) {
+          if (typeof routeOptions.config.rateLimit === "object") {
+            const newPluginComponent = Object.create(pluginComponent);
+            const mergedRateLimitParams = mergeParams(globalParams, routeOptions.config.rateLimit, { routeInfo: routeOptions });
+            newPluginComponent.store = pluginComponent.store.child(mergedRateLimitParams);
+            addRouteRateHook(newPluginComponent, mergedRateLimitParams, routeOptions);
+          } else if (routeOptions.config.rateLimit !== false) {
+            throw new Error("Unknown value for route rate-limit configuration");
+          }
+        } else if (globalParams.global) {
+          addRouteRateHook(pluginComponent, globalParams, routeOptions);
+        }
+      });
+    }
+    function mergeParams(...params) {
+      const result = Object.assign({}, ...params);
+      if (Number.isFinite(result.timeWindow) && result.timeWindow >= 0) {
+        result.timeWindow = Math.trunc(result.timeWindow);
+      } else if (typeof result.timeWindow === "string") {
+        result.timeWindow = parse(result.timeWindow);
+      } else if (typeof result.timeWindow !== "function") {
+        result.timeWindow = defaultTimeWindow;
+      }
+      if (Number.isFinite(result.max) && result.max >= 0) {
+        result.max = Math.trunc(result.max);
+      } else if (typeof result.max !== "function") {
+        result.max = defaultMax;
+      }
+      if (Number.isFinite(result.ban) && result.ban >= 0) {
+        result.ban = Math.trunc(result.ban);
+      } else {
+        result.ban = -1;
+      }
+      if (result.groupId !== void 0 && typeof result.groupId !== "string") {
+        throw new Error("groupId must be a string");
+      }
+      return result;
+    }
+    function createLimiterArgs(pluginComponent, globalParams, options) {
+      if (typeof options === "object") {
+        const newPluginComponent = Object.create(pluginComponent);
+        const mergedRateLimitParams = mergeParams(globalParams, options, { routeInfo: {} });
+        newPluginComponent.store = newPluginComponent.store.child(mergedRateLimitParams);
+        return [newPluginComponent, mergedRateLimitParams];
+      }
+      return [pluginComponent, globalParams];
+    }
+    function addRouteRateHook(pluginComponent, params, routeOptions) {
+      const hook = params.hook;
+      const hookHandler = rateLimitRequestHandler(pluginComponent, params);
+      if (Array.isArray(routeOptions[hook])) {
+        routeOptions[hook].push(hookHandler);
+      } else if (typeof routeOptions[hook] === "function") {
+        routeOptions[hook] = [routeOptions[hook], hookHandler];
+      } else {
+        routeOptions[hook] = [hookHandler];
+      }
+    }
+    async function applyRateLimit(pluginComponent, params, req) {
+      const { store } = pluginComponent;
+      let key = await params.keyGenerator(req);
+      const groupId = req.routeOptions.config?.rateLimit?.groupId;
+      if (groupId) {
+        key += groupId;
+      }
+      if (params.allowList) {
+        if (typeof params.allowList === "function") {
+          if (await params.allowList(req, key)) {
+            return {
+              isAllowed: true,
+              key
+            };
+          }
+        } else if (params.allowList.indexOf(key) !== -1) {
+          return {
+            isAllowed: true,
+            key
+          };
+        }
+      }
+      const max = typeof params.max === "number" ? params.max : await params.max(req, key);
+      const timeWindow = typeof params.timeWindow === "number" ? params.timeWindow : await params.timeWindow(req, key);
+      let current = 0;
+      let ttl = 0;
+      let ttlInSeconds = 0;
+      try {
+        const res = await new Promise((resolve, reject) => {
+          store.incr(key, (err, res2) => {
+            err ? reject(err) : resolve(res2);
+          }, timeWindow, max);
+        });
+        current = res.current;
+        ttl = res.ttl;
+        ttlInSeconds = Math.ceil(res.ttl / 1e3);
+      } catch (err) {
+        if (!params.skipOnError) {
+          throw err;
+        }
+      }
+      return {
+        isAllowed: false,
+        key,
+        max,
+        timeWindow,
+        remaining: Math.max(0, max - current),
+        ttl,
+        ttlInSeconds,
+        isExceeded: current > max,
+        isBanned: params.ban !== -1 && current - max > params.ban
+      };
+    }
+    function rateLimitRequestHandler(pluginComponent, params) {
+      const { rateLimitRan } = pluginComponent;
+      return async (req, res) => {
+        if (req[rateLimitRan]) {
+          return;
+        }
+        req[rateLimitRan] = true;
+        const rateLimit = await applyRateLimit(pluginComponent, params, req);
+        if (rateLimit.isAllowed) {
+          return;
+        }
+        const {
+          key,
+          max,
+          remaining,
+          ttl,
+          ttlInSeconds,
+          isExceeded,
+          isBanned
+        } = rateLimit;
+        if (!isExceeded) {
+          if (params.addHeadersOnExceeding[params.labels.rateLimit]) {
+            res.header(params.labels.rateLimit, max);
+          }
+          if (params.addHeadersOnExceeding[params.labels.rateRemaining]) {
+            res.header(params.labels.rateRemaining, remaining);
+          }
+          if (params.addHeadersOnExceeding[params.labels.rateReset]) {
+            res.header(params.labels.rateReset, ttlInSeconds);
+          }
+          params.onExceeding(req, key);
+          return;
+        }
+        params.onExceeded(req, key);
+        if (params.addHeaders[params.labels.rateLimit]) {
+          res.header(params.labels.rateLimit, max);
+        }
+        if (params.addHeaders[params.labels.rateRemaining]) {
+          res.header(params.labels.rateRemaining, 0);
+        }
+        if (params.addHeaders[params.labels.rateReset]) {
+          res.header(params.labels.rateReset, ttlInSeconds);
+        }
+        if (params.addHeaders[params.labels.retryAfter]) {
+          res.header(params.labels.retryAfter, ttlInSeconds);
+        }
+        const respCtx = {
+          statusCode: 429,
+          ban: false,
+          max,
+          ttl,
+          after: format(ttlInSeconds * 1e3, true)
+        };
+        if (isBanned) {
+          respCtx.statusCode = 403;
+          respCtx.ban = true;
+          params.onBanReach(req, key);
+        }
+        throw params.errorResponseBuilder(req, respCtx);
+      };
+    }
+    module2.exports = fp(fastifyRateLimit2, {
+      fastify: "5.x",
+      name: "@fastify/rate-limit"
+    });
+    module2.exports.default = fastifyRateLimit2;
+    module2.exports.fastifyRateLimit = fastifyRateLimit2;
+  }
+});
+
 // web/server/index.ts
 var import_fastify = __toESM(require_fastify(), 1);
 var import_static = __toESM(require_static(), 1);
 var import_cors = __toESM(require_cors(), 1);
+var import_rate_limit = __toESM(require_rate_limit(), 1);
+var import_crypto2 = require("crypto");
 var import_os2 = require("os");
 var import_path2 = require("path");
 var import_fs2 = require("fs");
@@ -45115,7 +45513,22 @@ ${storedOutput}`;
 };
 
 // web/server/routes/api.ts
-async function registerApiRoutes(fastify, storage) {
+var MAX_QUERY_LEN = 500;
+var MAX_PROJECT_LEN = 1024;
+var MAX_TOOL_LEN = 64;
+var NETWORK_MIN_DEPTH = parseInt(process.env.CONTEXT_MANAGER_MIN_DEPTH || "3", 10);
+var REQUIRED_PREFIX = process.env.CONTEXT_MANAGER_PROJECT_PREFIX || "";
+function isProjectTooBroad(project, isNetworkMode2) {
+  if (!isNetworkMode2)
+    return false;
+  const depth = project.split("/").filter(Boolean).length;
+  if (depth < NETWORK_MIN_DEPTH)
+    return true;
+  if (REQUIRED_PREFIX && !project.startsWith(REQUIRED_PREFIX))
+    return true;
+  return false;
+}
+async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
   fastify.get(
     "/api/sessions",
     {
@@ -45123,7 +45536,7 @@ async function registerApiRoutes(fastify, storage) {
         querystring: {
           type: "object",
           properties: {
-            project: { type: "string" },
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
             status: { type: "string", enum: ["active", "complete"] },
             limit: { type: "number", minimum: 1, maximum: 200 },
             offset: { type: "number", minimum: 0 }
@@ -45133,6 +45546,14 @@ async function registerApiRoutes(fastify, storage) {
     },
     async (request, reply) => {
       const { project, status, limit = 50, offset = 0 } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
       try {
         const [total, sessions] = await Promise.all([
           storage.countSessions(project, status),
@@ -45167,6 +45588,10 @@ async function registerApiRoutes(fastify, storage) {
           return;
         }
         const project = observations[0]?.project || prompts[0]?.project || "";
+        if (isNetworkMode2 && isProjectTooBroad(project, isNetworkMode2)) {
+          reply.status(403).send({ error: "Session project path too broad for network mode" });
+          return;
+        }
         const session = {
           id,
           project,
@@ -45192,9 +45617,9 @@ async function registerApiRoutes(fastify, storage) {
         querystring: {
           type: "object",
           properties: {
-            q: { type: "string" },
-            project: { type: "string" },
-            tool: { type: "string" },
+            q: { type: "string", maxLength: MAX_QUERY_LEN },
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
+            tool: { type: "string", maxLength: MAX_TOOL_LEN },
             limit: { type: "number", minimum: 1, maximum: 200 },
             offset: { type: "number", minimum: 0 }
           }
@@ -45203,6 +45628,14 @@ async function registerApiRoutes(fastify, storage) {
     },
     async (request, reply) => {
       const { q, project, tool, limit = 50, offset = 0 } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
       try {
         let observations;
         if (q) {
@@ -45240,13 +45673,21 @@ async function registerApiRoutes(fastify, storage) {
         querystring: {
           type: "object",
           properties: {
-            project: { type: "string" }
+            project: { type: "string", maxLength: MAX_PROJECT_LEN }
           }
         }
       }
     },
     async (request, reply) => {
       const { project } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
       try {
         const stats = await storage.getStats(project);
         reply.send(stats);
@@ -45263,7 +45704,7 @@ async function registerApiRoutes(fastify, storage) {
         querystring: {
           type: "object",
           properties: {
-            project: { type: "string" },
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
             days: { type: "number", minimum: 1, maximum: 365 }
           }
         }
@@ -45271,6 +45712,14 @@ async function registerApiRoutes(fastify, storage) {
     },
     async (request, reply) => {
       const { project, days = 30 } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
       try {
         const timeline = await storage.getTimeline(project, days);
         reply.send({ timeline });
@@ -45282,7 +45731,10 @@ async function registerApiRoutes(fastify, storage) {
   );
   fastify.get("/api/projects", async (request, reply) => {
     try {
-      const projects = await storage.getProjects();
+      let projects = await storage.getProjects();
+      if (isNetworkMode2 && REQUIRED_PREFIX) {
+        projects = projects.filter((p) => p.path.startsWith(REQUIRED_PREFIX));
+      }
       reply.send({ projects });
     } catch (error) {
       fastify.log.error(error);
@@ -45297,23 +45749,58 @@ var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path
 var PORT = parseInt(process.env.CONTEXT_MANAGER_PORT || "3847", 10);
 var HOST = process.env.CONTEXT_MANAGER_HOST || "localhost";
 var DB_PATH = process.env.CONTEXT_MANAGER_DB || (0, import_path2.join)((0, import_os2.homedir)(), ".claude-context", "context.db");
+var TOKEN = process.env.CONTEXT_MANAGER_TOKEN || "";
+var LOCALHOST_VARIANTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "::1"]);
+var isNetworkMode = !LOCALHOST_VARIANTS.has(HOST);
 async function main() {
+  if (isNetworkMode && !TOKEN) {
+    console.error(
+      "[context-manager] ERROR: CONTEXT_MANAGER_TOKEN must be set when binding to a non-localhost address.\n  Generate a token: openssl rand -hex 32"
+    );
+    process.exit(1);
+  }
+  if (isNetworkMode) {
+    console.log("[context-manager] Network mode enabled: bearer token auth active");
+  }
   const storage = new SQLiteStorage(DB_PATH);
   await storage.initialize();
   const fastify = (0, import_fastify.default)({
     logger: {
-      level: process.env.LOG_LEVEL || "info"
+      level: process.env.LOG_LEVEL || (isNetworkMode ? "info" : "warn")
     }
   });
+  await fastify.register(import_rate_limit.default, {
+    max: parseInt(process.env.CONTEXT_MANAGER_RATE_LIMIT || "60", 10),
+    timeWindow: "1 minute",
+    skipOnError: false,
+    allowList: LOCALHOST_VARIANTS.has(HOST) ? ["127.0.0.1", "::1", "::ffff:127.0.0.1"] : []
+  });
+  if (isNetworkMode) {
+    fastify.addHook("onRequest", async (request, reply) => {
+      if (request.url === "/api/health")
+        return;
+      const authHeader = request.headers["authorization"] || "";
+      const provided = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+      const expected = Buffer.from(TOKEN);
+      const actual = Buffer.alloc(expected.length);
+      Buffer.from(provided).copy(actual, 0, 0, expected.length);
+      const lengthMatch = provided.length === TOKEN.length;
+      const contentMatch = (0, import_crypto2.timingSafeEqual)(expected, actual);
+      if (!lengthMatch || !contentMatch) {
+        reply.status(401).header("WWW-Authenticate", "Bearer").send({ error: "Unauthorized" });
+      }
+    });
+  }
+  const allowedOrigins = isNetworkMode ? [`http://${HOST}:${PORT}`, `https://${HOST}:${PORT}`] : [`http://${HOST}:${PORT}`, `http://localhost:${PORT}`];
   await fastify.register(import_cors.default, {
-    origin: [`http://${HOST}:${PORT}`, `http://localhost:${PORT}`]
+    origin: allowedOrigins
   });
   const clientPath = (0, import_fs2.existsSync)((0, import_path2.join)(__scriptDir, "client")) ? (0, import_path2.join)(__scriptDir, "client") : (0, import_path2.join)(__scriptDir, "..", "..", "web", "client");
   await fastify.register(import_static.default, {
     root: clientPath,
     prefix: "/"
   });
-  await registerApiRoutes(fastify, storage);
+  await registerApiRoutes(fastify, storage, isNetworkMode);
   fastify.get("/api/health", async (request, reply) => {
     reply.send({
       status: "ok",

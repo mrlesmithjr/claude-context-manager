@@ -2,8 +2,14 @@
  * API Routes for Context Manager Web Dashboard
  */
 
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import type { ContextStorage } from '../../../src/storage/interface.js';
+
+// Maximum lengths for string query parameters.
+// These prevent unbounded FTS5 queries and oversized project paths.
+const MAX_QUERY_LEN = 500;
+const MAX_PROJECT_LEN = 1024;
+const MAX_TOOL_LEN = 64;
 
 interface SessionsQuerystring {
   project?: string;
@@ -29,9 +35,30 @@ interface TimelineQuerystring {
   days?: number;
 }
 
+// Minimum project path depth required in network mode (non-localhost).
+// Prevents "project=/" or "project=/Users" from exposing all data.
+// Set CONTEXT_MANAGER_PROJECT_PREFIX to require a specific prefix
+// (e.g. "/Users/alice/Projects") as an additional constraint.
+const NETWORK_MIN_DEPTH = parseInt(process.env.CONTEXT_MANAGER_MIN_DEPTH || '3', 10);
+const REQUIRED_PREFIX = process.env.CONTEXT_MANAGER_PROJECT_PREFIX || '';
+
+/**
+ * Returns true if the project path is too broad for safe use in network mode.
+ * A depth-3 path like "/Users/alice/Projects" is allowed; "/" and "/Users" are not.
+ * Unix paths only (slash-delimited) — this is a macOS/Linux personal tool.
+ */
+function isProjectTooBroad(project: string, isNetworkMode: boolean): boolean {
+  if (!isNetworkMode) return false;
+  const depth = project.split('/').filter(Boolean).length;
+  if (depth < NETWORK_MIN_DEPTH) return true;
+  if (REQUIRED_PREFIX && !project.startsWith(REQUIRED_PREFIX)) return true;
+  return false;
+}
+
 export async function registerApiRoutes(
   fastify: FastifyInstance,
-  storage: ContextStorage
+  storage: ContextStorage,
+  isNetworkMode: boolean = false
 ) {
   // GET /api/sessions - List sessions with filtering
   fastify.get<{ Querystring: SessionsQuerystring }>(
@@ -41,7 +68,7 @@ export async function registerApiRoutes(
         querystring: {
           type: 'object',
           properties: {
-            project: { type: 'string' },
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
             status: { type: 'string', enum: ['active', 'complete'] },
             limit: { type: 'number', minimum: 1, maximum: 200 },
             offset: { type: 'number', minimum: 0 },
@@ -51,6 +78,15 @@ export async function registerApiRoutes(
     },
     async (request, reply) => {
       const { project, status, limit = 50, offset = 0 } = request.query;
+
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
 
       try {
         // Get total count and paginated sessions with observation stats in two
@@ -96,6 +132,14 @@ export async function registerApiRoutes(
 
         // Build session object from observations
         const project = observations[0]?.project || prompts[0]?.project || '';
+
+        // In network mode, reject sessions whose project path is too broad.
+        // This prevents an authenticated caller from enumerating arbitrary sessions.
+        if (isNetworkMode && isProjectTooBroad(project, isNetworkMode)) {
+          reply.status(403).send({ error: 'Session project path too broad for network mode' });
+          return;
+        }
+
         const session = {
           id,
           project,
@@ -125,9 +169,9 @@ export async function registerApiRoutes(
         querystring: {
           type: 'object',
           properties: {
-            q: { type: 'string' },
-            project: { type: 'string' },
-            tool: { type: 'string' },
+            q: { type: 'string', maxLength: MAX_QUERY_LEN },
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
+            tool: { type: 'string', maxLength: MAX_TOOL_LEN },
             limit: { type: 'number', minimum: 1, maximum: 200 },
             offset: { type: 'number', minimum: 0 },
           },
@@ -136,6 +180,15 @@ export async function registerApiRoutes(
     },
     async (request, reply) => {
       const { q, project, tool, limit = 50, offset = 0 } = request.query;
+
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
 
       try {
         let observations;
@@ -186,13 +239,22 @@ export async function registerApiRoutes(
         querystring: {
           type: 'object',
           properties: {
-            project: { type: 'string' },
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
           },
         },
       },
     },
     async (request, reply) => {
       const { project } = request.query;
+
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
 
       try {
         const stats = await storage.getStats(project);
@@ -212,7 +274,7 @@ export async function registerApiRoutes(
         querystring: {
           type: 'object',
           properties: {
-            project: { type: 'string' },
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
             days: { type: 'number', minimum: 1, maximum: 365 },
           },
         },
@@ -220,6 +282,15 @@ export async function registerApiRoutes(
     },
     async (request, reply) => {
       const { project, days = 30 } = request.query;
+
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
 
       try {
         const timeline = await storage.getTimeline(project, days);
@@ -232,9 +303,14 @@ export async function registerApiRoutes(
   );
 
   // GET /api/projects - Get list of projects
+  // In network mode, project paths are filtered to those matching CONTEXT_MANAGER_PROJECT_PREFIX
+  // (if set) to avoid exposing the full local filesystem layout to callers.
   fastify.get('/api/projects', async (request, reply) => {
     try {
-      const projects = await storage.getProjects();
+      let projects = await storage.getProjects();
+      if (isNetworkMode && REQUIRED_PREFIX) {
+        projects = projects.filter(p => p.path.startsWith(REQUIRED_PREFIX));
+      }
       reply.send({ projects });
     } catch (error) {
       fastify.log.error(error);
