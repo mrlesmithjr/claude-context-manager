@@ -461,11 +461,14 @@ export class SQLiteStorage implements ContextStorage {
     // Apply 80% safety margin
     const effectiveBudget = Math.floor(tokenBudget * 0.8);
 
-    // Use LIKE for prefix matching (parent directory sees children)
+    // Use LIKE for prefix matching (parent directory sees children).
+    // LIMIT 500 caps memory usage on mature databases — the budget accumulator
+    // stops well before this ceiling, so no relevant observations are lost.
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
-      ORDER BY created_at DESC
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT 500
     `);
 
     const rows = stmt.all(project + '%') as Array<Record<string, unknown>>;
@@ -527,14 +530,18 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async searchByTag(tag: string, project?: string, limit: number = 50): Promise<Observation[]> {
-    const likePattern = `%${tag}%`;
+    // Use delimiter-anchored matching to avoid substring collisions (e.g. "auth"
+    // matching a future "authentication" tag) and to make the intent explicit.
+    // Tags are stored as "auth,api,config"; wrapping with commas in SQL lets us
+    // match exact tag values: WHERE ',' || tags || ',' LIKE '%,auth,%'
+    const likePattern = `%,${tag},%`;
     let sql: string;
     let params: unknown[];
 
     if (project) {
       sql = `
         SELECT * FROM observations
-        WHERE tags LIKE ? AND project LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -542,7 +549,7 @@ export class SQLiteStorage implements ContextStorage {
     } else {
       sql = `
         SELECT * FROM observations
-        WHERE tags LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -1013,7 +1020,7 @@ export class SQLiteStorage implements ContextStorage {
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
-      params = [query];
+      params = [ftsQuery];
     }
 
     const stmt = this.db.prepare(sql);
@@ -1246,6 +1253,14 @@ export class SQLiteStorage implements ContextStorage {
       DELETE FROM observations WHERE id IN (SELECT value FROM json_each(?))
     `);
 
+    // vec_observations is a vec0 virtual table with no FK cascade — must be
+    // cleaned up manually, just like the prune() method does.
+    const deleteVec = this.vecEnabled
+      ? this.db.prepare(
+          `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
+        )
+      : null;
+
     const compact = this.db.transaction(() => {
       for (const group of groups) {
         // Parse all files from the group
@@ -1276,8 +1291,11 @@ export class SQLiteStorage implements ContextStorage {
           group.earliest
         );
 
-        // Delete originals
+        // Delete originals and their vector rows (compacted replacement inserted above)
         const idList = group.ids.split(',').map(Number);
+        if (deleteVec) {
+          deleteVec.run(JSON.stringify(idList));
+        }
         deleteOriginals.run(JSON.stringify(idList));
 
         compactedCount++;

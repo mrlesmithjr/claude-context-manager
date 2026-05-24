@@ -30437,7 +30437,8 @@ ${storedOutput}`;
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
-      ORDER BY created_at DESC
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT 500
     `);
     const rows = stmt.all(project + "%");
     const results = [];
@@ -30480,13 +30481,13 @@ ${storedOutput}`;
     return rows.map((row) => this.mapRow(row));
   }
   async searchByTag(tag, project, limit = 50) {
-    const likePattern = `%${tag}%`;
+    const likePattern = `%,${tag},%`;
     let sql;
     let params;
     if (project) {
       sql = `
         SELECT * FROM observations
-        WHERE tags LIKE ? AND project LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -30494,7 +30495,7 @@ ${storedOutput}`;
     } else {
       sql = `
         SELECT * FROM observations
-        WHERE tags LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -30817,7 +30818,7 @@ ${storedOutput}`;
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
-      params = [query];
+      params = [ftsQuery];
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
@@ -30985,6 +30986,9 @@ ${storedOutput}`;
     const deleteOriginals = this.db.prepare(`
       DELETE FROM observations WHERE id IN (SELECT value FROM json_each(?))
     `);
+    const deleteVec = this.vecEnabled ? this.db.prepare(
+      `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
+    ) : null;
     const compact = this.db.transaction(() => {
       for (const group of groups) {
         const fileEntries = group.all_files.split("|").flatMap((f) => {
@@ -31008,6 +31012,9 @@ ${storedOutput}`;
           group.earliest
         );
         const idList = group.ids.split(",").map(Number);
+        if (deleteVec) {
+          deleteVec.run(JSON.stringify(idList));
+        }
         deleteOriginals.run(JSON.stringify(idList));
         compactedCount++;
         originalsRemoved += group.cnt;
@@ -32658,7 +32665,7 @@ var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25"
 var server = new McpServer(
   {
     name: "context-manager",
-    version: true ? "0.8.15" : "0.5.0"
+    version: true ? "0.8.16" : "0.5.0"
   },
   {
     instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age \u2014 always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."

@@ -349,7 +349,8 @@ ${storedOutput}`;
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
-      ORDER BY created_at DESC
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT 500
     `);
     const rows = stmt.all(project + "%");
     const results = [];
@@ -392,13 +393,13 @@ ${storedOutput}`;
     return rows.map((row) => this.mapRow(row));
   }
   async searchByTag(tag, project, limit = 50) {
-    const likePattern = `%${tag}%`;
+    const likePattern = `%,${tag},%`;
     let sql;
     let params;
     if (project) {
       sql = `
         SELECT * FROM observations
-        WHERE tags LIKE ? AND project LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -406,7 +407,7 @@ ${storedOutput}`;
     } else {
       sql = `
         SELECT * FROM observations
-        WHERE tags LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -729,7 +730,7 @@ ${storedOutput}`;
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
-      params = [query];
+      params = [ftsQuery];
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
@@ -897,6 +898,9 @@ ${storedOutput}`;
     const deleteOriginals = this.db.prepare(`
       DELETE FROM observations WHERE id IN (SELECT value FROM json_each(?))
     `);
+    const deleteVec = this.vecEnabled ? this.db.prepare(
+      `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
+    ) : null;
     const compact = this.db.transaction(() => {
       for (const group of groups) {
         const fileEntries = group.all_files.split("|").flatMap((f) => {
@@ -920,6 +924,9 @@ ${storedOutput}`;
           group.earliest
         );
         const idList = group.ids.split(",").map(Number);
+        if (deleteVec) {
+          deleteVec.run(JSON.stringify(idList));
+        }
         deleteOriginals.run(JSON.stringify(idList));
         compactedCount++;
         originalsRemoved += group.cnt;
@@ -1508,7 +1515,11 @@ function validateSessionStartInput(input) {
   try {
     validatedCwd = validateProjectPath(rawCwd);
   } catch {
-    validatedCwd = rawCwd;
+    try {
+      validatedCwd = validateProjectPath(process.cwd());
+    } catch {
+      validatedCwd = homedir2();
+    }
   }
   return {
     session_id,
@@ -1555,11 +1566,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.15") {
+    if (installedVersion !== "0.8.16") {
       return `
 \u26A0\uFE0F  **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.15"}
+   Source:    v${"0.8.16"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1590,7 +1601,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.15"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.16"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
