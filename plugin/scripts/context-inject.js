@@ -1596,11 +1596,11 @@ function checkVersionMismatch() {
       readFileSync(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.24") {
+    if (installedVersion !== "0.8.26") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.24"}
+   Source:    v${"0.8.26"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1631,7 +1631,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.24"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.26"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

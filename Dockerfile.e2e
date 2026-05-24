@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1.7
+# E2E test image: builds context-manager from source for the HTTP MCP server
+# and test-runner containers. Provides dist/cli.js, better-sqlite3, and curl+jq.
+#
+# Used by docker-compose.e2e.yml. Not for production.
+FROM node:20-slim
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# System packages needed for:
+#   - native module compilation (build-essential, python3)
+#   - test scripts (curl, jq)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    jq \
+    build-essential \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install dependencies first for layer caching
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Copy source files
+COPY tsconfig.json ./
+COPY cli/ ./cli/
+COPY src/ ./src/
+
+# Build: compile TypeScript to dist/ and bundle the CLI entry point.
+# build:src runs tsc; build:cli runs esbuild over cli/index.ts -> dist/cli.js.
+# build:hooks is NOT needed here (the plugin system is not used in E2E mode).
+RUN npm run build:src && npm run build:cli
+
+# Copy test infrastructure so the test-runner has access to it.
+# chmod ensures scripts are executable regardless of git umask settings.
+COPY test/ ./test/
+RUN chmod +x /app/test/e2e/*.sh /app/test/e2e/*.mjs
+
+# Shared data volume mount point (DB lives here in E2E mode)
+RUN mkdir -p /data
+
+ENV CONTEXT_MANAGER_DB=/data/context.db
+
+# HTTP server port (context-server service only)
+EXPOSE 4000

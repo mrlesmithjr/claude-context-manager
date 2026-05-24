@@ -1,0 +1,67 @@
+# Docker Compose for E2E testing of the HTTP MCP cross-instance sync feature.
+#
+# Services:
+#   context-server  HTTP MCP server sharing a SQLite DB volume
+#   test-runner     Populates test data and calls the MCP HTTP API to assert results
+#
+# Usage:
+#   make test-e2e         build, run all scenarios, teardown
+#   make test-e2e-up      start services only (for manual exploration)
+#   make test-e2e-down    stop and remove containers + ephemeral volume
+#
+# Auth: CONTEXT_MANAGER_TOKEN is set to "e2e-test-token" for local testing only.
+# The DB is ephemeral (volume removed on `make test-e2e-down`).
+
+services:
+  context-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    image: context-manager-e2e:latest
+    # Use the tsc-compiled dist/server/http.js (via start-server.mjs) instead of
+    # the esbuild-bundled dist/cli.js. The bundle inlines fastify's CJS require()
+    # calls into ESM and Node.js rejects them at runtime. The tsc output uses
+    # standard import statements and Node.js handles the CJS-ESM interop natively.
+    command: node /app/test/e2e/start-server.mjs
+    environment:
+      CONTEXT_MANAGER_DB: /data/context.db
+      CONTEXT_MANAGER_TOKEN: e2e-test-token
+      CONTEXT_MANAGER_PORT: "4000"
+      CONTEXT_MANAGER_HOST: "0.0.0.0"
+      LOG_LEVEL: warn
+    volumes:
+      - e2e-db:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4000/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+    networks:
+      - e2e
+
+  test-runner:
+    image: context-manager-e2e:latest
+    command: /app/test/e2e/run-all.sh
+    environment:
+      MCP_URL: http://context-server:4000/mcp
+      MCP_TOKEN: e2e-test-token
+      CONTEXT_MANAGER_DB: /data/context.db
+      PROJECT_A: /data/projects/project-a
+      PROJECT_B: /data/projects/project-b
+    volumes:
+      - e2e-db:/data
+    depends_on:
+      context-server:
+        condition: service_healthy
+    networks:
+      - e2e
+
+networks:
+  e2e:
+    driver: bridge
+
+volumes:
+  e2e-db:
+    # Ephemeral volume, removed by `make test-e2e-down`
+    driver: local

@@ -252,7 +252,9 @@ async function proxyToolCall(
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${remoteToken}`,
-        'Accept': 'application/json',
+        // StreamableHTTPServerTransport validates that the client accepts both
+        // JSON and SSE even when the server is in JSON response mode.
+        'Accept': 'application/json, text/event-stream',
       },
       body: JSON.stringify({
         jsonrpc: '2.0',
