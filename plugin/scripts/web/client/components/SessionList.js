@@ -135,14 +135,14 @@ export class SessionList extends Component {
   handlePrevPage = () => {
     const { offset, limit } = this.state;
     const newOffset = Math.max(0, offset - limit);
-    this.setState({ offset: newOffset }, () => this.loadSessions());
+    this.setState({ offset: newOffset, expandedSession: null, sessionDetail: null }, () => this.loadSessions());
   };
 
   handleNextPage = () => {
     const { offset, limit, total } = this.state;
     const newOffset = offset + limit;
     if (newOffset < total) {
-      this.setState({ offset: newOffset }, () => this.loadSessions());
+      this.setState({ offset: newOffset, expandedSession: null, sessionDetail: null }, () => this.loadSessions());
     }
   };
 
@@ -234,32 +234,34 @@ export class SessionList extends Component {
 
     const { observations, prompts } = sessionDetail;
 
-    // Parse summary_extended beats from the session list data (not the detail API, which lacks it)
+    // Parse summary_extended beats from the session list data (not the detail API, which lacks it).
+    // Delimiter matches the write path in plugin/hooks/session-end.ts extractSummaryFromTranscript().
+    const BEAT_SEPARATOR = '\n\n---\n\n';
     const beats = session.summary_extended
-      ? session.summary_extended.split('\n\n---\n\n')
+      ? session.summary_extended.split(BEAT_SEPARATOR)
       : [];
 
     return html`
       <div class="border-t border-gray-700 bg-gray-850">
         <!-- Narrative Beats -->
-        ${beats.length > 0 && html`
+        ${beats.length > 0 ? html`
           <div class="px-4 py-3 border-b border-gray-700">
             <h4 class="text-sm font-semibold text-indigo-400 mb-2">
               Narrative Beats (${beats.length})
             </h4>
             <div class="space-y-3">
               ${beats.map((beat, i) => html`
-                <div class="text-sm text-gray-300 leading-relaxed">
-                  ${i > 0 && html`<div class="border-t border-gray-700 mb-3"></div>`}
+                <div class="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">
+                  ${i > 0 ? html`<div class="border-t border-gray-700 mb-3"></div>` : null}
                   ${beat}
                 </div>
               `)}
             </div>
           </div>
-        `}
+        ` : null}
 
         <!-- Prompts -->
-        ${prompts && prompts.length > 0 && html`
+        ${prompts && prompts.length > 0 ? html`
           <div class="px-4 py-3 border-b border-gray-700">
             <h4 class="text-sm font-semibold text-gray-400 mb-2">Prompts (${prompts.length})</h4>
             <div class="space-y-2">
@@ -275,17 +277,17 @@ export class SessionList extends Component {
                   </div>
                 `
               )}
-              ${prompts.length > 3 && html`
+              ${prompts.length > 3 ? html`
                 <div class="text-xs text-gray-500">
                   ... and ${prompts.length - 3} more
                 </div>
-              `}
+              ` : null}
             </div>
           </div>
-        `}
+        ` : null}
 
         <!-- Observations -->
-        ${observations && observations.length > 0 && html`
+        ${observations && observations.length > 0 ? html`
           <div class="px-4 py-3">
             <h4 class="text-sm font-semibold text-gray-400 mb-2">
               Observations (${observations.length})
@@ -301,17 +303,17 @@ export class SessionList extends Component {
                       </span>
                     </div>
                     <div class="text-gray-300">${obs.summary}</div>
-                    ${obs.files_touched && obs.files_touched.length > 0 && html`
+                    ${obs.files_touched && obs.files_touched.length > 0 ? html`
                       <div class="text-xs text-gray-500 mt-1 font-mono">
                         ${obs.files_touched.join(', ')}
                       </div>
-                    `}
+                    ` : null}
                   </div>
                 `
               )}
             </div>
           </div>
-        `}
+        ` : null}
       </div>
     `;
   }
