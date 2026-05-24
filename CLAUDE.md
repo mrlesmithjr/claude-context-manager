@@ -495,6 +495,7 @@ The plugin uses the Claude Code marketplace plugin system to register hooks.
 | `UserPromptSubmit` | Capture user prompts | 5s | - |
 | `PostToolUse` | Capture tool interactions | 5s | `*` |
 | `Stop` | Save summary, extract conversation insights, export to auto-memory | 10s | - |
+| `PreCompact` | Save session before /compact | 10s | - |
 
 **Installation mechanism:**
 - Hook definitions: `plugin/hooks/hooks.json`

@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 /**
- * Session End Hook (Stop)
+ * Session End Hook (Stop + PreCompact)
  *
- * Triggered when Claude Code session ends.
+ * Triggered when Claude Code session ends (Stop) or when /compact is invoked
+ * (PreCompact). Both events provide the same JSON input fields. The script
+ * is intentionally reused for both events: endSession is idempotent on
+ * repeat calls, insight deduplication guards against duplicate observations,
+ * and auto-memory export uses an exported_at guard to avoid double-export.
+ *
  * Reads the transcript file and extracts a summary to store in SQLite.
  *
  * Input (stdin JSON):
