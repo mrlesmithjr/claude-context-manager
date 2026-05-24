@@ -89,7 +89,7 @@ async function main() {
     if (observation.files_touched.length > 0) {
       let surpriseAdj = 0;
       for (const file of observation.files_touched) {
-        const count = storage.incrementFileEncounter(file, input.cwd, input.tool_name);
+        const count = await storage.incrementFileEncounter(file, input.cwd, input.tool_name);
         if (count === 1) surpriseAdj += 0.15;
         else if (count <= 3) surpriseAdj += 0.05;
         else if (count > 10) surpriseAdj -= 0.10;
@@ -111,7 +111,7 @@ async function main() {
     console.error('[context-manager] Capture error:', error);
     await writeResponse({ status: 'error' });
   } finally {
-    storage.close();
+    await storage.close();
   }
 }
 

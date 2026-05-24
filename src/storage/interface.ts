@@ -291,7 +291,7 @@ export interface ContextStorage {
   /**
    * Check if vector search (sqlite-vec) is available
    */
-  isVectorSearchEnabled(): boolean;
+  isVectorSearchEnabled(): Promise<boolean>;
 
   /**
    * Save an embedding for an observation
@@ -342,7 +342,7 @@ export interface ContextStorage {
    * Count sessions missing embeddings
    * @param project - Project path (optional)
    */
-  countUnembeddedSessions(project?: string): number;
+  countUnembeddedSessions(project?: string): Promise<number>;
 
   /**
    * Get recent sessions with their observations, grouped for display.
@@ -358,7 +358,7 @@ export interface ContextStorage {
    * Increment file encounter count and return the new count.
    * Used for surprise scoring — first encounters get boosted importance.
    */
-  incrementFileEncounter(filePath: string, project: string, toolName: string): number;
+  incrementFileEncounter(filePath: string, project: string, toolName: string): Promise<number>;
 
   /**
    * Get observations related to a given observation via inferred relationships.
@@ -366,10 +366,10 @@ export interface ContextStorage {
    * @param types - Filter by relationship types (optional)
    * @param limit - Maximum results (default: 10)
    */
-  getRelatedObservations(observationId: number, types?: RelationshipType[], limit?: number): Observation[];
+  getRelatedObservations(observationId: number, types?: RelationshipType[], limit?: number): Promise<Observation[]>;
 
   /**
    * Close storage connection
    */
-  close(): void;
+  close(): Promise<void>;
 }

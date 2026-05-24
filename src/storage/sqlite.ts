@@ -1428,8 +1428,8 @@ export class SQLiteStorage implements ContextStorage {
     }
   }
 
-  isVectorSearchEnabled(): boolean {
-    return this.vecEnabled;
+  isVectorSearchEnabled(): Promise<boolean> {
+    return Promise.resolve(this.vecEnabled);
   }
 
   /**
@@ -1810,7 +1810,7 @@ export class SQLiteStorage implements ContextStorage {
     });
   }
 
-  countUnembeddedSessions(project?: string): number {
+  countUnembeddedSessions(project?: string): Promise<number> {
     const sql = project
       ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?`
       : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete'`;
@@ -1819,7 +1819,7 @@ export class SQLiteStorage implements ContextStorage {
       ? this.db.prepare(sql).get(project + '%') as { count: number }
       : this.db.prepare(sql).get() as { count: number };
 
-    return row.count;
+    return Promise.resolve(row.count);
   }
 
   async getUnembeddedSessions(limit: number = 50, project?: string): Promise<Session[]> {
@@ -1911,7 +1911,7 @@ export class SQLiteStorage implements ContextStorage {
    * Increment file encounter count and return the new count.
    * Uses upsert for atomic increment — sub-millisecond on primary key lookup.
    */
-  incrementFileEncounter(filePath: string, project: string, toolName: string): number {
+  incrementFileEncounter(filePath: string, project: string, toolName: string): Promise<number> {
     const now = new Date().toISOString();
 
     // Upsert + RETURNING in one statement (SQLite 3.35+)
@@ -1932,7 +1932,7 @@ export class SQLiteStorage implements ContextStorage {
 
     // Return the higher-signal windowed count for scoring, but the lifetime
     // counter is still maintained in file_encounter_counts for analytics
-    return recent.cnt;
+    return Promise.resolve(recent.cnt);
   }
 
   /**
@@ -1986,7 +1986,7 @@ export class SQLiteStorage implements ContextStorage {
   /**
    * Get observations related to a given observation via inferred relationships.
    */
-  getRelatedObservations(observationId: number, types?: RelationshipType[], limit: number = 10): Observation[] {
+  getRelatedObservations(observationId: number, types?: RelationshipType[], limit: number = 10): Promise<Observation[]> {
     let sql: string;
     let params: unknown[];
 
@@ -2015,10 +2015,11 @@ export class SQLiteStorage implements ContextStorage {
     }
 
     const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-    return rows.map(row => this.mapRow(row));
+    return Promise.resolve(rows.map(row => this.mapRow(row)));
   }
 
-  close(): void {
+  close(): Promise<void> {
     this.db.close();
+    return Promise.resolve();
   }
 }

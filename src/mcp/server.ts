@@ -290,7 +290,7 @@ server.tool(
       searchMethod = 'keyword';
     } else if (strategy === 'semantic') {
       // Try semantic search; fall back to keyword if embeddings unavailable
-      if (db.isVectorSearchEnabled()) {
+      if (await db.isVectorSearchEnabled()) {
         const embeddingService = getEmbeddingService();
         const queryEmbedding = await embeddingService.embed(query);
         if (queryEmbedding) {
@@ -318,7 +318,7 @@ server.tool(
       // hybrid: run FTS5 + vector, merge with RRF
       const ftsResults = await db.search(query, project);
 
-      if (db.isVectorSearchEnabled()) {
+      if (await db.isVectorSearchEnabled()) {
         const embeddingService = getEmbeddingService();
         const queryEmbedding = await embeddingService.embed(query);
         if (queryEmbedding) {
@@ -370,7 +370,7 @@ server.tool(
       const relatedIds = new Set(observations.map(o => o.id));
       const relatedObs: Observation[] = [];
       for (const obs of topResults) {
-        const related = db.getRelatedObservations(obs.id!);
+        const related = await db.getRelatedObservations(obs.id!);
         for (const r of related) {
           if (r.id != null && !relatedIds.has(r.id)) {
             relatedIds.add(r.id);
@@ -514,7 +514,7 @@ server.tool(
     const stats = await db.getStats(project);
 
     // Gather vector search stats
-    const vecEnabled = db.isVectorSearchEnabled();
+    const vecEnabled = await db.isVectorSearchEnabled();
     const embeddingService = getEmbeddingService();
     const vectorStats: VectorStats = {
       vector_search_enabled: vecEnabled,
@@ -530,7 +530,7 @@ server.tool(
     // Session embedding stats
     let sessionEmbeddingStats: { embedded: number; pending: number } | undefined;
     if (vecEnabled) {
-      const pendingSessions = db.countUnembeddedSessions(project);
+      const pendingSessions = await db.countUnembeddedSessions(project);
       const totalCompleteSessions = await db.countSessions(project, 'complete');
       sessionEmbeddingStats = {
         embedded: totalCompleteSessions - pendingSessions,
@@ -740,7 +740,7 @@ server.tool(
   async ({ query, project, top_k, scope }) => {
     const db = await getStorage();
 
-    if (!db.isVectorSearchEnabled()) {
+    if (!await db.isVectorSearchEnabled()) {
       return {
         content: [
           {
@@ -862,7 +862,7 @@ server.tool(
   async ({ project, batch_size, limit }) => {
     const db = await getStorage();
 
-    if (!db.isVectorSearchEnabled()) {
+    if (!await db.isVectorSearchEnabled()) {
       return {
         content: [
           {
@@ -1094,7 +1094,7 @@ async function backgroundEmbed(): Promise<void> {
 
   try {
     const db = await getStorage();
-    if (!db.isVectorSearchEnabled()) return;
+    if (!await db.isVectorSearchEnabled()) return;
 
     // Check if there's anything to embed
     const pending = db.countUnembedded();
@@ -1153,7 +1153,7 @@ async function backgroundEmbed(): Promise<void> {
     }
 
     // --- Session embeddings ---
-    const pendingSessions = db.countUnembeddedSessions();
+    const pendingSessions = await db.countUnembeddedSessions();
     if (pendingSessions > 0) {
       console.error(`[context-manager-mcp] Background session embedding: ${pendingSessions} sessions pending`);
 
@@ -1206,21 +1206,25 @@ async function main() {
   backgroundEmbed();
 
   // Graceful shutdown
-  process.on('SIGINT', () => {
+  // Note: close() is synchronous under the hood (Promise.resolve wrapper).
+  // Node.js does not await Promises returned by signal handlers, but the
+  // synchronous SQLite close completes before process.exit() is reached.
+  process.on('SIGINT', async () => {
     console.error('[context-manager-mcp] Shutting down...');
-    storage?.close();
+    await storage?.close();
     process.exit(0);
   });
 
-  process.on('SIGTERM', () => {
+  process.on('SIGTERM', async () => {
     console.error('[context-manager-mcp] Shutting down...');
-    storage?.close();
+    await storage?.close();
     process.exit(0);
   });
 }
 
 main().catch((error) => {
   console.error('[context-manager-mcp] Fatal error:', error);
-  storage?.close();
+  // close() is Promise.resolve() over a synchronous call — safe to fire-and-forget before exit
+  void storage?.close();
   process.exit(1);
 });

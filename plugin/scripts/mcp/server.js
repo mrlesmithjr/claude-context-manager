@@ -31107,7 +31107,7 @@ ${storedOutput}`;
     }
   }
   isVectorSearchEnabled() {
-    return this.vecEnabled;
+    return Promise.resolve(this.vecEnabled);
   }
   /**
    * Layer 2 semantic dedup: cosine similarity check against already-embedded corpus.
@@ -31418,7 +31418,7 @@ ${storedOutput}`;
   countUnembeddedSessions(project) {
     const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete'`;
     const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
-    return row.count;
+    return Promise.resolve(row.count);
   }
   async getUnembeddedSessions(limit = 50, project) {
     let sql;
@@ -31502,7 +31502,7 @@ ${storedOutput}`;
       SELECT COUNT(*) as cnt FROM observations
       WHERE project = ? AND files_touched LIKE ? ESCAPE '\\' AND created_at > datetime('now', '-7 days')
     `).get(project, `%${filePath.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
-    return recent.cnt;
+    return Promise.resolve(recent.cnt);
   }
   /**
    * Infer and store relationships for a newly inserted observation.
@@ -31573,10 +31573,11 @@ ${storedOutput}`;
       params = [observationId, observationId, limit];
     }
     const rows = this.db.prepare(sql).all(...params);
-    return rows.map((row) => this.mapRow(row));
+    return Promise.resolve(rows.map((row) => this.mapRow(row)));
   }
   close() {
     this.db.close();
+    return Promise.resolve();
   }
 };
 
@@ -32891,7 +32892,7 @@ ${formatObservations(results)}` : `No observations found for ${label}.`;
       observations = await db.search(query, project);
       searchMethod = "keyword";
     } else if (strategy === "semantic") {
-      if (db.isVectorSearchEnabled()) {
+      if (await db.isVectorSearchEnabled()) {
         const embeddingService = getEmbeddingService();
         const queryEmbedding = await embeddingService.embed(query);
         if (queryEmbedding) {
@@ -32916,7 +32917,7 @@ ${formatObservations(results)}` : `No observations found for ${label}.`;
       }
     } else {
       const ftsResults = await db.search(query, project);
-      if (db.isVectorSearchEnabled()) {
+      if (await db.isVectorSearchEnabled()) {
         const embeddingService = getEmbeddingService();
         const queryEmbedding = await embeddingService.embed(query);
         if (queryEmbedding) {
@@ -32959,7 +32960,7 @@ ${formatObservations(observations)}`);
       const relatedIds = new Set(observations.map((o) => o.id));
       const relatedObs = [];
       for (const obs of topResults) {
-        const related = db.getRelatedObservations(obs.id);
+        const related = await db.getRelatedObservations(obs.id);
         for (const r of related) {
           if (r.id != null && !relatedIds.has(r.id)) {
             relatedIds.add(r.id);
@@ -33071,7 +33072,7 @@ server.tool(
   async ({ project }) => {
     const db = await getStorage();
     const stats = await db.getStats(project);
-    const vecEnabled = db.isVectorSearchEnabled();
+    const vecEnabled = await db.isVectorSearchEnabled();
     const embeddingService = getEmbeddingService();
     const vectorStats = {
       vector_search_enabled: vecEnabled,
@@ -33085,7 +33086,7 @@ server.tool(
     }
     let sessionEmbeddingStats;
     if (vecEnabled) {
-      const pendingSessions = db.countUnembeddedSessions(project);
+      const pendingSessions = await db.countUnembeddedSessions(project);
       const totalCompleteSessions = await db.countSessions(project, "complete");
       sessionEmbeddingStats = {
         embedded: totalCompleteSessions - pendingSessions,
@@ -33250,7 +33251,7 @@ server.tool(
   },
   async ({ query, project, top_k, scope }) => {
     const db = await getStorage();
-    if (!db.isVectorSearchEnabled()) {
+    if (!await db.isVectorSearchEnabled()) {
       return {
         content: [
           {
@@ -33340,7 +33341,7 @@ server.tool(
   },
   async ({ project, batch_size, limit }) => {
     const db = await getStorage();
-    if (!db.isVectorSearchEnabled()) {
+    if (!await db.isVectorSearchEnabled()) {
       return {
         content: [
           {
@@ -33528,7 +33529,7 @@ async function backgroundEmbed() {
   await new Promise((resolve) => setTimeout(resolve, 5e3));
   try {
     const db = await getStorage();
-    if (!db.isVectorSearchEnabled())
+    if (!await db.isVectorSearchEnabled())
       return;
     const pending = db.countUnembedded();
     if (pending === 0)
@@ -33574,7 +33575,7 @@ async function backgroundEmbed() {
     if (totalEmbedded > 0) {
       console.error(`[context-manager-mcp] Background embedding complete: ${totalEmbedded} observations embedded`);
     }
-    const pendingSessions = db.countUnembeddedSessions();
+    const pendingSessions = await db.countUnembeddedSessions();
     if (pendingSessions > 0) {
       console.error(`[context-manager-mcp] Background session embedding: ${pendingSessions} sessions pending`);
       let totalSessionEmbedded = 0;
@@ -33609,19 +33610,19 @@ async function main() {
   await server.connect(transport);
   console.error("[context-manager-mcp] MCP server connected via stdio");
   backgroundEmbed();
-  process.on("SIGINT", () => {
+  process.on("SIGINT", async () => {
     console.error("[context-manager-mcp] Shutting down...");
-    storage?.close();
+    await storage?.close();
     process.exit(0);
   });
-  process.on("SIGTERM", () => {
+  process.on("SIGTERM", async () => {
     console.error("[context-manager-mcp] Shutting down...");
-    storage?.close();
+    await storage?.close();
     process.exit(0);
   });
 }
 main().catch((error48) => {
   console.error("[context-manager-mcp] Fatal error:", error48);
-  storage?.close();
+  void storage?.close();
   process.exit(1);
 });

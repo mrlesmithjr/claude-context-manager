@@ -58,7 +58,7 @@ async function main() {
     console.error('Error:', error);
     process.exit(1);
   } finally {
-    storage.close();
+    await storage.close();
   }
 }
 

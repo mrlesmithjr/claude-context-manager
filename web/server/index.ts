@@ -89,7 +89,7 @@ Press Ctrl+C to stop
   const shutdown = async () => {
     console.log('\nShutting down...');
     await fastify.close();
-    storage.close();
+    await storage.close();
     process.exit(0);
   };
 

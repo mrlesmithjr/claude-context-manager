@@ -191,7 +191,7 @@ async function main() {
       }
     });
   } finally {
-    storage.close();
+    await storage.close();
   }
 }
 

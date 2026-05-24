@@ -528,7 +528,7 @@ async function main() {
     console.error('[context-manager] Session end error:', error);
     await writeResponse({ status: 'error' });
   } finally {
-    storage.close();
+    await storage.close();
   }
 }
 

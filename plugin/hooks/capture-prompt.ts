@@ -94,7 +94,7 @@ async function main() {
     console.error('[context-manager] Prompt capture error:', error);
     await writeResponse({ status: 'error' });
   } finally {
-    storage.close();
+    await storage.close();
   }
 }
 

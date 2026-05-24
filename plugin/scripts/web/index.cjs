@@ -44640,7 +44640,7 @@ ${storedOutput}`;
     }
   }
   isVectorSearchEnabled() {
-    return this.vecEnabled;
+    return Promise.resolve(this.vecEnabled);
   }
   /**
    * Layer 2 semantic dedup: cosine similarity check against already-embedded corpus.
@@ -44951,7 +44951,7 @@ ${storedOutput}`;
   countUnembeddedSessions(project) {
     const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete'`;
     const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
-    return row.count;
+    return Promise.resolve(row.count);
   }
   async getUnembeddedSessions(limit = 50, project) {
     let sql;
@@ -45035,7 +45035,7 @@ ${storedOutput}`;
       SELECT COUNT(*) as cnt FROM observations
       WHERE project = ? AND files_touched LIKE ? ESCAPE '\\' AND created_at > datetime('now', '-7 days')
     `).get(project, `%${filePath.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
-    return recent.cnt;
+    return Promise.resolve(recent.cnt);
   }
   /**
    * Infer and store relationships for a newly inserted observation.
@@ -45106,10 +45106,11 @@ ${storedOutput}`;
       params = [observationId, observationId, limit];
     }
     const rows = this.db.prepare(sql).all(...params);
-    return rows.map((row) => this.mapRow(row));
+    return Promise.resolve(rows.map((row) => this.mapRow(row)));
   }
   close() {
     this.db.close();
+    return Promise.resolve();
   }
 };
 
@@ -45338,7 +45339,7 @@ Press Ctrl+C to stop
   const shutdown = async () => {
     console.log("\nShutting down...");
     await fastify.close();
-    storage.close();
+    await storage.close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
