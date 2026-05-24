@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 24, 2026 (v0.8.26)
+**Last Updated**: May 24, 2026 (v0.8.27)
 
 ---
 
@@ -185,6 +185,11 @@ claude-context-manager/
 +-- src/
 |   +-- capture/
 |   |   +-- processor.ts       # Process tool outputs
+|   |   +-- remote-client.ts   # HTTP client for hook-to-server calls (remote mode)
+|   +-- server/
+|   |   +-- http.ts            # HTTP MCP server (serve command, /mcp + /capture/* + /memory)
+|   |   +-- create-server.ts   # MCP server factory
+|   |   +-- server.ts          # MCP stdio server entry
 |   +-- embedding/
 |   |   +-- enrichment.ts      # Session enrichment text builder
 |   |   +-- service.ts         # Vector embedding service (HF transformers)
@@ -220,6 +225,7 @@ claude-context-manager/
 |       +-- 02-cross-project.sh # Cross-project isolation scenario
 |       +-- 03-concurrent-writes.sh # WAL concurrent writes scenario
 |       +-- 04-stats.sh        # context_stats output scenario
+|       +-- 05-remote-capture.sh # Remote capture endpoints scenario
 +-- docs/
 |   +-- ARCHITECTURE.md        # Detailed architecture
 |   +-- ADR-001-web-ui-dashboard.md # Web UI design decision record
@@ -384,6 +390,35 @@ claude-context-manager/
 - `compactObservations` deletes rows from `vec_observations` before deleting the source observation rows. Without this, compaction leaves orphaned vector rows that accumulate and are never cleaned up.
 - `session-end.ts` error path uses `await writeResponse({ status: 'error' })` (async, consistent with all other exit paths) instead of synchronous `process.stdout.write`. The sync write could fail to flush before the process exited.
 
+### 16. Remote Capture Mode (v0.8.27)
+
+When `CONTEXT_MANAGER_URL` is set, hooks operate as thin HTTP clients that POST captures to a central context-manager server instead of writing to local SQLite. This enables a single shared database across multiple machines (e.g., desktop + laptop + dev container).
+
+**Architecture split:**
+- `src/capture/remote-client.ts` provides typed wrappers for all hook-to-server calls: `remoteCreateSession`, `remoteEndSession`, `remoteSaveObservation`, `remoteSavePrompt`, `remoteExportMemory`, `remoteGetMemory`, `remoteMcpText`.
+- `src/server/http.ts` provides the server-side counterparts. Start with: `CONTEXT_MANAGER_TOKEN=<secret> node dist/cli.js serve --port 4666`
+
+**Server endpoints** (all require Bearer auth except `/health`):
+- `POST /capture/session` — create or end a session (`action: 'create' | 'end'`)
+- `POST /capture/observation` — save one observation from a remote hook
+- `POST /capture/prompt` — save one user prompt from a remote hook
+- `POST /capture/export` — trigger server-side `exportToAutoMemory`, returns exported content
+- `GET /memory?project=...` — return current server-side memory file content (read-only, no side effects)
+- `POST /mcp` / `GET /mcp` — StreamableHTTP MCP transport (existing tools: `context_search`, `context_list`, etc.)
+
+**Hook behavior changes in remote mode:**
+- `CONTEXT_MANAGER_URL` set without `CONTEXT_MANAGER_TOKEN`: hooks abort loudly with an error message. No silent fallback to local mode.
+- `context-inject.ts`: creates session remotely, fetches `context_stats` via `remoteMcpText`, fetches `GET /memory` content for injection (capped at 3000 chars). Local SQLite is never opened.
+- `session-end.ts`: POSTs insights and session-end data to server, then triggers `POST /capture/export`.
+- `capture-tool.ts`: surprise scoring is skipped (requires DB access; no local DB in remote mode).
+- All hooks defer `SQLiteStorage` construction to local mode only — remote mode has zero local SQLite footprint.
+
+**Token requirement enforcement:**
+- Server startup fails immediately if `CONTEXT_MANAGER_TOKEN` is not set (there is no loopback exemption for the HTTP MCP server, unlike the web dashboard).
+- All endpoints use constant-time comparison (`crypto.timingSafeEqual`) to prevent timing-oracle attacks on the token.
+
+**E2E coverage:** `test/e2e/05-remote-capture.sh` (9 assertions covering session create/end, observation, prompt, export, and memory endpoints). Total: 5 scenarios, 36 assertions.
+
 ---
 
 ## Data Storage
@@ -484,6 +519,8 @@ Environment variables (optional):
 | `CONTEXT_MANAGER_PORT` | `3847` | Web dashboard port |
 | `CONTEXT_MANAGER_HOST` | `localhost` | Web dashboard host |
 | `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic/hybrid search results; FTS5 results are never filtered |
+| `CONTEXT_MANAGER_URL` | _(unset)_ | When set, hooks POST to this URL instead of writing local SQLite (remote capture mode) |
+| `CONTEXT_MANAGER_TOKEN` | _(unset)_ | Bearer token for remote capture mode and HTTP MCP server; required when `CONTEXT_MANAGER_URL` is set |
 
 ---
 
