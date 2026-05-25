@@ -4,7 +4,7 @@
  * Displays paginated list of sessions with expand/collapse detail view.
  */
 
-import { html, Component } from 'https://unpkg.com/htm/preact/standalone.module.js';
+import { html, Component } from '/vendor/preact-htm.js';
 
 /**
  * Format a date as relative time (e.g., "2 hours ago")

@@ -1,6 +1,6 @@
 {
   "name": "claude-context-manager",
-  "version": "0.8.42",
+  "version": "0.8.43",
   "description": "Persistent memory for Claude Code sessions",
   "type": "module",
   "main": "dist/cli.js",
@@ -8,8 +8,9 @@
     "context-manager": "./dist/cli.js"
   },
   "scripts": {
-    "build": "npm run build:src && npm run build:hooks && npm run build:cli && npm run build:web",
+    "build": "npm run build:tailwind && npm run build:src && npm run build:hooks && npm run build:cli && npm run build:web",
     "build:all": "npm run build",
+    "build:tailwind": "echo '@tailwind base;@tailwind components;@tailwind utilities;' | tailwindcss -i - -o web/client/vendor/tailwind.css --config web/tailwind.config.js --minify",
     "build:src": "tsc",
     "build:hooks": "node scripts/build-hooks.js",
     "build:cli": "esbuild cli/index.ts --bundle --outfile=dist/cli.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --external:sqlite-vec --external:onnxruntime-node --banner:js=\"#!/usr/bin/env node\"",
@@ -54,6 +55,7 @@
     "@types/node": "^20.10.0",
     "@vitest/coverage-v8": "^4.1.7",
     "esbuild": "^0.19.0",
+    "tailwindcss": "^3.4.19",
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
     "typescript": "^5.3.0",

@@ -4,7 +4,7 @@
  * Analytics dashboard with charts and statistics.
  */
 
-import { html, Component } from 'https://unpkg.com/htm/preact/standalone.module.js';
+import { html, Component } from '/vendor/preact-htm.js';
 
 /**
  * Format large numbers (e.g., 1234567 → "1.2M" or "1,234K")

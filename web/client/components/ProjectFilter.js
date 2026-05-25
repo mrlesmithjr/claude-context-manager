@@ -5,7 +5,7 @@
  * Shows observation count per project.
  */
 
-import { html, Component } from 'https://unpkg.com/htm/preact/standalone.module.js';
+import { html, Component } from '/vendor/preact-htm.js';
 
 /**
  * Shorten project path for display (show last 2-3 segments)

@@ -4,7 +4,7 @@
  * Preact-based SPA with hash routing, no build step required.
  */
 
-import { html, Component, render } from 'https://unpkg.com/htm/preact/standalone.module.js';
+import { html, Component, render } from '/vendor/preact-htm.js';
 import { SessionList } from './components/SessionList.js';
 import { ProjectFilter } from './components/ProjectFilter.js';
 import { ObservationSearch } from './components/ObservationSearch.js';
