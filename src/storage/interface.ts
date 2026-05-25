@@ -92,6 +92,24 @@ export interface ProjectEntry {
   last_activity: string;
 }
 
+export interface FileTouchEntry {
+  file_path: string;
+  touch_count: number;
+}
+
+export interface TagTrendEntry {
+  week: string;       // Monday of the containing week (YYYY-MM-DD)
+  tag: string;
+  count: number;
+}
+
+export interface ProjectVelocityEntry {
+  week: string;       // Monday of the containing week (YYYY-MM-DD)
+  project: string;
+  sessions: number;
+  observations: number;
+}
+
 /**
  * Abstract storage interface for context observations
  */
@@ -264,6 +282,28 @@ export interface ContextStorage {
    * @param days - Number of days to include (default: 30)
    */
   getTimeline(project?: string, days?: number): Promise<TimelineEntry[]>;
+
+  /**
+   * Top N files by touch count over the last `days` days.
+   * @param project - Project path prefix filter (optional)
+   * @param days - Lookback window in days (default: 30)
+   * @param limit - Max files to return (default: 10)
+   */
+  getFileTouchFrequency(project?: string, days?: number, limit?: number): Promise<FileTouchEntry[]>;
+
+  /**
+   * Tag frequency bucketed by ISO week for the last N weeks.
+   * @param project - Project path prefix filter (optional)
+   * @param weeks - Lookback window in weeks (default: 12)
+   */
+  getTagTrend(project?: string, weeks?: number): Promise<TagTrendEntry[]>;
+
+  /**
+   * Sessions and observations per project per week for the last N weeks.
+   * @param project - Project path prefix filter (optional)
+   * @param weeks - Lookback window in weeks (default: 12)
+   */
+  getProjectVelocity(project?: string, weeks?: number): Promise<ProjectVelocityEntry[]>;
 
   /**
    * Get list of unique projects with activity stats

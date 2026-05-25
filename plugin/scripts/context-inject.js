@@ -188,6 +188,7 @@ var SQLiteStorage = class {
     this.migrateAddSummaryExtended();
     this.migrateAddLastCheckpointAt();
     this.migrateAddSessionSource();
+    this.migrateTagsToJson();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -256,7 +257,7 @@ var SQLiteStorage = class {
       importance_score: row.importance_score ?? 0.5,
       is_compacted: row.is_compacted === 1,
       exported_at: row.exported_at || void 0,
-      tags: row.tags ? row.tags.split(",").filter(Boolean) : void 0,
+      tags: row.tags ? row.tags.startsWith("[") ? JSON.parse(row.tags) : row.tags.split(",").filter(Boolean) : void 0,
       content_hash: row.content_hash || void 0,
       created_at: row.created_at
     };
@@ -321,7 +322,7 @@ ${storedOutput}`;
         importance, importance_score, tags, content_hash, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    const tagsValue = observation.tags && observation.tags.length > 0 ? observation.tags.join(",") : null;
+    const tagsValue = observation.tags && observation.tags.length > 0 ? JSON.stringify(observation.tags) : null;
     const info = stmt.run(
       observation.session_id,
       observation.project,
@@ -856,6 +857,90 @@ ${storedOutput}`;
     const rows = stmt.all(...params);
     return rows;
   }
+  async getFileTouchFrequency(project, days = 30, limit = 10) {
+    const cutoff = /* @__PURE__ */ new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    const cutoffISO = cutoff.toISOString();
+    const base = `
+      SELECT j.value AS file_path, COUNT(*) AS touch_count
+      FROM observations
+      JOIN json_each(observations.files_touched) AS j
+        ON observations.files_touched IS NOT NULL
+        AND observations.files_touched != '[]'
+      WHERE observations.created_at >= ?
+    `;
+    let sql;
+    let params;
+    if (project) {
+      sql = base + ` AND observations.project LIKE ?
+        GROUP BY file_path ORDER BY touch_count DESC LIMIT ?`;
+      params = [cutoffISO, project + "%", limit];
+    } else {
+      sql = base + `
+        GROUP BY file_path ORDER BY touch_count DESC LIMIT ?`;
+      params = [cutoffISO, limit];
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows;
+  }
+  async getTagTrend(project, weeks = 12) {
+    const cutoff = /* @__PURE__ */ new Date();
+    cutoff.setDate(cutoff.getDate() - weeks * 7);
+    const cutoffISO = cutoff.toISOString();
+    const base = `
+      SELECT
+        DATE(observations.created_at, 'weekday 1', '-6 days') AS week,
+        j.value AS tag,
+        COUNT(*) AS count
+      FROM observations
+      JOIN json_each(observations.tags) AS j
+        ON observations.tags IS NOT NULL
+        AND observations.tags != '[]'
+      WHERE observations.created_at >= ?
+    `;
+    let sql;
+    let params;
+    if (project) {
+      sql = base + ` AND observations.project LIKE ?
+        GROUP BY week, tag ORDER BY week ASC, count DESC
+        LIMIT 500`;
+      params = [cutoffISO, project + "%"];
+    } else {
+      sql = base + `
+        GROUP BY week, tag ORDER BY week ASC, count DESC
+        LIMIT 500`;
+      params = [cutoffISO];
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows;
+  }
+  async getProjectVelocity(project, weeks = 12) {
+    const cutoff = /* @__PURE__ */ new Date();
+    cutoff.setDate(cutoff.getDate() - weeks * 7);
+    const cutoffISO = cutoff.toISOString();
+    const base = `
+      SELECT
+        DATE(created_at, 'weekday 1', '-6 days') AS week,
+        project,
+        COUNT(DISTINCT session_id) AS sessions,
+        COUNT(*) AS observations
+      FROM observations
+      WHERE created_at >= ?
+    `;
+    let sql;
+    let params;
+    if (project) {
+      sql = base + ` AND project LIKE ?
+        GROUP BY week, project ORDER BY week ASC, observations DESC`;
+      params = [cutoffISO, project + "%"];
+    } else {
+      sql = base + `
+        GROUP BY week, project ORDER BY week ASC, observations DESC`;
+      params = [cutoffISO];
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows;
+  }
   async getProjects() {
     const sql = `
       SELECT
@@ -1303,6 +1388,27 @@ ${storedOutput}`;
       CREATE INDEX IF NOT EXISTS idx_sessions_source_project
       ON sessions(source, project, started_at DESC)
     `);
+  }
+  /**
+   * Migration: convert existing comma-separated tags to JSON array format.
+   * json_each() requires a valid JSON array; rows already in JSON format (starting
+   * with '[') are skipped. Example: 'database,git' -> '["database","git"]'
+   */
+  migrateTagsToJson() {
+    const rows = this.db.prepare(
+      `SELECT id, tags FROM observations WHERE tags IS NOT NULL AND tags NOT LIKE '[%'`
+    ).all();
+    if (rows.length === 0)
+      return;
+    const update = this.db.prepare(`UPDATE observations SET tags = ? WHERE id = ?`);
+    const migrate = this.db.transaction(() => {
+      for (const row of rows) {
+        const parts = row.tags.split(",").map((t) => t.trim()).filter(Boolean);
+        update.run(JSON.stringify(parts), row.id);
+      }
+    });
+    migrate();
+    console.error(`[context-manager] Migrated ${rows.length} observations to JSON tags format`);
   }
   async getOrCreateManualSession(project) {
     const existing = this.db.prepare(`
@@ -1905,11 +2011,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.50") {
+    if (installedVersion !== "0.8.51") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.50"}
+   Source:    v${"0.8.51"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1964,7 +2070,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.50"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.51"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats.");
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -1997,7 +2103,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.50"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.51"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

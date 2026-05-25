@@ -25,6 +25,9 @@ import type {
   UserPrompt,
   TimelineEntry,
   ProjectEntry,
+  FileTouchEntry,
+  TagTrendEntry,
+  ProjectVelocityEntry,
 } from './interface.js';
 
 const DEFAULT_DB_PATH = path.join(homedir(), '.claude-context', 'context.db');
@@ -250,6 +253,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add source column to sessions for manual vs hook sessions
     this.migrateAddSessionSource();
+
+    // Migration: convert comma-separated tags to JSON array format for json_each compatibility
+    this.migrateTagsToJson();
   }
 
   /**
@@ -329,7 +335,11 @@ export class SQLiteStorage implements ContextStorage {
       importance_score: (row.importance_score as number) ?? 0.5,
       is_compacted: (row.is_compacted as number) === 1,
       exported_at: (row.exported_at as string) || undefined,
-      tags: row.tags ? (row.tags as string).split(',').filter(Boolean) : undefined,
+      tags: row.tags ? (
+        (row.tags as string).startsWith('[')
+          ? (JSON.parse(row.tags as string) as string[])
+          : (row.tags as string).split(',').filter(Boolean)
+      ) : undefined,
       content_hash: (row.content_hash as string) || undefined,
       created_at: row.created_at as string,
     };
@@ -426,7 +436,7 @@ export class SQLiteStorage implements ContextStorage {
     `);
 
     const tagsValue = observation.tags && observation.tags.length > 0
-      ? observation.tags.join(',')
+      ? JSON.stringify(observation.tags)
       : null;
 
     const info = stmt.run(
@@ -1210,6 +1220,112 @@ export class SQLiteStorage implements ContextStorage {
     return rows;
   }
 
+  async getFileTouchFrequency(project?: string, days: number = 30, limit: number = 10): Promise<FileTouchEntry[]> {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    const cutoffISO = cutoff.toISOString();
+
+    // json_each expands the JSON array in files_touched into individual rows.
+    // Explicit JOIN form is unambiguous and avoids implicit cross join order dependency.
+    const base = `
+      SELECT j.value AS file_path, COUNT(*) AS touch_count
+      FROM observations
+      JOIN json_each(observations.files_touched) AS j
+        ON observations.files_touched IS NOT NULL
+        AND observations.files_touched != '[]'
+      WHERE observations.created_at >= ?
+    `;
+
+    let sql: string;
+    let params: unknown[];
+
+    if (project) {
+      sql = base + ` AND observations.project LIKE ?
+        GROUP BY file_path ORDER BY touch_count DESC LIMIT ?`;
+      params = [cutoffISO, project + '%', limit];
+    } else {
+      sql = base + `
+        GROUP BY file_path ORDER BY touch_count DESC LIMIT ?`;
+      params = [cutoffISO, limit];
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as Array<{ file_path: string; touch_count: number }>;
+    return rows;
+  }
+
+  async getTagTrend(project?: string, weeks: number = 12): Promise<TagTrendEntry[]> {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - weeks * 7);
+    const cutoffISO = cutoff.toISOString();
+
+    const base = `
+      SELECT
+        DATE(observations.created_at, 'weekday 1', '-6 days') AS week,
+        j.value AS tag,
+        COUNT(*) AS count
+      FROM observations
+      JOIN json_each(observations.tags) AS j
+        ON observations.tags IS NOT NULL
+        AND observations.tags != '[]'
+      WHERE observations.created_at >= ?
+    `;
+
+    let sql: string;
+    let params: unknown[];
+
+    if (project) {
+      sql = base + ` AND observations.project LIKE ?
+        GROUP BY week, tag ORDER BY week ASC, count DESC
+        LIMIT 500`;
+      params = [cutoffISO, project + '%'];
+    } else {
+      sql = base + `
+        GROUP BY week, tag ORDER BY week ASC, count DESC
+        LIMIT 500`;
+      params = [cutoffISO];
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as Array<{ week: string; tag: string; count: number }>;
+    return rows;
+  }
+
+  async getProjectVelocity(project?: string, weeks: number = 12): Promise<ProjectVelocityEntry[]> {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - weeks * 7);
+    const cutoffISO = cutoff.toISOString();
+
+    const base = `
+      SELECT
+        DATE(created_at, 'weekday 1', '-6 days') AS week,
+        project,
+        COUNT(DISTINCT session_id) AS sessions,
+        COUNT(*) AS observations
+      FROM observations
+      WHERE created_at >= ?
+    `;
+
+    let sql: string;
+    let params: unknown[];
+
+    if (project) {
+      sql = base + ` AND project LIKE ?
+        GROUP BY week, project ORDER BY week ASC, observations DESC`;
+      params = [cutoffISO, project + '%'];
+    } else {
+      sql = base + `
+        GROUP BY week, project ORDER BY week ASC, observations DESC`;
+      params = [cutoffISO];
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as Array<{
+      week: string;
+      project: string;
+      sessions: number;
+      observations: number;
+    }>;
+    return rows;
+  }
+
   async getProjects(): Promise<ProjectEntry[]> {
     const sql = `
       SELECT
@@ -1793,6 +1909,30 @@ export class SQLiteStorage implements ContextStorage {
       CREATE INDEX IF NOT EXISTS idx_sessions_source_project
       ON sessions(source, project, started_at DESC)
     `);
+  }
+
+  /**
+   * Migration: convert existing comma-separated tags to JSON array format.
+   * json_each() requires a valid JSON array; rows already in JSON format (starting
+   * with '[') are skipped. Example: 'database,git' -> '["database","git"]'
+   */
+  private migrateTagsToJson(): void {
+    const rows = this.db.prepare(
+      `SELECT id, tags FROM observations WHERE tags IS NOT NULL AND tags NOT LIKE '[%'`
+    ).all() as Array<{ id: number; tags: string }>;
+
+    if (rows.length === 0) return;
+
+    const update = this.db.prepare(`UPDATE observations SET tags = ? WHERE id = ?`);
+    const migrate = this.db.transaction(() => {
+      for (const row of rows) {
+        const parts = row.tags.split(',').map(t => t.trim()).filter(Boolean);
+        update.run(JSON.stringify(parts), row.id);
+      }
+    });
+    migrate();
+
+    console.error(`[context-manager] Migrated ${rows.length} observations to JSON tags format`);
   }
 
   async getOrCreateManualSession(project: string): Promise<string> {
