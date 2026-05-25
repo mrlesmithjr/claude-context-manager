@@ -35,6 +35,7 @@ services:
       CONTEXT_MANAGER_PORT: "4000"
       # 0.0.0.0 binds to all container interfaces (host access via 127.0.0.1:4000 port mapping).
       CONTEXT_MANAGER_HOST: "0.0.0.0"
+      CONTEXT_MANAGER_EMBED_INTERVAL: "10"
       LOG_LEVEL: info
     volumes:
       # Docker-managed named volume: SQLite WAL locking works correctly.

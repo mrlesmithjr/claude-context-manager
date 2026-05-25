@@ -29,116 +29,143 @@ import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
 
 /**
  * Embed observations and sessions in the background after the HTTP server starts.
- * Runs in batches with a delay between each to avoid hogging resources.
+ * Runs continuously: after each pass completes, waits CONTEXT_MANAGER_EMBED_INTERVAL
+ * minutes before checking again. Silently skips passes when nothing is pending.
  * Silently skips if dependencies aren't installed yet (first context_embed
- * call will trigger auto-install and future startups will embed automatically).
+ * call will trigger auto-install and future passes will embed automatically).
  */
 async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
   // Short delay to let the server finish startup
   await new Promise(resolve => setTimeout(resolve, 5000));
 
-  try {
-    if (!await storage.isVectorSearchEnabled()) return;
+  const rawInterval = parseInt(process.env.CONTEXT_MANAGER_EMBED_INTERVAL || '10', 10);
+  const intervalMinutes = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 10;
+  const intervalMs = intervalMinutes * 60 * 1000;
+  console.error(`[context-manager-http] Background embedding loop: interval ${intervalMinutes}m`);
 
-    // Check if there's anything to embed
-    const pending = storage.countUnembedded();
-    if (pending === 0) return;
-
-    const embeddingService = getEmbeddingService();
-
-    // Only proceed if transformers is already installed.
-    // Don't auto-install in background. That's a first-run experience
-    // that should happen via explicit context_embed call.
-    const { status } = embeddingService.getStatus();
-    if (status === 'unavailable') return;
-
-    const loaded = await embeddingService.load();
-    if (!loaded) return;
-
-    console.error(`[context-manager-http] Background embedding: ${pending} observations pending`);
-
-    const BATCH_SIZE = 50;
-    const BATCH_DELAY_MS = 500; // pause between batches to stay gentle
-    let totalEmbedded = 0;
-
-    while (true) {
-      const batch = await storage.getUnembeddedObservations(BATCH_SIZE);
-      if (batch.length === 0) break;
-
-      const texts = batch.map(obs => {
-        const parts = [obs.summary];
-        if (obs.files_touched.length > 0) {
-          parts.push(obs.files_touched.join(', '));
-        }
-        return parts.join(' | ');
-      });
-
-      const embeddings = await embeddingService.embedBatch(texts);
-      if (!embeddings) break;
-
-      for (let j = 0; j < batch.length; j++) {
-        const obs = batch[j];
-        const emb = embeddings[j];
-        if (!obs?.id || !emb) continue;
-        try {
-          await storage.saveEmbedding(obs.id, emb);
-          totalEmbedded++;
-        } catch {
-          // skip individual failures
-        }
+  while (true) {
+    try {
+      if (!await storage.isVectorSearchEnabled()) {
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        continue;
       }
 
-      // Pause between batches
-      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
-    }
+      // Check if there's anything to embed
+      const pending = storage.countUnembedded();
+      const pendingSessions = await storage.countUnembeddedSessions();
 
-    if (totalEmbedded > 0) {
-      console.error(`[context-manager-http] Background embedding complete: ${totalEmbedded} observations embedded`);
-    }
+      if (pending === 0 && pendingSessions === 0) {
+        // Nothing to do — sleep and retry next interval
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        continue;
+      }
 
-    // --- Session embeddings ---
-    const pendingSessions = await storage.countUnembeddedSessions();
-    if (pendingSessions > 0) {
-      console.error(`[context-manager-http] Background session embedding: ${pendingSessions} sessions pending`);
+      const embeddingService = getEmbeddingService();
 
-      let totalSessionEmbedded = 0;
+      // Only proceed if transformers is already installed.
+      // Don't auto-install in background. That's a first-run experience
+      // that should happen via explicit context_embed call.
+      const { status } = embeddingService.getStatus();
+      if (status === 'unavailable') {
+        console.error('[context-manager-http] Background embedding: transformers unavailable, skipping. Run context_embed to trigger install.');
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        continue;
+      }
+
+      const loaded = await embeddingService.load();
+      if (!loaded) {
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        continue;
+      }
+
+      if (pending > 0) {
+        console.error(`[context-manager-http] Background embedding: ${pending} observations pending`);
+      }
+
+      const BATCH_SIZE = 50;
+      const BATCH_DELAY_MS = 500; // pause between batches to stay gentle
+      let totalEmbedded = 0;
 
       while (true) {
-        const sessionBatch = await storage.getUnembeddedSessions(50);
-        if (sessionBatch.length === 0) break;
+        const batch = await storage.getUnembeddedObservations(BATCH_SIZE);
+        if (batch.length === 0) break;
 
-        for (const session of sessionBatch) {
+        const texts = batch.map(obs => {
+          const parts = [obs.summary];
+          if (obs.files_touched.length > 0) {
+            parts.push(obs.files_touched.join(', '));
+          }
+          return parts.join(' | ');
+        });
+
+        const embeddings = await embeddingService.embedBatch(texts);
+        if (!embeddings) break;
+
+        for (let j = 0; j < batch.length; j++) {
+          const obs = batch[j];
+          const emb = embeddings[j];
+          if (!obs?.id || !emb) continue;
           try {
-            const prompts = await storage.getSessionPrompts(session.id);
-            const observations = await storage.getSessionObservations(session.id);
-
-            const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
-            if (enrichedText.length < 20) continue;
-
-            const sessionEmb = await embeddingService.embed(enrichedText);
-            if (sessionEmb) {
-              await storage.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
-              totalSessionEmbedded++;
-            }
+            await storage.saveEmbedding(obs.id, emb);
+            totalEmbedded++;
           } catch {
             // skip individual failures
           }
-
-          // Brief pause between sessions
-          await new Promise(resolve => setTimeout(resolve, 100));
         }
 
-        // Pause between batches to stay gentle on resources
+        // Pause between batches
         await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
       }
 
-      if (totalSessionEmbedded > 0) {
-        console.error(`[context-manager-http] Background session embedding complete: ${totalSessionEmbedded} sessions embedded`);
+      if (totalEmbedded > 0) {
+        console.error(`[context-manager-http] Background embedding complete: ${totalEmbedded} observations embedded`);
       }
+
+      // --- Session embeddings ---
+      if (pendingSessions > 0) {
+        console.error(`[context-manager-http] Background session embedding: ${pendingSessions} sessions pending`);
+
+        let totalSessionEmbedded = 0;
+
+        while (true) {
+          const sessionBatch = await storage.getUnembeddedSessions(50);
+          if (sessionBatch.length === 0) break;
+
+          for (const session of sessionBatch) {
+            try {
+              const prompts = await storage.getSessionPrompts(session.id);
+              const observations = await storage.getSessionObservations(session.id);
+
+              const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+              if (enrichedText.length < 20) continue;
+
+              const sessionEmb = await embeddingService.embed(enrichedText);
+              if (sessionEmb) {
+                await storage.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
+                totalSessionEmbedded++;
+              }
+            } catch {
+              // skip individual failures
+            }
+
+            // Brief pause between sessions
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+
+          // Pause between batches to stay gentle on resources
+          await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+        }
+
+        if (totalSessionEmbedded > 0) {
+          console.error(`[context-manager-http] Background session embedding complete: ${totalSessionEmbedded} sessions embedded`);
+        }
+      }
+    } catch (err) {
+      console.error('[context-manager-http] Background embedding error:', err);
     }
-  } catch (err) {
-    // Background task must never crash the server
-    console.error('[context-manager-http] Background embedding error:', err);
+
+    // Wait before next pass (success, empty, or error)
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
 }
 
