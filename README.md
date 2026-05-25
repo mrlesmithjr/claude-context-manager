@@ -78,6 +78,7 @@ Environment variables (all optional):
 | `CONTEXT_MANAGER_URL` | _(unset)_ | When set, hooks POST captures to this URL instead of local SQLite (proxy mode). All hooks and the stdio MCP server read this from `~/.claude-context/.env` automatically; no shell export needed. |
 | `CONTEXT_MANAGER_TOKEN` | _(unset)_ | Bearer token for the HTTP server and proxy mode; required when `CONTEXT_MANAGER_URL` is set |
 | `CONTEXT_MANAGER_CHECKPOINT_INTERVAL` | `30` | Minutes between periodic checkpoint exports during a live session |
+| `CONTEXT_MANAGER_EMBED_INTERVAL` | `10` | Minutes between background embedding passes in HTTP server mode; invalid values fall back to 10 |
 
 Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server load this file at startup. No shell configuration, `.zshrc` exports, or launchctl overrides are needed.
 
@@ -119,13 +120,13 @@ make server-quickstart
 
 This one command generates a bearer token, writes `~/.claude-context/.env`, and installs the server as a launchd agent that starts automatically on login. Then restart Claude Code. Hooks read `.env` automatically, no shell configuration needed.
 
-**Linux**
+**Linux / Docker**
 
 ```bash
 make server-init && make server-start
 ```
 
-Then restart Claude Code.
+This starts two services: the MCP capture server on port 4000 and the web dashboard on port 3847. The web UI includes an Import tab for uploading a `context.db` file to migrate from local SQLite. Then restart Claude Code.
 
 **Verify**
 
@@ -147,7 +148,7 @@ make server-native-status   # macOS
 | `make server-launchd-install` | Install as launchd agent (macOS persistent startup) |
 | `make server-launchd-uninstall` | Remove launchd agent |
 | `make server-launchd-status` | Check launchd agent status |
-| `make server-start` | Start server via Docker (Linux only) |
+| `make server-start` | Start both Docker services: MCP server (port 4000) and web UI (port 3847) |
 | `make server-stop` | Stop Docker server |
 | `make server-logs` | Tail Docker server logs |
 | `make server-status` | Health check for Docker server |
@@ -163,6 +164,7 @@ make server-native-status   # macOS
 | `POST /capture/export` | Trigger server-side auto-memory export |
 | `GET /memory?project=...` | Return current memory file content |
 | `POST /mcp`, `GET /mcp` | StreamableHTTP MCP transport |
+| `POST /api/import` | Import a `context.db` file into the active database (web server; multipart upload) |
 
 Start the server directly:
 
