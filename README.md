@@ -51,7 +51,7 @@ To enable semantic (vector) search, run `context_embed` once. It auto-installs d
 | Auto-memory export | Observations scoring >= 0.65 exported to `context-manager-activity.md` at session end |
 | Semantic search | Session-level vector embeddings via sqlite-vec; enriched text from prompts and actions |
 | Auto-compaction | Old observations compressed into summaries during vacuum (`Read x4: file1, file2, ...`) |
-| Observation relationships | Observations linked by shared file (`same_file`) and sequence (`followed_by`) |
+| Observation relationships | Observations linked by shared file (`same_file`), sequence (`followed_by`), and cross-project shared file (`cross_project_same_file`); `context_search` shows cross-project results in a separate section when they exist |
 | Hierarchical visibility | Parent directories see all child project contexts via prefix matching |
 | Memory audit | Detect orphaned memory directories when launch points change |
 | Memory consolidation | Migrate orphaned memories to parent with dedup and index rebuild |

@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 25, 2026 (v0.8.38)
+**Last Updated**: May 25, 2026 (v0.8.39)
 
 ---
 
@@ -341,14 +341,18 @@ claude-context-manager/
   - Lifetime counter still maintained in `file_encounter_counts` for analytics
 - Novel files surface above routine reads of the same files
 
-### 11. Observation Relationships (v0.7.0)
+### 11. Observation Relationships (v0.7.0, extended v0.8.39)
 - `observation_relationships` table links observations passively at capture time
-- Two relationship types inferred automatically:
+- Three relationship types inferred automatically:
   - `followed_by` — sequential observations in the same session
   - `same_file` — observations touching the same file (within 24h, same project)
+  - `cross_project_same_file` (v0.8.39) — same file path touched in a different project within 24h; inferred as a third step in `inferRelationships()` after the existing intra-project `same_file` step
 - `ON DELETE CASCADE` ensures cleanup during compaction/vacuum
 - `getRelatedObservations()` enables bidirectional graph traversal
-- `context_search` enriches top results with related observations
+- `context_search` enriches top results with related observations in two sections:
+  - "Related observations" — intra-project `same_file` and `followed_by` results
+  - "Cross-project related observations" — `cross_project_same_file` results; section is omitted when empty
+  - Both sections share a dedup set so no observation appears twice
 
 ### 12. Retrieval Routing (v0.7.0)
 - `context_search` auto-classifies queries and picks the optimal search strategy:
