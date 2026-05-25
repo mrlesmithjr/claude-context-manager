@@ -115,6 +115,7 @@ flowchart LR
         UP["UserPromptSubmit\ncapture prompt"]
         PT["PostToolUse\nsummarize + score + tag"]
         SE["Stop\nnarrative + insights + export"]
+        PC["PreCompact\nsave session before /compact"]
     end
 
     subgraph db["SQLite ~/.claude-context/context.db"]
@@ -133,7 +134,7 @@ flowchart LR
         CE["context_embed"]
     end
 
-    SI & UP & PT & SE --> db
+    SI & UP & PT & SE & PC --> db
     PT --> OBS
     PT --> FEC
     PT --> REL
@@ -206,9 +207,11 @@ claude-context-manager/
 |   |   +-- interface.ts       # Storage interface definition
 |   |   +-- sqlite.ts          # SQLite implementation + sqlite-vec
 |   +-- utils/
+|       +-- classify.ts        # Query classification for retrieval routing (keyword/semantic/hybrid)
 |       +-- hash.ts            # sha256() for exact dedup, l2DistanceToCosine() for vector search
 |       +-- sanitize.ts        # Privacy tag stripping
 |       +-- validation.ts      # Input validation
+|       +-- version.ts         # Version bump detection (isVersionBump); shared by processor and memory
 +-- web/
 |   +-- client/
 |   |   +-- index.html         # Web UI dashboard
