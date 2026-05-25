@@ -76,6 +76,7 @@ Environment variables (all optional):
 | `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic and hybrid search results; FTS5 results are never filtered |
 | `CONTEXT_MANAGER_URL` | _(unset)_ | When set, hooks POST captures to this URL instead of local SQLite (proxy mode). All hooks and the stdio MCP server read this from `~/.claude-context/.env` automatically; no shell export needed. |
 | `CONTEXT_MANAGER_TOKEN` | _(unset)_ | Bearer token for the HTTP server and proxy mode; required when `CONTEXT_MANAGER_URL` is set |
+| `CONTEXT_MANAGER_CHECKPOINT_INTERVAL` | `30` | Minutes between periodic checkpoint exports during a live session |
 
 Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server load this file at startup. No shell configuration, `.zshrc` exports, or launchctl overrides are needed.
 

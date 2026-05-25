@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 25, 2026 (v0.8.32)
+**Last Updated**: May 25, 2026 (v0.8.34)
 
 ---
 
@@ -451,6 +451,27 @@ Attempting to mount `~/.claude-context/` as a Docker bind mount on macOS causes:
 
 **For Linux:** Docker bind mounts use a direct filesystem passthrough without a VM layer, so SQLite WAL locking works correctly. The existing `make server-start` (docker-compose.server.yml) is the correct approach on Linux.
 
+### 18. Periodic Checkpoint Export (v0.8.34)
+
+**Problem:** The Stop hook runs at session end, but sessions can terminate abnormally: a crash, a `/compact` mid-session, or a long-running session where the user wants observations persisted before the session is over. In all three cases, auto-memory export never fires and the session's high-importance observations are not reflected in the memory file until the next clean Stop.
+
+**What it does:** The `UserPromptSubmit` hook (capture-prompt.ts) now runs a lightweight checkpoint before acknowledging each prompt. The checkpoint is gated by an elapsed-time check so it only executes when enough time has passed since the last checkpoint (or session start). Each checkpoint:
+
+1. Calls `exportToAutoMemory` to write high-importance observations (score >= 0.65) to `~/.claude/projects/.../memory/context-manager-activity.md`.
+2. Scores all assistant messages seen so far in the transcript and writes the best-scoring one as a draft summary to `sessions.summary` via `updateSessionDraftSummary`.
+3. Records the current timestamp in `sessions.last_checkpoint_at` via `updateSessionCheckpoint`.
+4. Skips entirely if the session has no observations yet (nothing to export).
+
+**3-second wall-clock guard:** The checkpoint races against a 3-second timeout. If the export takes longer (e.g., model loading on first run), the prompt is acknowledged immediately and the checkpoint result is discarded. The UserPromptSubmit hook has a 5-second budget; the guard keeps checkpoint overhead well within that limit.
+
+**Configurable interval:** `CONTEXT_MANAGER_CHECKPOINT_INTERVAL` (default: 30 minutes). Set lower in development, higher if you prefer less I/O. The interval is read from `process.env` after `loadDotEnv()` runs, so it can be placed in `~/.claude-context/.env`.
+
+**Schema change:** `last_checkpoint_at INTEGER` column added to the `sessions` table via the existing migration system. NULL means no checkpoint has run; `started_at` is used as the baseline in that case.
+
+**Remote mode trade-off:** In remote mode there is no local DB to query for `last_checkpoint_at` or the observation count, so the elapsed-time check is skipped and `remoteExportMemory` is called on every prompt. The server-side export pipeline has its own dedup logic (only writes when there is new content), so the extra calls are low-cost.
+
+**Shared utility extraction:** `scoreForNarrative`, `pickBestNarrative`, and `extractTextFromTranscriptLine` were extracted from `session-end.ts` into `src/utils/transcript.ts` so both the Stop hook and the checkpoint can share the same narrative-selection logic.
+
 ---
 
 ## Data Storage
@@ -572,6 +593,7 @@ Environment variables (optional):
 | `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic/hybrid search results; FTS5 results are never filtered |
 | `CONTEXT_MANAGER_URL` | _(unset)_ | When set, hooks POST to this URL instead of writing local SQLite (remote capture mode). All hooks and the stdio MCP server read this from `~/.claude-context/.env` automatically; no shell export needed. |
 | `CONTEXT_MANAGER_TOKEN` | _(unset)_ | Bearer token for remote capture mode and HTTP MCP server; required when `CONTEXT_MANAGER_URL` is set |
+| `CONTEXT_MANAGER_CHECKPOINT_INTERVAL` | `30` | Minutes between periodic checkpoint exports during a live session (see Design Decision #18) |
 
 ---
 
