@@ -461,17 +461,30 @@ export function createContextManagerServer(
         const topResults = observations.slice(0, 3).filter(o => o.id != null);
         const relatedIds = new Set(observations.map(o => o.id));
         const relatedObs: Observation[] = [];
+        const crossProjectObs: Observation[] = [];
         for (const obs of topResults) {
-          const related = await db.getRelatedObservations(obs.id!);
+          // Intra-project relations (same_file, followed_by)
+          const related = await db.getRelatedObservations(obs.id!, ['same_file', 'followed_by']);
           for (const r of related) {
             if (r.id != null && !relatedIds.has(r.id)) {
               relatedIds.add(r.id);
               relatedObs.push(r);
             }
           }
+          // Cross-project relations (cross_project_same_file)
+          const crossRelated = await db.getRelatedObservations(obs.id!, ['cross_project_same_file']);
+          for (const r of crossRelated) {
+            if (r.id != null && !relatedIds.has(r.id)) {
+              relatedIds.add(r.id);
+              crossProjectObs.push(r);
+            }
+          }
         }
         if (relatedObs.length > 0) {
           sections.push(`Related observations:\n\n${formatObservations(relatedObs.slice(0, 10))}`);
+        }
+        if (crossProjectObs.length > 0) {
+          sections.push(`Cross-project related observations (same file, different project):\n\n${formatObservations(crossProjectObs.slice(0, 10))}`);
         }
       }
 

@@ -6,7 +6,7 @@
  */
 
 export type ImportanceLevel = 'high' | 'medium' | 'low';
-export type RelationshipType = 'same_file' | 'followed_by';
+export type RelationshipType = 'same_file' | 'followed_by' | 'cross_project_same_file';
 export type ObservationTag =
   | 'auth'
   | 'database'

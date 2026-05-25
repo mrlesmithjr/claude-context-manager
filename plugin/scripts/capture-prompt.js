@@ -1507,6 +1507,23 @@ ${storedOutput}`;
           `).run(match.id, observationId, now);
         }
       }
+      for (const file of observation.files_touched) {
+        const likePattern = `%${file.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+        const crossMatches = this.db.prepare(`
+          SELECT id FROM observations
+          WHERE project != ? AND id != ?
+            AND files_touched LIKE ? ESCAPE '\\'
+            AND created_at > ?
+          ORDER BY created_at DESC
+          LIMIT 5
+        `).all(observation.project, observationId, likePattern, cutoff);
+        for (const match of crossMatches) {
+          this.db.prepare(`
+            INSERT OR IGNORE INTO observation_relationships (source_id, target_id, relationship, created_at)
+            VALUES (?, ?, 'cross_project_same_file', ?)
+          `).run(match.id, observationId, now);
+        }
+      }
     }
   }
   /**

@@ -1507,6 +1507,23 @@ ${storedOutput}`;
           `).run(match.id, observationId, now);
         }
       }
+      for (const file of observation.files_touched) {
+        const likePattern = `%${file.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+        const crossMatches = this.db.prepare(`
+          SELECT id FROM observations
+          WHERE project != ? AND id != ?
+            AND files_touched LIKE ? ESCAPE '\\'
+            AND created_at > ?
+          ORDER BY created_at DESC
+          LIMIT 5
+        `).all(observation.project, observationId, likePattern, cutoff);
+        for (const match of crossMatches) {
+          this.db.prepare(`
+            INSERT OR IGNORE INTO observation_relationships (source_id, target_id, relationship, created_at)
+            VALUES (?, ?, 'cross_project_same_file', ?)
+          `).run(match.id, observationId, now);
+        }
+      }
     }
   }
   /**
@@ -1806,11 +1823,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.38") {
+    if (installedVersion !== "0.8.39") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.38"}
+   Source:    v${"0.8.39"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1865,7 +1882,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.38"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.39"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats.");
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -1898,7 +1915,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.38"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.39"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

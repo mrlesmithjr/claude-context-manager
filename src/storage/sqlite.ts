@@ -2054,6 +2054,28 @@ export class SQLiteStorage implements ContextStorage {
           `).run(match.id, observationId, now);
         }
       }
+
+      // 3. cross_project_same_file: link observations touching the same file across
+      //    different projects within a 24h window. Mirror of same_file but uses
+      //    project != ? instead of project = ?.
+      for (const file of observation.files_touched) {
+        const likePattern = `%${file.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
+        const crossMatches = this.db.prepare(`
+          SELECT id FROM observations
+          WHERE project != ? AND id != ?
+            AND files_touched LIKE ? ESCAPE '\\'
+            AND created_at > ?
+          ORDER BY created_at DESC
+          LIMIT 5
+        `).all(observation.project, observationId, likePattern, cutoff) as Array<{ id: number }>;
+
+        for (const match of crossMatches) {
+          this.db.prepare(`
+            INSERT OR IGNORE INTO observation_relationships (source_id, target_id, relationship, created_at)
+            VALUES (?, ?, 'cross_project_same_file', ?)
+          `).run(match.id, observationId, now);
+        }
+      }
     }
   }
 

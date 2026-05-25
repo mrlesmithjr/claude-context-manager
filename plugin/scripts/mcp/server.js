@@ -23682,6 +23682,23 @@ ${storedOutput}`;
           `).run(match.id, observationId, now);
         }
       }
+      for (const file2 of observation.files_touched) {
+        const likePattern = `%${file2.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+        const crossMatches = this.db.prepare(`
+          SELECT id FROM observations
+          WHERE project != ? AND id != ?
+            AND files_touched LIKE ? ESCAPE '\\'
+            AND created_at > ?
+          ORDER BY created_at DESC
+          LIMIT 5
+        `).all(observation.project, observationId, likePattern, cutoff);
+        for (const match of crossMatches) {
+          this.db.prepare(`
+            INSERT OR IGNORE INTO observation_relationships (source_id, target_id, relationship, created_at)
+            VALUES (?, ?, 'cross_project_same_file', ?)
+          `).run(match.id, observationId, now);
+        }
+      }
     }
   }
   /**
@@ -33034,7 +33051,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.38" : "unknown"
+      version: true ? "0.8.39" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -33147,12 +33164,20 @@ ${formatObservations(observations)}`);
         const topResults = observations.slice(0, 3).filter((o) => o.id != null);
         const relatedIds = new Set(observations.map((o) => o.id));
         const relatedObs = [];
+        const crossProjectObs = [];
         for (const obs of topResults) {
-          const related = await db.getRelatedObservations(obs.id);
+          const related = await db.getRelatedObservations(obs.id, ["same_file", "followed_by"]);
           for (const r of related) {
             if (r.id != null && !relatedIds.has(r.id)) {
               relatedIds.add(r.id);
               relatedObs.push(r);
+            }
+          }
+          const crossRelated = await db.getRelatedObservations(obs.id, ["cross_project_same_file"]);
+          for (const r of crossRelated) {
+            if (r.id != null && !relatedIds.has(r.id)) {
+              relatedIds.add(r.id);
+              crossProjectObs.push(r);
             }
           }
         }
@@ -33160,6 +33185,11 @@ ${formatObservations(observations)}`);
           sections.push(`Related observations:
 
 ${formatObservations(relatedObs.slice(0, 10))}`);
+        }
+        if (crossProjectObs.length > 0) {
+          sections.push(`Cross-project related observations (same file, different project):
+
+${formatObservations(crossProjectObs.slice(0, 10))}`);
         }
       }
       if (prompts.length > 0) {
