@@ -148,10 +148,13 @@ make server-native-status   # macOS
 | `make server-launchd-install` | Install as launchd agent (macOS persistent startup) |
 | `make server-launchd-uninstall` | Remove launchd agent |
 | `make server-launchd-status` | Check launchd agent status |
-| `make server-start` | Start both Docker services: MCP server (port 4000) and web UI (port 3847) |
+| `make server-start` | Start both Docker services: MCP server (port 4000) and web UI (port 3847); pre-flight check exits with an actionable error if ports are occupied by the native launchd service |
 | `make server-stop` | Stop Docker server |
 | `make server-logs` | Tail Docker server logs |
-| `make server-status` | Health check for Docker server |
+| `make server-status` | Health check; warns if both native and Docker services are running simultaneously |
+| `make server-stop-native` | Unload launchd service without removing the plist (plist preserved for future `make server-launchd-install`); falls back to server.pid kill for one-shot nohup processes |
+| `make switch-to-docker` | Stop native launchd service, wait for ports to clear, then start Docker stack |
+| `make switch-to-native` | Stop Docker stack, wait for ports to clear, then install launchd service |
 
 **HTTP server endpoints** (all require Bearer auth except `/health`):
 
