@@ -33,6 +33,7 @@ services:
       CONTEXT_MANAGER_DB: /data/context.db
       CONTEXT_MANAGER_TOKEN: ${CONTEXT_MANAGER_TOKEN}
       CONTEXT_MANAGER_PORT: "4000"
+      # 0.0.0.0 binds to all container interfaces (host access via 127.0.0.1:4000 port mapping).
       CONTEXT_MANAGER_HOST: "0.0.0.0"
       LOG_LEVEL: info
     volumes:
@@ -47,24 +48,35 @@ services:
       retries: 6
       start_period: 15s
 
-  # web-ui is defined in issue #52 after web auth is added for network mode.
-  # web-ui:
-  #   image: context-manager-server:latest
-  #   command: node /app/dist/web/server.js
-  #   ports:
-  #     - "127.0.0.1:3847:3847"
-  #   environment:
-  #     CONTEXT_MANAGER_DB: /data/context.db
-  #     CONTEXT_MANAGER_TOKEN: ${CONTEXT_MANAGER_TOKEN}
-  #     CONTEXT_MANAGER_PORT: "3847"
-  #     CONTEXT_MANAGER_HOST: "0.0.0.0"
-  #     LOG_LEVEL: info
-  #   volumes:
-  #     - context-manager-data:/data
-  #   depends_on:
-  #     context-server:
-  #       condition: service_healthy
-  #   restart: unless-stopped
+  web-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: context-manager-server:latest
+    command: node /app/dist/web/server.js
+    ports:
+      # Bind to localhost only — not externally reachable from other machines.
+      - "127.0.0.1:3847:3847"
+    environment:
+      CONTEXT_MANAGER_DB: /data/context.db
+      CONTEXT_MANAGER_TOKEN: ${CONTEXT_MANAGER_TOKEN}
+      CONTEXT_MANAGER_PORT: "3847"
+      # 0.0.0.0 binds to all container interfaces and activates bearer token auth
+      # + project scoping in the web server (isNetworkMode=true).
+      CONTEXT_MANAGER_HOST: "0.0.0.0"
+      LOG_LEVEL: info
+    volumes:
+      - context-manager-data:/data
+    depends_on:
+      context-server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3847/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
 
 volumes:
   context-manager-data:

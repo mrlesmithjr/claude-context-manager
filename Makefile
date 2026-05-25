@@ -124,9 +124,11 @@ server-start: server-init server-build
 	fi
 	$(SERVER_COMPOSE) --env-file "$(SERVER_ENV)" up -d
 	@echo ""
-	@echo "[server] context-manager HTTP server running at http://localhost:4000"
-	@echo "  Health: curl -s http://localhost:4000/health"
+	@echo "[server] context-manager services running:"
+	@echo "  MCP server:   http://localhost:4000  (hook capture endpoint)"
+	@echo "  Web dashboard: http://localhost:3847"
 	@echo "  Logs:   make server-logs"
+	@echo "  Status: make server-status"
 	@echo ""
 	@echo "If Claude Code hooks are not yet configured for remote mode:"
 	@echo "  make server-env"
@@ -142,8 +144,11 @@ server-logs:
 # Check server health (does not require the env file).
 server-status:
 	@curl -sf http://localhost:4000/health \
-		&& echo "  context-manager server is healthy at http://localhost:4000" \
-		|| echo "  context-manager server is not responding on http://localhost:4000"
+		&& echo "  [OK]  MCP server   http://localhost:4000" \
+		|| echo "  [--]  MCP server   http://localhost:4000 (not responding)"
+	@curl -sf http://localhost:3847/api/health \
+		&& echo "  [OK]  Web UI       http://localhost:3847" \
+		|| echo "  [--]  Web UI       http://localhost:3847 (not responding)"
 
 # --- Native server (macOS recommended) ---
 #
