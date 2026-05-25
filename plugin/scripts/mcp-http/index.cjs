@@ -60523,7 +60523,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.55" : "unknown"
+      version: true ? "0.8.56" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -63148,34 +63148,55 @@ ${storedOutput}`;
 };
 
 // src/server/http.ts
-async function backgroundEmbed(storage) {
-  await new Promise((resolve) => setTimeout(resolve, 5e3));
+function abortableSleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+async function backgroundEmbed(storage, signal) {
+  try {
+    await abortableSleep(5e3, signal);
+  } catch {
+    return;
+  }
   const rawInterval = parseInt(process.env.CONTEXT_MANAGER_EMBED_INTERVAL || "10", 10);
   const intervalMinutes = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 10;
   const intervalMs = intervalMinutes * 60 * 1e3;
   console.error(`[context-manager-http] Background embedding loop: interval ${intervalMinutes}m`);
-  while (true) {
+  while (!signal.aborted) {
     try {
       if (!await storage.isVectorSearchEnabled()) {
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        await abortableSleep(intervalMs, signal);
         continue;
       }
       const pending = storage.countUnembedded();
       const pendingSessions = await storage.countUnembeddedSessions();
       if (pending === 0 && pendingSessions === 0) {
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        await abortableSleep(intervalMs, signal);
         continue;
       }
       const embeddingService = getEmbeddingService();
       const { status } = embeddingService.getStatus();
       if (status === "unavailable") {
         console.error("[context-manager-http] Background embedding: transformers unavailable, skipping. Run context_embed to trigger install.");
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        await abortableSleep(intervalMs, signal);
         continue;
       }
       const loaded = await embeddingService.load();
       if (!loaded) {
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        await abortableSleep(intervalMs, signal);
         continue;
       }
       if (pending > 0) {
@@ -63184,7 +63205,7 @@ async function backgroundEmbed(storage) {
       const BATCH_SIZE = 50;
       const BATCH_DELAY_MS = 500;
       let totalEmbedded = 0;
-      while (true) {
+      while (!signal.aborted) {
         const batch = await storage.getUnembeddedObservations(BATCH_SIZE);
         if (batch.length === 0)
           break;
@@ -63198,6 +63219,8 @@ async function backgroundEmbed(storage) {
         const embeddings = await embeddingService.embedBatch(texts);
         if (!embeddings)
           break;
+        if (signal.aborted)
+          break;
         for (let j = 0; j < batch.length; j++) {
           const obs = batch[j];
           const emb = embeddings[j];
@@ -63209,19 +63232,25 @@ async function backgroundEmbed(storage) {
           } catch {
           }
         }
-        await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+        try {
+          await abortableSleep(BATCH_DELAY_MS, signal);
+        } catch {
+          break;
+        }
       }
       if (totalEmbedded > 0) {
         console.error(`[context-manager-http] Background embedding complete: ${totalEmbedded} observations embedded`);
       }
-      if (pendingSessions > 0) {
+      if (pendingSessions > 0 && !signal.aborted) {
         console.error(`[context-manager-http] Background session embedding: ${pendingSessions} sessions pending`);
         let totalSessionEmbedded = 0;
-        while (true) {
+        while (!signal.aborted) {
           const sessionBatch = await storage.getUnembeddedSessions(50);
           if (sessionBatch.length === 0)
             break;
           for (const session of sessionBatch) {
+            if (signal.aborted)
+              break;
             try {
               const prompts = await storage.getSessionPrompts(session.id);
               const observations = await storage.getSessionObservations(session.id);
@@ -63229,24 +63258,40 @@ async function backgroundEmbed(storage) {
               if (enrichedText.length < 20)
                 continue;
               const sessionEmb = await embeddingService.embed(enrichedText);
+              if (signal.aborted)
+                break;
               if (sessionEmb) {
                 await storage.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
                 totalSessionEmbedded++;
               }
             } catch {
             }
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            try {
+              await abortableSleep(100, signal);
+            } catch {
+              break;
+            }
           }
-          await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+          try {
+            await abortableSleep(BATCH_DELAY_MS, signal);
+          } catch {
+            break;
+          }
         }
         if (totalSessionEmbedded > 0) {
           console.error(`[context-manager-http] Background session embedding complete: ${totalSessionEmbedded} sessions embedded`);
         }
       }
     } catch (err) {
+      if (signal.aborted)
+        break;
       console.error("[context-manager-http] Background embedding error:", err);
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    try {
+      await abortableSleep(intervalMs, signal);
+    } catch {
+      break;
+    }
   }
 }
 async function startHttpServer(options = {}) {
@@ -63484,26 +63529,45 @@ async function startHttpServer(options = {}) {
       );
     }
   });
-  try {
-    await fastify.listen({ port, host });
-    console.error(`[context-manager-http] Server listening on http://${host}:${port}`);
-    console.error(`[context-manager-http] MCP endpoint: http://${host}:${port}/mcp`);
-    backgroundEmbed(storage).catch((err) => {
-      console.error("[context-manager-http] Background embedding uncaught error:", err);
-    });
-  } catch (err) {
-    console.error("[context-manager-http] Failed to start:", err);
-    await storage.close();
-    process.exit(1);
-  }
+  const abortController = new AbortController();
+  let embedTask;
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown)
+      return;
+    shuttingDown = true;
     console.error("[context-manager-http] Shutting down...");
+    abortController.abort();
+    if (embedTask) {
+      await Promise.race([
+        embedTask.catch(() => {
+        }),
+        new Promise((resolve) => setTimeout(resolve, 3e3))
+      ]);
+    }
     await fastify.close();
     await storage.close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  try {
+    await fastify.listen({ port, host });
+    console.error(`[context-manager-http] Server listening on http://${host}:${port}`);
+    console.error(`[context-manager-http] MCP endpoint: http://${host}:${port}/mcp`);
+    embedTask = backgroundEmbed(storage, abortController.signal);
+    embedTask.catch((err) => {
+      if (!abortController.signal.aborted) {
+        console.error("[context-manager-http] Background embedding uncaught error:", err);
+      }
+    });
+  } catch (err) {
+    console.error("[context-manager-http] Failed to start:", err);
+    process.off("SIGINT", shutdown);
+    process.off("SIGTERM", shutdown);
+    await storage.close();
+    process.exit(1);
+  }
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
