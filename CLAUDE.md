@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 25, 2026 (v0.8.36)
+**Last Updated**: May 25, 2026 (v0.8.37)
 
 ---
 
@@ -509,6 +509,22 @@ This is targeted injection: it arrives exactly when Claude opens a specific file
 - `hasSessionSeenFile(sessionId, likePattern)` — returns true if the current session already has an observation matching the file path pattern.
 
 **Remote mode behavior:** When `CONTEXT_MANAGER_URL` is set, the hook returns an empty response immediately. No local SQLite is opened. The hook never blocks a Read operation regardless of mode or error state.
+
+### 20. Stale Session GC in context_vacuum (v0.8.37)
+
+**Problem:** Claude Code does not always fire the Stop hook cleanly. A `/clear`, a process kill, or a crash leaves the session row permanently stuck as `active` in the database. Previously `context_vacuum` only deleted completely empty sessions; sessions with observations were never closed and accumulated indefinitely.
+
+**What it does:** `vacuum()` in `src/storage/sqlite.ts` now marks `active` sessions as `complete` when their last activity timestamp is older than N hours (default: 2). The activity timestamp is `last_checkpoint_at` when available (written every 30 minutes by the periodic checkpoint; see Design Decision #18). For sessions that predate the checkpoint column or where no checkpoint has run, it falls back to `started_at`.
+
+**Why 2 hours is a safe default:** The checkpoint interval defaults to 30 minutes, so any live session in good standing has a `last_checkpoint_at` no older than ~30 minutes. A 2-hour threshold gives 4x that margin before a session is considered abandoned, making false positives extremely unlikely under normal use.
+
+**Schema effect:** The `vacuum()` call sets `ended_at = datetime('now')` and `status = 'complete'` on matching rows. No observations are deleted by this step; only the session status is updated.
+
+**New surface area:**
+- `vacuum()` return type gains `closedStaleSessions: number` — the count of sessions transitioned in that call.
+- `context_vacuum` MCP tool gains optional `stale_session_hours` parameter (integer, min 1, default 2).
+- CLI gains `--stale-session-hours N` flag with NaN/range validation. Help text updated in `printHelp()`.
+- When `closedStaleSessions > 0`, a summary line is appended to the tool/CLI output: `Closed N stale active session(s) with no Stop hook.`
 
 ---
 

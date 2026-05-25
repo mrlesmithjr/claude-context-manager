@@ -92,7 +92,7 @@ Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server 
 | `context_search` | Search observations and prompts. Auto-routes to FTS5, vector, or hybrid. Supports `tag:X` prefix and `tag:X keyword` for intersection. |
 | `context_semantic_search` | Search sessions by meaning using enriched vector embeddings |
 | `context_embed` | Generate vector embeddings. First run installs dependencies and bootstraps all sessions. |
-| `context_vacuum` | Delete observations older than N days and run compaction |
+| `context_vacuum` | Delete observations older than N days, run compaction, and close stale active sessions. Optional `stale_session_hours` (default: 2) marks sessions with no Stop hook as complete. |
 | `context_prune` | Targeted pruning by tool name, importance, and/or age. Always use `dry_run=true` first. |
 | `context_export` | Trigger auto-memory export manually |
 | `context_memory_audit` | Scan for orphaned memory directories |
@@ -193,6 +193,8 @@ npm run cli -- stats
 npm run cli -- list --limit 10
 npm run cli -- search "query"
 npm run cli -- export --dry-run
+npm run cli -- vacuum --days 30
+npm run cli -- vacuum --days 30 --stale-session-hours 2
 ```
 
 ### Web dashboard
