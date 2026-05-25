@@ -626,8 +626,7 @@ ${storedOutput}`;
       total_tokens: row.total_tokens
     }));
   }
-  async vacuum(olderThanDays, staleSessionHours = 2) {
-    let deletedObservations = 0;
+  async closeStaleActiveSessions(staleSessionHours = 2) {
     const staleThresholdMs = Date.now() - staleSessionHours * 60 * 60 * 1e3;
     const staleThresholdISO = new Date(staleThresholdMs).toISOString();
     const staleResult = this.db.prepare(`
@@ -646,7 +645,11 @@ ${storedOutput}`;
             AND started_at < ?)
         )
     `).run(staleThresholdISO, staleThresholdISO);
-    const closedStaleSessions = staleResult.changes;
+    return staleResult.changes;
+  }
+  async vacuum(olderThanDays, staleSessionHours = 2) {
+    let deletedObservations = 0;
+    const closedStaleSessions = await this.closeStaleActiveSessions(staleSessionHours);
     if (olderThanDays) {
       const cutoffDate = /* @__PURE__ */ new Date();
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
@@ -1803,11 +1806,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.37") {
+    if (installedVersion !== "0.8.38") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.37"}
+   Source:    v${"0.8.38"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1862,7 +1865,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.37"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.38"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats.");
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -1885,13 +1888,17 @@ async function main() {
     storage = new SQLiteStorage();
     await storage.initialize();
     await storage.createSession(input.session_id, input.cwd);
+    try {
+      await storage.closeStaleActiveSessions();
+    } catch {
+    }
     const count = await storage.countObservations(input.cwd);
     const versionWarning = checkVersionMismatch();
     const lines = [];
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.37"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.38"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

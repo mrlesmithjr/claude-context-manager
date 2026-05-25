@@ -205,6 +205,14 @@ async function main() {
     // Create session record
     await storage.createSession(input.session_id, input.cwd);
 
+    // Close any stale active sessions from previous runs that never fired Stop.
+    // Silent — no logging, no effect on the hook response.
+    try {
+      await storage.closeStaleActiveSessions();
+    } catch {
+      // Never let GC failure affect session start
+    }
+
     // Get observation count for status hint
     const count = await storage.countObservations(input.cwd);
 

@@ -872,20 +872,7 @@ export class SQLiteStorage implements ContextStorage {
     }));
   }
 
-  async vacuum(olderThanDays?: number, staleSessionHours = 2): Promise<{
-    observations: number;
-    sessions: number;
-    compacted: number;
-    compacted_originals: number;
-    closedStaleSessions: number;
-  }> {
-    let deletedObservations = 0;
-
-    // Close stale active sessions before orphan cleanup so the now-complete sessions
-    // are not caught by the orphan check that follows.
-    // Uses last_checkpoint_at when available (more accurate for long live sessions),
-    // falls back to started_at for sessions that have never checkpointed.
-    //
+  async closeStaleActiveSessions(staleSessionHours = 2): Promise<number> {
     // Pre-compute ISO threshold to avoid SQL string concatenation (which would
     // defeat parameterization and open a SQL injection vector).
     const staleThresholdMs = Date.now() - staleSessionHours * 60 * 60 * 1000;
@@ -907,7 +894,22 @@ export class SQLiteStorage implements ContextStorage {
             AND started_at < ?)
         )
     `).run(staleThresholdISO, staleThresholdISO);
-    const closedStaleSessions = staleResult.changes;
+
+    return staleResult.changes;
+  }
+
+  async vacuum(olderThanDays?: number, staleSessionHours = 2): Promise<{
+    observations: number;
+    sessions: number;
+    compacted: number;
+    compacted_originals: number;
+    closedStaleSessions: number;
+  }> {
+    let deletedObservations = 0;
+
+    // Close stale active sessions before orphan cleanup so the now-complete sessions
+    // are not caught by the orphan check that follows.
+    const closedStaleSessions = await this.closeStaleActiveSessions(staleSessionHours);
 
     if (olderThanDays) {
       const cutoffDate = new Date();

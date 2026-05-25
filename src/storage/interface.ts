@@ -197,6 +197,17 @@ export interface ContextStorage {
   ): Promise<Array<Session & { observation_count: number; total_tokens: number }>>;
 
   /**
+   * Close active sessions whose last activity is older than the given threshold.
+   * Runs only the single stale-session UPDATE — no compaction, no ANALYZE, no VACUUM.
+   * Extracted from vacuum() so the SessionStart hook can run it on every session open
+   * without paying the full vacuum cost.
+   *
+   * @param staleSessionHours - Sessions with no activity older than this many hours are marked complete (default: 2)
+   * @returns Number of sessions transitioned from active to complete
+   */
+  closeStaleActiveSessions(staleSessionHours?: number): Promise<number>;
+
+  /**
    * Vacuum old observations and orphaned sessions
    * @param olderThanDays - Delete observations older than this many days (optional)
    * @param staleSessionHours - Mark active sessions with no activity older than this many hours as complete (default: 2)

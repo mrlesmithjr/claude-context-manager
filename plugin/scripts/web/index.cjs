@@ -44645,8 +44645,7 @@ ${storedOutput}`;
       total_tokens: row.total_tokens
     }));
   }
-  async vacuum(olderThanDays, staleSessionHours = 2) {
-    let deletedObservations = 0;
+  async closeStaleActiveSessions(staleSessionHours = 2) {
     const staleThresholdMs = Date.now() - staleSessionHours * 60 * 60 * 1e3;
     const staleThresholdISO = new Date(staleThresholdMs).toISOString();
     const staleResult = this.db.prepare(`
@@ -44665,7 +44664,11 @@ ${storedOutput}`;
             AND started_at < ?)
         )
     `).run(staleThresholdISO, staleThresholdISO);
-    const closedStaleSessions = staleResult.changes;
+    return staleResult.changes;
+  }
+  async vacuum(olderThanDays, staleSessionHours = 2) {
+    let deletedObservations = 0;
+    const closedStaleSessions = await this.closeStaleActiveSessions(staleSessionHours);
     if (olderThanDays) {
       const cutoffDate = /* @__PURE__ */ new Date();
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
