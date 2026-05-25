@@ -1562,6 +1562,18 @@ ${storedOutput}`;
     `).get(sessionId, likePattern);
     return row !== void 0;
   }
+  async getTopConversationObservation(sessionId) {
+    const row = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ?
+        AND tool_name = 'Conversation'
+      ORDER BY importance_score DESC
+      LIMIT 1
+    `).get(sessionId);
+    if (!row)
+      return null;
+    return this.mapRow(row);
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -1726,17 +1738,50 @@ function scoreForNarrative(text) {
     score += 0.1;
   if (text.trimEnd().endsWith("?"))
     score -= 0.1;
+  const decisionPhrases = [
+    "decided",
+    "going with",
+    "recommendation",
+    "the approach is",
+    "worth building",
+    "best option",
+    "the honest assessment",
+    "the right answer",
+    "we will",
+    "the plan is"
+  ];
+  if (decisionPhrases.some((p) => lower.includes(p)))
+    score += 0.15;
+  const hasMarkdownTable = lower.includes("|---|") || lower.includes("| ---");
+  const comparisonPhrases = [" vs ", "trade-off", "tradeoff", "pros and cons", "honest gap", "honest answer", "the gap is"];
+  if (hasMarkdownTable || comparisonPhrases.some((p) => lower.includes(p)))
+    score += 0.15;
+  const conclusionPhrases = [
+    "bottom line",
+    "in order of",
+    "sequencing",
+    "the sequenc",
+    "in summary",
+    "to summarize",
+    "here is what",
+    "here's what"
+  ];
+  if (conclusionPhrases.some((p) => lower.includes(p)))
+    score += 0.1;
+  const priorityPhrases = ["tackle first", "priority", "next step", "first step"];
+  if (priorityPhrases.some((p) => lower.includes(p)))
+    score += 0.05;
   return Math.max(0, Math.min(1, score));
 }
 function pickBestNarrative(lines) {
   if (lines.length === 0)
-    return { summary: void 0, summaryExtended: void 0 };
+    return { summary: void 0, summaryExtended: void 0, bestScore: 0 };
   const firstLine = lines[0];
   if (firstLine !== void 0) {
     try {
       const first = JSON.parse(firstLine);
       if (first.summary && typeof first.summary === "string") {
-        return { summary: first.summary, summaryExtended: void 0 };
+        return { summary: first.summary, summaryExtended: void 0, bestScore: 1 };
       }
     } catch {
     }
@@ -1759,9 +1804,11 @@ function pickBestNarrative(lines) {
   }
   scored.sort((a, b) => b.score - a.score);
   const qualifying = scored.filter((m) => m.score >= 0.25);
-  const bestText = qualifying.length > 0 ? qualifying[0].text : lastAssistantContent;
+  const winner = qualifying.length > 0 ? qualifying[0] : null;
+  const bestText = winner ? winner.text : lastAssistantContent;
+  const bestScore = winner ? winner.score : 0;
   if (!bestText)
-    return { summary: void 0, summaryExtended: void 0 };
+    return { summary: void 0, summaryExtended: void 0, bestScore: 0 };
   const summary = bestText.length > 1500 ? bestText.substring(0, 1500) + "..." : bestText;
   let summaryExtended;
   if (qualifying.length >= 2) {
@@ -1770,7 +1817,7 @@ function pickBestNarrative(lines) {
     );
     summaryExtended = beats.join("\n\n---\n\n");
   }
-  return { summary, summaryExtended };
+  return { summary, summaryExtended, bestScore };
 }
 
 // src/utils/session-format.ts
@@ -2217,7 +2264,7 @@ function extractSummaryFromLines(lines) {
   try {
     if (lines.length === 0) {
       debugLog("TRANSCRIPT_EMPTY", { lineCount: 0 });
-      return { summary: void 0, summaryExtended: void 0 };
+      return { summary: void 0, summaryExtended: void 0, bestScore: 0 };
     }
     const result = pickBestNarrative(lines);
     if (!result.summary) {
@@ -2231,7 +2278,7 @@ function extractSummaryFromLines(lines) {
     return result;
   } catch (error) {
     debugLog("TRANSCRIPT_PARSE_ERROR", { error: String(error) });
-    return { summary: void 0, summaryExtended: void 0 };
+    return { summary: void 0, summaryExtended: void 0, bestScore: 0 };
   }
 }
 var HIGH_SIGNAL_PATTERNS = {
@@ -2451,8 +2498,9 @@ async function main() {
     }
     let summary;
     let summaryExtended;
+    let narrativeBestScore = 0;
     if (transcriptLines) {
-      ({ summary, summaryExtended } = extractSummaryFromLines(transcriptLines));
+      ({ summary, summaryExtended, bestScore: narrativeBestScore } = extractSummaryFromLines(transcriptLines));
     }
     debugLog("SUMMARY_RESULT", {
       hasTranscriptPath: !!input.transcript_path,
@@ -2529,6 +2577,17 @@ async function main() {
       } catch (insightError) {
         debugLog("CONVERSATION_INSIGHT_ERROR", { error: String(insightError) });
         console.error("[context-manager] Conversation insight extraction failed:", insightError);
+      }
+    }
+    if (narrativeBestScore < 0.2) {
+      try {
+        const topConversation = await storage.getTopConversationObservation(input.session_id);
+        if (topConversation?.summary) {
+          summary = topConversation.summary;
+          debugLog("SUMMARY_CONVERSATION_FALLBACK", { sessionId: input.session_id, summary: summary.substring(0, 100) });
+        }
+      } catch (fallbackError) {
+        debugLog("SUMMARY_FALLBACK_ERROR", { error: String(fallbackError) });
       }
     }
     await storage.endSession(input.session_id, summary, summaryExtended);

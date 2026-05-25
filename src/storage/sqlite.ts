@@ -2118,6 +2118,18 @@ export class SQLiteStorage implements ContextStorage {
     return row !== undefined;
   }
 
+  async getTopConversationObservation(sessionId: string): Promise<Observation | null> {
+    const row = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ?
+        AND tool_name = 'Conversation'
+      ORDER BY importance_score DESC
+      LIMIT 1
+    `).get(sessionId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return this.mapRow(row);
+  }
+
   close(): Promise<void> {
     this.db.close();
     return Promise.resolve();

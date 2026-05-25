@@ -253,6 +253,7 @@ export function extractTextFromTranscriptLine(msg: TranscriptLine): string {
  * Score an assistant message for narrative quality.
  * Returns 0.0-1.0 (0 = skip, higher = better narrative candidate).
  * Favors messages that describe completed work rather than in-progress commentary.
+ * Also scores discussion and planning sessions via decision, comparison, and conclusion signals.
  */
 export function scoreForNarrative(text: string): number {
   if (text.length < 50) return 0;
@@ -284,6 +285,30 @@ export function scoreForNarrative(text: string): number {
   // Slight penalty for responses that end as questions
   if (text.trimEnd().endsWith('?')) score -= 0.10;
 
+  // Decision language: captures planning and advisory sessions
+  const decisionPhrases = [
+    'decided', 'going with', 'recommendation', 'the approach is',
+    'worth building', 'best option', 'the honest assessment',
+    'the right answer', 'we will', 'the plan is',
+  ];
+  if (decisionPhrases.some(p => lower.includes(p))) score += 0.15;
+
+  // Comparison/analysis structure: tables and trade-off language
+  const hasMarkdownTable = lower.includes('|---|') || lower.includes('| ---');
+  const comparisonPhrases = [' vs ', 'trade-off', 'tradeoff', 'pros and cons', 'honest gap', 'honest answer', 'the gap is'];
+  if (hasMarkdownTable || comparisonPhrases.some(p => lower.includes(p))) score += 0.15;
+
+  // Conclusion framing: summary and bottom-line statements
+  const conclusionPhrases = [
+    'bottom line', 'in order of', 'sequencing', 'the sequenc',
+    'in summary', 'to summarize', 'here is what', "here's what",
+  ];
+  if (conclusionPhrases.some(p => lower.includes(p))) score += 0.10;
+
+  // Priority/planning language: task sequencing and prioritization
+  const priorityPhrases = ['tackle first', 'priority', 'next step', 'first step'];
+  if (priorityPhrases.some(p => lower.includes(p))) score += 0.05;
+
   return Math.max(0, Math.min(1.0, score));
 }
 
@@ -293,6 +318,7 @@ export function scoreForNarrative(text: string): number {
  * Returns:
  *   summary          - Best single assistant message (capped at 1500 chars)
  *   summaryExtended  - Top-3 messages joined with separators (only when 2+)
+ *   bestScore        - Score of the winning candidate (0 when falling back to last message)
  *
  * Used by both session-end.ts (Stop hook) and the checkpoint runner in
  * capture-prompt.ts so narrative scoring logic stays in one place.
@@ -300,8 +326,9 @@ export function scoreForNarrative(text: string): number {
 export function pickBestNarrative(lines: string[]): {
   summary: string | undefined;
   summaryExtended: string | undefined;
+  bestScore: number;
 } {
-  if (lines.length === 0) return { summary: undefined, summaryExtended: undefined };
+  if (lines.length === 0) return { summary: undefined, summaryExtended: undefined, bestScore: 0 };
 
   // Check first line for an embedded summary field
   const firstLine = lines[0];
@@ -309,7 +336,7 @@ export function pickBestNarrative(lines: string[]): {
     try {
       const first = JSON.parse(firstLine) as TranscriptLine;
       if (first.summary && typeof first.summary === 'string') {
-        return { summary: first.summary, summaryExtended: undefined };
+        return { summary: first.summary, summaryExtended: undefined, bestScore: 1.0 };
       }
     } catch {
       // Not valid JSON or no summary field. Continue.
@@ -335,9 +362,11 @@ export function pickBestNarrative(lines: string[]): {
   scored.sort((a, b) => b.score - a.score);
   const qualifying = scored.filter(m => m.score >= 0.25);
 
-  const bestText = qualifying.length > 0 ? qualifying[0]!.text : lastAssistantContent;
+  const winner = qualifying.length > 0 ? qualifying[0]! : null;
+  const bestText = winner ? winner.text : lastAssistantContent;
+  const bestScore = winner ? winner.score : 0;
 
-  if (!bestText) return { summary: undefined, summaryExtended: undefined };
+  if (!bestText) return { summary: undefined, summaryExtended: undefined, bestScore: 0 };
 
   const summary = bestText.length > 1500 ? bestText.substring(0, 1500) + '...' : bestText;
 
@@ -349,7 +378,7 @@ export function pickBestNarrative(lines: string[]): {
     summaryExtended = beats.join('\n\n---\n\n');
   }
 
-  return { summary, summaryExtended };
+  return { summary, summaryExtended, bestScore };
 }
 
 /**

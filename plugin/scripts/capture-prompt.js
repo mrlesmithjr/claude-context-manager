@@ -1562,6 +1562,18 @@ ${storedOutput}`;
     `).get(sessionId, likePattern);
     return row !== void 0;
   }
+  async getTopConversationObservation(sessionId) {
+    const row = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ?
+        AND tool_name = 'Conversation'
+      ORDER BY importance_score DESC
+      LIMIT 1
+    `).get(sessionId);
+    if (!row)
+      return null;
+    return this.mapRow(row);
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -1860,17 +1872,50 @@ function scoreForNarrative(text) {
     score += 0.1;
   if (text.trimEnd().endsWith("?"))
     score -= 0.1;
+  const decisionPhrases = [
+    "decided",
+    "going with",
+    "recommendation",
+    "the approach is",
+    "worth building",
+    "best option",
+    "the honest assessment",
+    "the right answer",
+    "we will",
+    "the plan is"
+  ];
+  if (decisionPhrases.some((p) => lower.includes(p)))
+    score += 0.15;
+  const hasMarkdownTable = lower.includes("|---|") || lower.includes("| ---");
+  const comparisonPhrases = [" vs ", "trade-off", "tradeoff", "pros and cons", "honest gap", "honest answer", "the gap is"];
+  if (hasMarkdownTable || comparisonPhrases.some((p) => lower.includes(p)))
+    score += 0.15;
+  const conclusionPhrases = [
+    "bottom line",
+    "in order of",
+    "sequencing",
+    "the sequenc",
+    "in summary",
+    "to summarize",
+    "here is what",
+    "here's what"
+  ];
+  if (conclusionPhrases.some((p) => lower.includes(p)))
+    score += 0.1;
+  const priorityPhrases = ["tackle first", "priority", "next step", "first step"];
+  if (priorityPhrases.some((p) => lower.includes(p)))
+    score += 0.05;
   return Math.max(0, Math.min(1, score));
 }
 function pickBestNarrative(lines) {
   if (lines.length === 0)
-    return { summary: void 0, summaryExtended: void 0 };
+    return { summary: void 0, summaryExtended: void 0, bestScore: 0 };
   const firstLine = lines[0];
   if (firstLine !== void 0) {
     try {
       const first = JSON.parse(firstLine);
       if (first.summary && typeof first.summary === "string") {
-        return { summary: first.summary, summaryExtended: void 0 };
+        return { summary: first.summary, summaryExtended: void 0, bestScore: 1 };
       }
     } catch {
     }
@@ -1893,9 +1938,11 @@ function pickBestNarrative(lines) {
   }
   scored.sort((a, b) => b.score - a.score);
   const qualifying = scored.filter((m) => m.score >= 0.25);
-  const bestText = qualifying.length > 0 ? qualifying[0].text : lastAssistantContent;
+  const winner = qualifying.length > 0 ? qualifying[0] : null;
+  const bestText = winner ? winner.text : lastAssistantContent;
+  const bestScore = winner ? winner.score : 0;
   if (!bestText)
-    return { summary: void 0, summaryExtended: void 0 };
+    return { summary: void 0, summaryExtended: void 0, bestScore: 0 };
   const summary = bestText.length > 1500 ? bestText.substring(0, 1500) + "..." : bestText;
   let summaryExtended;
   if (qualifying.length >= 2) {
@@ -1904,7 +1951,7 @@ function pickBestNarrative(lines) {
     );
     summaryExtended = beats.join("\n\n---\n\n");
   }
-  return { summary, summaryExtended };
+  return { summary, summaryExtended, bestScore };
 }
 
 // src/utils/session-format.ts
@@ -2328,14 +2375,27 @@ async function runCheckpoint(storage, sessionId, project, transcriptPath) {
     return;
   }
   let draftSummary;
+  let narrativeBestScore = 0;
   if (transcriptPath) {
     try {
       const content = fs.readFileSync(transcriptPath, "utf8");
       const lines = content.trim().split("\n").filter((line) => line.trim().length > 0);
-      const { summary } = pickBestNarrative(lines);
-      draftSummary = summary;
+      const result = pickBestNarrative(lines);
+      draftSummary = result.summary;
+      narrativeBestScore = result.bestScore;
     } catch {
       debugLog("CHECKPOINT_TRANSCRIPT_ERROR", { transcriptPath });
+    }
+  }
+  if (narrativeBestScore < 0.2) {
+    try {
+      const topConversation = await storage.getTopConversationObservation(sessionId);
+      if (topConversation?.summary) {
+        draftSummary = topConversation.summary;
+        debugLog("CHECKPOINT_SUMMARY_CONVERSATION_FALLBACK", { sessionId, summary: draftSummary.substring(0, 100) });
+      }
+    } catch (fallbackError) {
+      debugLog("CHECKPOINT_FALLBACK_ERROR", { error: String(fallbackError) });
     }
   }
   if (draftSummary) {

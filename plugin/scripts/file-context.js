@@ -1562,6 +1562,18 @@ ${storedOutput}`;
     `).get(sessionId, likePattern);
     return row !== void 0;
   }
+  async getTopConversationObservation(sessionId) {
+    const row = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ?
+        AND tool_name = 'Conversation'
+      ORDER BY importance_score DESC
+      LIMIT 1
+    `).get(sessionId);
+    if (!row)
+      return null;
+    return this.mapRow(row);
+  }
   close() {
     this.db.close();
     return Promise.resolve();

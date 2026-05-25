@@ -136,15 +136,32 @@ async function runCheckpoint(
 
   // Pick a draft narrative from the current transcript (best assistant message so far).
   let draftSummary: string | undefined;
+  let narrativeBestScore = 0;
   if (transcriptPath) {
     try {
       const content = fs.readFileSync(transcriptPath, 'utf8');
       const lines = content.trim().split('\n').filter(line => line.trim().length > 0);
-      const { summary } = pickBestNarrative(lines);
-      draftSummary = summary;
+      const result = pickBestNarrative(lines);
+      draftSummary = result.summary;
+      narrativeBestScore = result.bestScore;
     } catch {
       // Transcript read failure is non-fatal; proceed without a draft summary.
       debugLog('CHECKPOINT_TRANSCRIPT_ERROR', { transcriptPath });
+    }
+  }
+
+  // Conversation fallback: when narrative scoring yields a weak result (score < 0.20),
+  // check for a Conversation observation to use as the draft summary. This handles
+  // discussion and planning sessions that produce no code-change signals.
+  if (narrativeBestScore < 0.20) {
+    try {
+      const topConversation = await storage.getTopConversationObservation(sessionId);
+      if (topConversation?.summary) {
+        draftSummary = topConversation.summary;
+        debugLog('CHECKPOINT_SUMMARY_CONVERSATION_FALLBACK', { sessionId, summary: draftSummary.substring(0, 100) });
+      }
+    } catch (fallbackError) {
+      debugLog('CHECKPOINT_FALLBACK_ERROR', { error: String(fallbackError) });
     }
   }
 

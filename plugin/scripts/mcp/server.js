@@ -23737,6 +23737,18 @@ ${storedOutput}`;
     `).get(sessionId, likePattern);
     return row !== void 0;
   }
+  async getTopConversationObservation(sessionId) {
+    const row = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ?
+        AND tool_name = 'Conversation'
+      ORDER BY importance_score DESC
+      LIMIT 1
+    `).get(sessionId);
+    if (!row)
+      return null;
+    return this.mapRow(row);
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -32999,7 +33011,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.34" : "unknown"
+      version: true ? "0.8.35" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."

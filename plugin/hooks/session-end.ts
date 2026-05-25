@@ -55,11 +55,12 @@ type TranscriptMessage = TranscriptLine;
 function extractSummaryFromLines(lines: string[]): {
   summary: string | undefined;
   summaryExtended: string | undefined;
+  bestScore: number;
 } {
   try {
     if (lines.length === 0) {
       debugLog('TRANSCRIPT_EMPTY', { lineCount: 0 });
-      return { summary: undefined, summaryExtended: undefined };
+      return { summary: undefined, summaryExtended: undefined, bestScore: 0 };
     }
 
     const result = pickBestNarrative(lines);
@@ -76,7 +77,7 @@ function extractSummaryFromLines(lines: string[]): {
     return result;
   } catch (error) {
     debugLog('TRANSCRIPT_PARSE_ERROR', { error: String(error) });
-    return { summary: undefined, summaryExtended: undefined };
+    return { summary: undefined, summaryExtended: undefined, bestScore: 0 };
   }
 }
 
@@ -355,8 +356,9 @@ async function main() {
     // Extract summary from pre-read lines
     let summary: string | undefined;
     let summaryExtended: string | undefined;
+    let narrativeBestScore = 0;
     if (transcriptLines) {
-      ({ summary, summaryExtended } = extractSummaryFromLines(transcriptLines));
+      ({ summary, summaryExtended, bestScore: narrativeBestScore } = extractSummaryFromLines(transcriptLines));
     }
 
     debugLog('SUMMARY_RESULT', {
@@ -455,6 +457,22 @@ async function main() {
       } catch (insightError) {
         debugLog('CONVERSATION_INSIGHT_ERROR', { error: String(insightError) });
         console.error('[context-manager] Conversation insight extraction failed:', insightError);
+      }
+    }
+
+    // Conversation fallback: when narrative scoring yields a weak result (score < 0.20),
+    // use the top Conversation observation summary instead. This handles discussion and
+    // planning sessions that produce no code-change signals (no file paths, action verbs,
+    // or code blocks) but may have rich synthesized content from the insight extractor.
+    if (narrativeBestScore < 0.20) {
+      try {
+        const topConversation = await storage.getTopConversationObservation(input.session_id);
+        if (topConversation?.summary) {
+          summary = topConversation.summary;
+          debugLog('SUMMARY_CONVERSATION_FALLBACK', { sessionId: input.session_id, summary: summary.substring(0, 100) });
+        }
+      } catch (fallbackError) {
+        debugLog('SUMMARY_FALLBACK_ERROR', { error: String(fallbackError) });
       }
     }
 

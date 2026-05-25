@@ -426,6 +426,17 @@ export interface ContextStorage {
   hasSessionSeenFile(sessionId: string, likePattern: string): Promise<boolean>;
 
   /**
+   * Get the highest-scored Conversation observation for a session.
+   * Used as a fallback summary source when narrative scoring yields a low score,
+   * which happens in discussion/planning sessions that produce no code-change signals.
+   *
+   * Returns null when no Conversation observation exists for the session.
+   *
+   * @param sessionId - Session ID to query
+   */
+  getTopConversationObservation(sessionId: string): Promise<Observation | null>;
+
+  /**
    * Close storage connection
    */
   close(): Promise<void>;
