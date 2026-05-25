@@ -27,7 +27,7 @@ NODE_BIN         := $(shell which node)
         server-status server-env \
         server-native-start server-native-stop server-native-status \
         server-launchd-install server-launchd-uninstall server-launchd-status \
-        server-quickstart
+        server-quickstart server-stop-native switch-to-docker switch-to-native
 
 # --- Build ---
 
@@ -118,14 +118,30 @@ server-env: server-init
 
 # Build the server image (if needed) and start the server in the background.
 # Reads the token from ~/.claude-context/.env.
+# Pre-flight: exits with an actionable error if ports 4000 or 3847 are occupied.
 server-start: server-init server-build
 	@if [ ! -f "$(SERVER_ENV)" ]; then \
 		echo "ERROR: $(SERVER_ENV) not found. Run 'make server-init' first."; exit 1; \
 	fi
+	@CONFLICT=0; \
+	LAUNCHD_ACTIVE=$$(launchctl list 2>/dev/null | grep -c "$(LAUNCHD_LABEL)"); \
+	for PORT in 4000 3847; do \
+		if lsof -i :$$PORT -t >/dev/null 2>&1; then \
+			if [ "$$LAUNCHD_ACTIVE" -gt 0 ] && [ "$$PORT" = "4000" ]; then \
+				echo "[server-start] Port 4000 is occupied by the native launchd service."; \
+				echo "  To switch to Docker mode: make switch-to-docker"; \
+			else \
+				PID=$$(lsof -i :$$PORT -t | head -1); \
+				echo "[server-start] Port $$PORT is occupied (PID $$PID). Stop that process first."; \
+			fi; \
+			CONFLICT=1; \
+		fi; \
+	done; \
+	if [ "$$CONFLICT" -eq 1 ]; then exit 1; fi
 	$(SERVER_COMPOSE) --env-file "$(SERVER_ENV)" up -d
 	@echo ""
 	@echo "[server] context-manager services running:"
-	@echo "  MCP server:   http://localhost:4000  (hook capture endpoint)"
+	@echo "  MCP server:    http://localhost:4000  (hook capture endpoint)"
 	@echo "  Web dashboard: http://localhost:3847"
 	@echo "  Logs:   make server-logs"
 	@echo "  Status: make server-status"
@@ -141,7 +157,7 @@ server-stop:
 server-logs:
 	$(SERVER_COMPOSE) logs -f
 
-# Check server health (does not require the env file).
+# Check server health and detect deployment-mode conflicts.
 server-status:
 	@curl -sf http://localhost:4000/health \
 		&& echo "  [OK]  MCP server   http://localhost:4000" \
@@ -149,6 +165,19 @@ server-status:
 	@curl -sf http://localhost:3847/api/health \
 		&& echo "  [OK]  Web UI       http://localhost:3847" \
 		|| echo "  [--]  Web UI       http://localhost:3847 (not responding)"
+	@NATIVE_ON=$$(launchctl list 2>/dev/null | grep -c "$(LAUNCHD_LABEL)"); \
+	DOCKER_ON=$$(docker ps --filter "name=context-manager" --format "{{.Names}}" 2>/dev/null | grep -c .); \
+	if [ "$$NATIVE_ON" -gt 0 ] && [ "$$DOCKER_ON" -gt 0 ]; then \
+		echo ""; \
+		echo "  [WARN] Both native (launchd) and Docker services appear to be active."; \
+		echo "         This will cause port conflicts. To resolve:"; \
+		echo "           make switch-to-docker  -- stop native, start Docker"; \
+		echo "           make switch-to-native  -- stop Docker, start native"; \
+	elif [ "$$NATIVE_ON" -gt 0 ]; then \
+		echo "  [mode] native (launchd)"; \
+	elif [ "$$DOCKER_ON" -gt 0 ]; then \
+		echo "  [mode] docker"; \
+	fi
 
 # --- Native server (macOS recommended) ---
 #
@@ -234,6 +263,33 @@ server-launchd-uninstall:
 server-launchd-status:
 	@launchctl list | grep "$(LAUNCHD_LABEL)" || echo "[launchd] context-manager agent is not loaded."
 
+# Stop the native launchd service without removing the plist.
+# The plist stays in place so 'make server-launchd-install' can restart it later.
+# Falls back to server.pid kill for the one-shot nohup path.
+server-stop-native:
+	@if launchctl list 2>/dev/null | grep -q "$(LAUNCHD_LABEL)"; then \
+		launchctl unload "$(LAUNCHD_PLIST)" 2>/dev/null && \
+			echo "[native] Service unloaded (plist preserved at $(LAUNCHD_PLIST))." || \
+			echo "[native] launchctl unload failed."; \
+	else \
+		echo "[native] launchd service is not loaded."; \
+		PID_FILE="$(HOME)/.claude-context/server.pid"; \
+		if [ -f "$$PID_FILE" ]; then \
+			PID=$$(cat "$$PID_FILE"); \
+			if kill -0 "$$PID" 2>/dev/null; then \
+				kill "$$PID" && echo "[native] Stopped background server (PID $$PID)."; \
+			fi; \
+			rm -f "$$PID_FILE"; \
+		fi; \
+	fi
+	@for PORT in 4000 3847; do \
+		if lsof -i :$$PORT -t >/dev/null 2>&1; then \
+			echo "[native] WARNING: Port $$PORT is still occupied after stop attempt."; \
+		else \
+			echo "[native] Port $$PORT is free."; \
+		fi; \
+	done
+
 # One-shot macOS setup: generate token, write .env, install launchd agent.
 # After this completes, restart Claude Code -- remote mode activates automatically.
 # Hooks read ~/.claude-context/.env at startup; no shell exports or launchctl setenv needed.
@@ -248,3 +304,49 @@ server-quickstart: server-launchd-install
 	@echo ""
 	@echo "Verify: make server-native-status"
 	@echo "================================================================"
+
+# --- Deployment mode migration ---
+#
+# Use these targets to switch between native (launchd) and Docker deployments
+# without manual port cleanup. Both targets verify ports are free before starting
+# the new deployment and fail with a clear error if they are not.
+
+# Stop the native launchd service and start the Docker stack on the same ports.
+switch-to-docker: server-stop-native
+	@i=0; while [ $$i -lt 5 ]; do \
+		if lsof -i :4000 -t >/dev/null 2>&1 || lsof -i :3847 -t >/dev/null 2>&1; then \
+			echo "[switch] Waiting for ports to clear ($$((i+1))/5)..."; \
+			sleep 1; i=$$((i+1)); \
+		else \
+			break; \
+		fi; \
+	done; \
+	if lsof -i :4000 -t >/dev/null 2>&1; then \
+		echo "ERROR: Port 4000 is still occupied. Cannot start Docker services."; exit 1; \
+	fi; \
+	if lsof -i :3847 -t >/dev/null 2>&1; then \
+		echo "ERROR: Port 3847 is still occupied. Cannot start Docker services."; exit 1; \
+	fi; \
+	echo "[switch] Ports are free. Starting Docker services..."
+	$(MAKE) server-start
+
+# Stop the Docker stack and start the native launchd service on the same ports.
+switch-to-native:
+	@echo "[switch] Stopping Docker services..."
+	$(SERVER_COMPOSE) --env-file "$(SERVER_ENV)" down 2>/dev/null || true
+	@i=0; while [ $$i -lt 5 ]; do \
+		if lsof -i :4000 -t >/dev/null 2>&1 || lsof -i :3847 -t >/dev/null 2>&1; then \
+			echo "[switch] Waiting for ports to clear ($$((i+1))/5)..."; \
+			sleep 1; i=$$((i+1)); \
+		else \
+			break; \
+		fi; \
+	done; \
+	if lsof -i :4000 -t >/dev/null 2>&1; then \
+		echo "ERROR: Port 4000 is still occupied. Cannot start native service."; exit 1; \
+	fi; \
+	if lsof -i :3847 -t >/dev/null 2>&1; then \
+		echo "ERROR: Port 3847 is still occupied. Cannot start native service."; exit 1; \
+	fi; \
+	echo "[switch] Ports are free. Installing native launchd service..."
+	$(MAKE) server-launchd-install
