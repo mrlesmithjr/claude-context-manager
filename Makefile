@@ -11,11 +11,15 @@
 # The `run` command in Compose v2 honors depends_on with service_healthy conditions.
 # Compose v1 (docker-compose) does not support health conditions on `run`.
 
-COMPOSE_FILE := docker-compose.e2e.yml
-COMPOSE := docker compose -f $(COMPOSE_FILE)
-E2E_IMAGE := context-manager-e2e:latest
+COMPOSE_FILE     := docker-compose.e2e.yml
+COMPOSE          := docker compose -f $(COMPOSE_FILE)
+E2E_IMAGE        := context-manager-e2e:latest
 
-.PHONY: build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean
+SERVER_ENV       := $(HOME)/.claude-context/.env
+SERVER_COMPOSE   := docker compose -f docker-compose.server.yml
+
+.PHONY: build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
+        server-init server-start server-stop server-logs server-status server-env
 
 # --- Build ---
 
@@ -65,3 +69,62 @@ test-e2e-down:
 e2e-clean: test-e2e-down
 	docker image rm -f $(E2E_IMAGE) 2>/dev/null || true
 	@echo "E2E image removed. Run 'make test-e2e' to rebuild."
+
+# --- Local HTTP server (remote-mode for hooks) ---
+#
+# Runs the context-manager HTTP MCP server in Docker, bound to localhost:4000.
+# Mounts ~/.claude-context/ so existing observations are immediately available.
+# The same Docker image used by the E2E tests is reused here.
+#
+# Quickstart:
+#   make server-init   generate token, write ~/.claude-context/.env
+#   make server-env    print env var setup instructions for Claude Code
+#   make server-start  start the server (builds image if needed)
+
+# Generate a random bearer token and write it to ~/.claude-context/.env.
+# Idempotent: will not overwrite an existing env file.
+server-init:
+	@mkdir -p "$(HOME)/.claude-context"
+	@if [ -f "$(SERVER_ENV)" ]; then \
+		echo "[server-init] $(SERVER_ENV) already exists — skipping token generation."; \
+		echo "  Delete it and re-run to rotate the token."; \
+	else \
+		TOKEN=$$(openssl rand -hex 32); \
+		printf 'CONTEXT_MANAGER_TOKEN=%s\nCONTEXT_MANAGER_URL=http://localhost:4000\n' "$$TOKEN" > "$(SERVER_ENV)"; \
+		chmod 600 "$(SERVER_ENV)"; \
+		echo "[server-init] Token written to $(SERVER_ENV)"; \
+		echo "  Run 'make server-env' to see how to expose it to Claude Code."; \
+	fi
+
+# Print env var setup instructions for Claude Code hooks.
+server-env: server-init
+	@bash scripts/server-env.sh
+
+# Build the server image (if needed) and start the server in the background.
+# Reads the token from ~/.claude-context/.env.
+server-start: server-init e2e-build
+	@if [ ! -f "$(SERVER_ENV)" ]; then \
+		echo "ERROR: $(SERVER_ENV) not found. Run 'make server-init' first."; exit 1; \
+	fi
+	$(SERVER_COMPOSE) --env-file "$(SERVER_ENV)" up -d
+	@echo ""
+	@echo "[server] context-manager HTTP server running at http://localhost:4000"
+	@echo "  Health: curl -s http://localhost:4000/health"
+	@echo "  Logs:   make server-logs"
+	@echo ""
+	@echo "If Claude Code hooks are not yet configured for remote mode:"
+	@echo "  make server-env"
+
+# Stop the server. Data in ~/.claude-context/ is preserved.
+server-stop:
+	$(SERVER_COMPOSE) --env-file "$(SERVER_ENV)" down
+
+# Tail server logs.
+server-logs:
+	$(SERVER_COMPOSE) logs -f
+
+# Check server health (does not require the env file).
+server-status:
+	@curl -sf http://localhost:4000/health \
+		&& echo "  context-manager server is healthy at http://localhost:4000" \
+		|| echo "  context-manager server is not responding on http://localhost:4000"

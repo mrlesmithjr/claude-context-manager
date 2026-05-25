@@ -1,0 +1,50 @@
+# context-manager HTTP MCP server — persistent local instance.
+#
+# Runs the HTTP MCP server using your existing ~/.claude-context/ data directory
+# so all observations written via hooks are stored in the same SQLite database
+# your local mode was already using. No migration needed.
+#
+# Usage (preferred — reads token from ~/.claude-context/.env):
+#   make server-start        # first run: generates token, starts server
+#   make server-stop         # stop
+#   make server-logs         # tail logs
+#   make server-status       # check health
+#
+# Manual (if you need to pass the token explicitly):
+#   CONTEXT_MANAGER_TOKEN=<secret> docker compose -f docker-compose.server.yml up -d
+#
+# Hook env vars (set ONCE in shell, then restart Claude Code):
+#   export CONTEXT_MANAGER_URL=http://localhost:4000
+#   export CONTEXT_MANAGER_TOKEN=<same secret>
+#
+# The server binds to 127.0.0.1:4000 only — not accessible from other machines
+# on the network. For multi-machine setups, change the port binding.
+
+services:
+  context-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    image: context-manager-e2e:latest
+    # Use the tsc-compiled dist/server/http.js via start-server.mjs.
+    # The esbuild-bundled dist/cli.js has a CJS/ESM incompatibility with fastify.
+    command: node /app/test/e2e/start-server.mjs
+    ports:
+      # Bind to localhost only — not externally reachable.
+      - "127.0.0.1:4000:4000"
+    environment:
+      CONTEXT_MANAGER_DB: /data/context.db
+      CONTEXT_MANAGER_TOKEN: ${CONTEXT_MANAGER_TOKEN}
+      CONTEXT_MANAGER_PORT: "4000"
+      CONTEXT_MANAGER_HOST: "0.0.0.0"
+      LOG_LEVEL: info
+    volumes:
+      # Mount existing data directory so all prior observations are available immediately.
+      - ${HOME}/.claude-context:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
