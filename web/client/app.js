@@ -9,6 +9,7 @@ import { SessionList } from './components/SessionList.js';
 import { ProjectFilter } from './components/ProjectFilter.js';
 import { ObservationSearch } from './components/ObservationSearch.js';
 import { TokenAnalytics } from './components/TokenAnalytics.js';
+import { ImportPanel } from './components/ImportPanel.js';
 
 /**
  * Authenticated fetch helper.
@@ -55,7 +56,7 @@ class App extends Component {
 
   updateRouteFromHash() {
     const hash = window.location.hash.slice(1) || 'sessions';
-    const validRoutes = ['sessions', 'search', 'analytics'];
+    const validRoutes = ['sessions', 'search', 'analytics', 'import'];
     const route = validRoutes.includes(hash) ? hash : 'sessions';
     this.setState({ currentRoute: route });
   }
@@ -95,6 +96,8 @@ class App extends Component {
         return html`<${ObservationSearch} project=${selectedProject} projectRequired=${isNetworkMode} />`;
       case 'analytics':
         return html`<${TokenAnalytics} project=${selectedProject} projectRequired=${isNetworkMode} />`;
+      case 'import':
+        return html`<${ImportPanel} />`;
       default:
         return html`<${SessionList} project=${selectedProject} projectRequired=${isNetworkMode} />`;
     }
@@ -158,7 +161,7 @@ class App extends Component {
         <nav class="bg-gray-800 border-b border-gray-700">
           <div class="container mx-auto px-4">
             <div class="flex space-x-1">
-              ${['sessions', 'search', 'analytics'].map(
+              ${['sessions', 'search', 'analytics', 'import'].map(
                 (route) => html`
                   <button
                     class="${currentRoute === route
