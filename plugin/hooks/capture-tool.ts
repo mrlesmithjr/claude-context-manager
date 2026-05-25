@@ -26,6 +26,7 @@ import {
   shouldCaptureTool,
 } from '../../src/utils/validation.js';
 import { processToolCapture } from '../../src/capture/processor.js';
+import type { ProcessResult } from '../../src/capture/processor.js';
 import { remoteSaveObservation } from '../../src/capture/remote-client.js';
 import { loadDotEnv } from '../../src/utils/env.js';
 
@@ -119,7 +120,7 @@ async function main() {
         toolResponse = stderr ? `${stdout}\n[stderr]\n${stderr}` : stdout;
       }
 
-      const observation = processToolCapture({
+      const result: ProcessResult = processToolCapture({
         session_id: sessionId,
         project: cwd,
         tool_name: toolName,
@@ -127,8 +128,13 @@ async function main() {
         tool_response: toolResponse,
       });
 
+      if ('status' in result) {
+        await writeResponse({ status: result.status });
+        return;
+      }
+
       try {
-        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, observation);
+        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, result);
         await writeResponse({ status: 'captured' });
       } catch (error) {
         console.error('[context-manager] Remote capture error:', error);
@@ -147,13 +153,21 @@ async function main() {
     }
 
     // Process tool capture into observation (pure computation, no storage needed)
-    const observation = processToolCapture({
+    const result: ProcessResult = processToolCapture({
       session_id: input.session_id,
       project: input.cwd,
       tool_name: input.tool_name,
       tool_input: input.tool_input,
       tool_response: input.tool_response,
     });
+
+    // Low-value observations (e.g., Bash below score threshold) are dropped by the processor
+    if ('status' in result) {
+      await writeResponse({ status: result.status });
+      return;
+    }
+
+    const observation = result;
 
     storage = new SQLiteStorage();
     await storage.initialize();

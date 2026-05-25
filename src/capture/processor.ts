@@ -792,9 +792,25 @@ export function calculateImportance(
 }
 
 /**
+ * Result of processToolCapture.
+ *
+ * - `{ status: 'skipped' }` — observation intentionally not stored (low-value Bash below threshold)
+ * - `Omit<Observation, 'id'>` — observation ready for storage
+ */
+export type ProcessResult = { status: 'skipped' } | Omit<Observation, 'id'>;
+
+/** Threshold below which low-signal Bash observations are dropped entirely. */
+const BASH_SKIP_THRESHOLD = 0.15;
+
+/** Char limit (~40 tokens at 4 chars/token) for MCP tool summaries below importance threshold. */
+const MCP_SUMMARY_TRUNCATE_CHARS = 160;
+/** Score below which MCP tool summary text is capped to MCP_SUMMARY_TRUNCATE_CHARS. */
+const MCP_SUMMARY_SCORE_THRESHOLD = 0.3;
+
+/**
  * Process a tool capture into an observation
  */
-export function processToolCapture(capture: ToolCapture): Omit<Observation, 'id'> {
+export function processToolCapture(capture: ToolCapture): ProcessResult {
   // Sanitize tool response
   const sanitizedResponse = capture.tool_response
     ? sanitizeContent(capture.tool_response)
@@ -808,7 +824,7 @@ export function processToolCapture(capture: ToolCapture): Omit<Observation, 'id'
   );
 
   // Generate summary
-  const summary = summarizeTool(
+  let summary = summarizeTool(
     capture.tool_name,
     capture.tool_input,
     sanitizedResponse
@@ -832,6 +848,22 @@ export function processToolCapture(capture: ToolCapture): Omit<Observation, 'id'
     sanitizedResponse,
     filesTouched
   );
+
+  // Issue #57: Skip storage for low-signal Bash observations.
+  // Gate is after scoring so the error-signal boost (+0.25) is already factored in.
+  if (capture.tool_name === 'Bash' && importance_score < BASH_SKIP_THRESHOLD) {
+    return { status: 'skipped' };
+  }
+
+  // Issue #58: Cap MCP tool summaries to ~40 tokens when importance is below threshold.
+  // Observation is still stored for relationship tracking and dedup.
+  if (
+    capture.tool_name.startsWith('mcp__') &&
+    importance_score < MCP_SUMMARY_SCORE_THRESHOLD &&
+    summary.length > MCP_SUMMARY_TRUNCATE_CHARS
+  ) {
+    summary = summary.substring(0, MCP_SUMMARY_TRUNCATE_CHARS) + '...';
+  }
 
   // Infer domain tags from file paths and command
   const command = (capture.tool_input && typeof capture.tool_input === 'object')
