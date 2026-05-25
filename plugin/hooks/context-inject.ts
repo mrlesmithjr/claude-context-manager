@@ -32,6 +32,7 @@ import {
   remoteGetMemory,
   remoteMcpText,
 } from '../../src/capture/remote-client.js';
+import { loadDotEnv } from '../../src/utils/env.js';
 
 // This will be injected by esbuild --define during build
 declare const PLUGIN_VERSION: string;
@@ -105,6 +106,10 @@ function checkVersionMismatch(): string {
 const REMOTE_MEMORY_INJECT_MAX = 3000;
 
 async function main() {
+  // Load .env before reading any process.env values so remote mode activates
+  // even when Claude Code was launched from the Dock, Spotlight, or after a reboot.
+  loadDotEnv();
+
   // Debug: log that hook was invoked
   console.error('[context-manager] SessionStart hook invoked');
 

@@ -2426,6 +2426,37 @@ async function remoteSaveObservation(client, observation) {
   await post(client, "/capture/observation", observation);
 }
 
+// src/utils/env.ts
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir as homedir3 } from "node:os";
+function loadDotEnv() {
+  const envPath = join(homedir3(), ".claude-context", ".env");
+  try {
+    const content = readFileSync(envPath, "utf8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#"))
+        continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx < 1)
+        continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      let value = trimmed.slice(eqIdx + 1).trim();
+      if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+        value = value.slice(1, -1);
+      }
+      if (key && !(key in process.env)) {
+        process.env[key] = value;
+      }
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.error("[context-manager] Warning: could not read ~/.claude-context/.env:", err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
 // plugin/hooks/capture-tool.ts
 async function readStdin() {
   return new Promise((resolve) => {
@@ -2447,6 +2478,7 @@ function writeResponse(data) {
   });
 }
 async function main() {
+  loadDotEnv();
   let storage = null;
   try {
     const inputStr = await readStdin();

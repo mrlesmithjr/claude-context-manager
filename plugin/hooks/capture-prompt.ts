@@ -24,6 +24,7 @@ import { validateUserPromptSubmitInput } from '../../src/utils/validation.js';
 import { sanitizeContent } from '../../src/utils/sanitize.js';
 import { createDebugLogger } from '../../src/utils/logger.js';
 import { remoteSavePrompt } from '../../src/capture/remote-client.js';
+import { loadDotEnv } from '../../src/utils/env.js';
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -48,6 +49,10 @@ function writeResponse(data: Record<string, unknown>): Promise<void> {
 }
 
 async function main() {
+  // Load .env before reading any process.env values so remote mode activates
+  // even when Claude Code was launched from the Dock, Spotlight, or after a reboot.
+  loadDotEnv();
+
   // Storage is only opened in local mode; remote mode has no local SQLite footprint.
   let storage: SQLiteStorage | null = null;
   const debugLog = createDebugLogger('prompt-hook-debug.log');

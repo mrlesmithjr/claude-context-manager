@@ -1558,9 +1558,9 @@ function validateSessionStartInput(input) {
 }
 
 // plugin/hooks/context-inject.ts
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
-import { homedir as homedir3 } from "os";
+import { existsSync, readFileSync as readFileSync2 } from "fs";
+import { join as join2 } from "path";
+import { homedir as homedir4 } from "os";
 
 // src/capture/remote-client.ts
 import { randomUUID } from "crypto";
@@ -1629,6 +1629,37 @@ async function remoteMcpText(client, toolName, args) {
   }
 }
 
+// src/utils/env.ts
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir as homedir3 } from "node:os";
+function loadDotEnv() {
+  const envPath = join(homedir3(), ".claude-context", ".env");
+  try {
+    const content = readFileSync(envPath, "utf8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#"))
+        continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx < 1)
+        continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      let value = trimmed.slice(eqIdx + 1).trim();
+      if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+        value = value.slice(1, -1);
+      }
+      if (key && !(key in process.env)) {
+        process.env[key] = value;
+      }
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.error("[context-manager] Warning: could not read ~/.claude-context/.env:", err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
 // plugin/hooks/context-inject.ts
 async function readStdin() {
   return new Promise((resolve) => {
@@ -1651,8 +1682,8 @@ function writeResponse(data) {
 }
 function checkVersionMismatch() {
   try {
-    const installedPluginPath = join(
-      homedir3(),
+    const installedPluginPath = join2(
+      homedir4(),
       ".claude",
       "plugins",
       "context-manager",
@@ -1662,7 +1693,7 @@ function checkVersionMismatch() {
       return "";
     }
     const installedPackageJson = JSON.parse(
-      readFileSync(installedPluginPath, "utf-8")
+      readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
     if (installedVersion !== "0.8.31") {
@@ -1681,6 +1712,7 @@ function checkVersionMismatch() {
 }
 var REMOTE_MEMORY_INJECT_MAX = 3e3;
 async function main() {
+  loadDotEnv();
   console.error("[context-manager] SessionStart hook invoked");
   let storage = null;
   try {

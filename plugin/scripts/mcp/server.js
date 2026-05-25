@@ -6804,11 +6804,6 @@ var require_dist = __commonJS({
   }
 });
 
-// src/mcp/server.ts
-import { readFileSync as readFileSync4 } from "node:fs";
-import { join as join5 } from "node:path";
-import { homedir as homedir5 } from "node:os";
-
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 import process3 from "node:process";
 
@@ -33645,7 +33640,10 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
   return server;
 }
 
-// src/mcp/server.ts
+// src/utils/env.ts
+import { readFileSync as readFileSync4 } from "node:fs";
+import { join as join5 } from "node:path";
+import { homedir as homedir5 } from "node:os";
 function loadDotEnv() {
   const envPath = join5(homedir5(), ".claude-context", ".env");
   try {
@@ -33662,16 +33660,18 @@ function loadDotEnv() {
       if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
         value = value.slice(1, -1);
       }
-      if (key && !process.env[key]) {
+      if (key && !(key in process.env)) {
         process.env[key] = value;
       }
     }
   } catch (err) {
-    if (!(err instanceof Error) || err.code !== "ENOENT") {
-      console.error("[context-manager-mcp] Warning: could not read ~/.claude-context/.env:", err instanceof Error ? err.message : String(err));
+    if (err.code !== "ENOENT") {
+      console.error("[context-manager] Warning: could not read ~/.claude-context/.env:", err instanceof Error ? err.message : String(err));
     }
   }
 }
+
+// src/mcp/server.ts
 loadDotEnv();
 var REMOTE_URL = process.env.CONTEXT_MANAGER_URL || "";
 var REMOTE_TOKEN = process.env.CONTEXT_MANAGER_TOKEN || "";

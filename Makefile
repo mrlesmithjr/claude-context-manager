@@ -24,7 +24,8 @@ NODE_BIN         := $(shell which node)
 .PHONY: build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
         server-init server-start server-stop server-logs server-status server-env \
         server-native-start server-native-stop server-native-status \
-        server-launchd-install server-launchd-uninstall server-launchd-status
+        server-launchd-install server-launchd-uninstall server-launchd-status \
+        server-quickstart
 
 # --- Build ---
 
@@ -217,3 +218,18 @@ server-launchd-uninstall:
 # Show launchd agent status.
 server-launchd-status:
 	@launchctl list | grep "$(LAUNCHD_LABEL)" || echo "[launchd] context-manager agent is not loaded."
+
+# One-shot macOS setup: generate token, write .env, install launchd agent.
+# After this completes, restart Claude Code -- remote mode activates automatically.
+# Hooks read ~/.claude-context/.env at startup; no shell exports or launchctl setenv needed.
+server-quickstart: server-launchd-install
+	@echo ""
+	@echo "================================================================"
+	@echo " context-manager server setup complete"
+	@echo "================================================================"
+	@echo ""
+	@echo "Restart Claude Code to activate remote mode."
+	@echo "Hooks will read ~/.claude-context/.env automatically."
+	@echo ""
+	@echo "Verify: make server-native-status"
+	@echo "================================================================"
