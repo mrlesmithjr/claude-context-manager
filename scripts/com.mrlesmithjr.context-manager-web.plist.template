@@ -33,6 +33,9 @@
     <key>KeepAlive</key>
     <true/>
 
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
     <key>StandardOutPath</key>
     <string>{{HOME}}/.claude-context/web.log</string>
 

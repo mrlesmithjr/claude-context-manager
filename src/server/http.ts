@@ -28,25 +28,51 @@ import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
 // --- Background Embedding ---
 
 /**
- * Embed observations and sessions in the background after the HTTP server starts.
- * Runs continuously: after each pass completes, waits CONTEXT_MANAGER_EMBED_INTERVAL
- * minutes before checking again. Silently skips passes when nothing is pending.
- * Silently skips if dependencies aren't installed yet (first context_embed
- * call will trigger auto-install and future passes will embed automatically).
+ * Sleep for `ms` milliseconds, but resolve immediately if `signal` is aborted.
+ * Throws an AbortError if the signal fires so callers can catch and exit.
  */
-async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
-  // Short delay to let the server finish startup
-  await new Promise(resolve => setTimeout(resolve, 5000));
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * Embed observations and sessions in the background after the HTTP server starts.
+ * Runs until the abort signal fires. After each pass completes, waits
+ * CONTEXT_MANAGER_EMBED_INTERVAL minutes before checking again. Silently skips
+ * passes when nothing is pending. Silently skips if dependencies aren't installed
+ * yet (first context_embed call will trigger auto-install).
+ */
+async function backgroundEmbed(storage: SQLiteStorage, signal: AbortSignal): Promise<void> {
+  // Short delay to let the server finish startup. Abortable so shutdown is instant.
+  try {
+    await abortableSleep(5000, signal);
+  } catch {
+    return; // Aborted before we even started — exit cleanly
+  }
 
   const rawInterval = parseInt(process.env.CONTEXT_MANAGER_EMBED_INTERVAL || '10', 10);
   const intervalMinutes = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 10;
   const intervalMs = intervalMinutes * 60 * 1000;
   console.error(`[context-manager-http] Background embedding loop: interval ${intervalMinutes}m`);
 
-  while (true) {
+  while (!signal.aborted) {
     try {
       if (!await storage.isVectorSearchEnabled()) {
-        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        await abortableSleep(intervalMs, signal);
         continue;
       }
 
@@ -56,7 +82,7 @@ async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
 
       if (pending === 0 && pendingSessions === 0) {
         // Nothing to do — sleep and retry next interval
-        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        await abortableSleep(intervalMs, signal);
         continue;
       }
 
@@ -68,13 +94,13 @@ async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
       const { status } = embeddingService.getStatus();
       if (status === 'unavailable') {
         console.error('[context-manager-http] Background embedding: transformers unavailable, skipping. Run context_embed to trigger install.');
-        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        await abortableSleep(intervalMs, signal);
         continue;
       }
 
       const loaded = await embeddingService.load();
       if (!loaded) {
-        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        await abortableSleep(intervalMs, signal);
         continue;
       }
 
@@ -86,7 +112,7 @@ async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
       const BATCH_DELAY_MS = 500; // pause between batches to stay gentle
       let totalEmbedded = 0;
 
-      while (true) {
+      while (!signal.aborted) {
         const batch = await storage.getUnembeddedObservations(BATCH_SIZE);
         if (batch.length === 0) break;
 
@@ -98,8 +124,12 @@ async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
           return parts.join(' | ');
         });
 
+        // ONNX inference cannot be interrupted mid-flight; run it, then check signal
         const embeddings = await embeddingService.embedBatch(texts);
         if (!embeddings) break;
+
+        // Check signal before writing results from the completed inference
+        if (signal.aborted) break;
 
         for (let j = 0; j < batch.length; j++) {
           const obs = batch[j];
@@ -113,8 +143,12 @@ async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
           }
         }
 
-        // Pause between batches
-        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+        // Pause between batches (abortable)
+        try {
+          await abortableSleep(BATCH_DELAY_MS, signal);
+        } catch {
+          break; // Aborted during inter-batch pause
+        }
       }
 
       if (totalEmbedded > 0) {
@@ -122,16 +156,17 @@ async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
       }
 
       // --- Session embeddings ---
-      if (pendingSessions > 0) {
+      if (pendingSessions > 0 && !signal.aborted) {
         console.error(`[context-manager-http] Background session embedding: ${pendingSessions} sessions pending`);
 
         let totalSessionEmbedded = 0;
 
-        while (true) {
+        while (!signal.aborted) {
           const sessionBatch = await storage.getUnembeddedSessions(50);
           if (sessionBatch.length === 0) break;
 
           for (const session of sessionBatch) {
+            if (signal.aborted) break;
             try {
               const prompts = await storage.getSessionPrompts(session.id);
               const observations = await storage.getSessionObservations(session.id);
@@ -139,7 +174,10 @@ async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
               const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
               if (enrichedText.length < 20) continue;
 
+              // ONNX inference cannot be interrupted; run it, then check signal
               const sessionEmb = await embeddingService.embed(enrichedText);
+              if (signal.aborted) break;
+
               if (sessionEmb) {
                 await storage.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
                 totalSessionEmbedded++;
@@ -148,12 +186,20 @@ async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
               // skip individual failures
             }
 
-            // Brief pause between sessions
-            await new Promise(resolve => setTimeout(resolve, 100));
+            // Brief pause between sessions (abortable)
+            try {
+              await abortableSleep(100, signal);
+            } catch {
+              break; // Aborted during per-session pause
+            }
           }
 
-          // Pause between batches to stay gentle on resources
-          await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+          // Pause between batches to stay gentle on resources (abortable)
+          try {
+            await abortableSleep(BATCH_DELAY_MS, signal);
+          } catch {
+            break; // Aborted during inter-batch pause
+          }
         }
 
         if (totalSessionEmbedded > 0) {
@@ -161,11 +207,17 @@ async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
         }
       }
     } catch (err) {
+      // If we were aborted, exit the loop cleanly rather than logging as an error
+      if (signal.aborted) break;
       console.error('[context-manager-http] Background embedding error:', err);
     }
 
-    // Wait before next pass (success, empty, or error)
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    // Wait before next pass (success, empty, or error) — abortable
+    try {
+      await abortableSleep(intervalMs, signal);
+    } catch {
+      break; // Aborted during inter-pass sleep
+    }
   }
 }
 
@@ -547,30 +599,51 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     },
   });
 
-  // Start listening
-  try {
-    await fastify.listen({ port, host });
-    console.error(`[context-manager-http] Server listening on http://${host}:${port}`);
-    console.error(`[context-manager-http] MCP endpoint: http://${host}:${port}/mcp`);
-    // Fire-and-forget: embed pending observations and sessions in the background.
-    // Wraps in a catch so any uncaught rejection inside backgroundEmbed is logged,
-    // not left as an unhandled promise rejection that could crash the process.
-    backgroundEmbed(storage).catch((err) => {
-      console.error('[context-manager-http] Background embedding uncaught error:', err);
-    });
-  } catch (err) {
-    console.error('[context-manager-http] Failed to start:', err);
-    await storage.close();
-    process.exit(1);
-  }
+  // Set up the abort controller before defining shutdown so both closures share it.
+  const abortController = new AbortController();
 
-  // Graceful shutdown on SIGINT / SIGTERM
+  // Graceful shutdown on SIGINT / SIGTERM.
+  // Signals the background embed loop to stop, waits up to 3s for it to drain,
+  // then closes Fastify and SQLite. This prevents the C++ mutex crash that occurs
+  // when storage.close() races with an in-progress saveEmbedding() call.
+  let embedTask: Promise<void> | undefined;
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.error('[context-manager-http] Shutting down...');
+    abortController.abort(); // Signal background embed to stop
+    // Give the loop up to 3 seconds to finish its current save and exit cleanly
+    if (embedTask) {
+      await Promise.race([
+        embedTask.catch(() => {}),
+        new Promise(resolve => setTimeout(resolve, 3000)),
+      ]);
+    }
     await fastify.close();
     await storage.close();
     process.exit(0);
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  // Start listening
+  try {
+    await fastify.listen({ port, host });
+    console.error(`[context-manager-http] Server listening on http://${host}:${port}`);
+    console.error(`[context-manager-http] MCP endpoint: http://${host}:${port}/mcp`);
+    // Start the background embed loop. Keep a reference so shutdown() can await it.
+    embedTask = backgroundEmbed(storage, abortController.signal);
+    embedTask.catch((err) => {
+      if (!abortController.signal.aborted) {
+        console.error('[context-manager-http] Background embedding uncaught error:', err);
+      }
+    });
+  } catch (err) {
+    console.error('[context-manager-http] Failed to start:', err);
+    process.off('SIGINT', shutdown);
+    process.off('SIGTERM', shutdown);
+    await storage.close();
+    process.exit(1);
+  }
 }
