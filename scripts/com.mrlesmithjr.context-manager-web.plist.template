@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mrlesmithjr.context-manager-web</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{NODE_PATH}}</string>
+        <string>{{PROJECT_ROOT}}/dist/web/server.js</string>
+    </array>
+
+    <!-- 127.0.0.1 = local-only access; isNetworkMode=false in web server (no bearer auth, no project selection) -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CONTEXT_MANAGER_DB</key>
+        <string>{{HOME}}/.claude-context/context.db</string>
+        <key>CONTEXT_MANAGER_TOKEN</key>
+        <string>{{TOKEN}}</string>
+        <key>CONTEXT_MANAGER_PORT</key>
+        <string>3847</string>
+        <key>CONTEXT_MANAGER_HOST</key>
+        <string>127.0.0.1</string>
+        <key>LOG_LEVEL</key>
+        <string>warn</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>{{HOME}}/.claude-context/web.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{HOME}}/.claude-context/web-error.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>{{PROJECT_ROOT}}</string>
+</dict>
+</plist>

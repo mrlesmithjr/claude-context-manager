@@ -18,8 +18,10 @@ E2E_IMAGE        := context-manager-e2e:latest
 SERVER_IMAGE     := context-manager-server:latest
 SERVER_ENV       := $(HOME)/.claude-context/.env
 SERVER_COMPOSE   := docker compose -f docker-compose.server.yml
-LAUNCHD_LABEL    := com.mrlesmithjr.context-manager
-LAUNCHD_PLIST    := $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL).plist
+LAUNCHD_LABEL        := com.mrlesmithjr.context-manager
+LAUNCHD_PLIST        := $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL).plist
+LAUNCHD_LABEL_WEB    := com.mrlesmithjr.context-manager-web
+LAUNCHD_PLIST_WEB    := $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL_WEB).plist
 NODE_BIN         := $(shell which node)
 
 .PHONY: build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
@@ -27,7 +29,8 @@ NODE_BIN         := $(shell which node)
         server-status server-env \
         server-native-start server-native-stop server-native-status \
         server-launchd-install server-launchd-uninstall server-launchd-status \
-        server-quickstart server-stop-native switch-to-docker switch-to-native
+        server-quickstart server-stop-native switch-to-docker switch-to-native \
+        server-launchd-web-install server-launchd-web-uninstall server-launchd-web-status
 
 # --- Build ---
 
@@ -127,8 +130,8 @@ server-start: server-init server-build
 	LAUNCHD_ACTIVE=$$(launchctl list 2>/dev/null | grep -c "$(LAUNCHD_LABEL)"); \
 	for PORT in 4000 3847; do \
 		if lsof -i :$$PORT -t >/dev/null 2>&1; then \
-			if [ "$$LAUNCHD_ACTIVE" -gt 0 ] && [ "$$PORT" = "4000" ]; then \
-				echo "[server-start] Port 4000 is occupied by the native launchd service."; \
+			if [ "$$LAUNCHD_ACTIVE" -gt 0 ] && { [ "$$PORT" = "4000" ] || [ "$$PORT" = "3847" ]; }; then \
+				echo "[server-start] Port $$PORT is occupied by a native launchd service."; \
 				echo "  To switch to Docker mode: make switch-to-docker"; \
 			else \
 				PID=$$(lsof -i :$$PORT -t | head -1); \
@@ -261,26 +264,67 @@ server-launchd-uninstall:
 
 # Show launchd agent status.
 server-launchd-status:
-	@launchctl list | grep "$(LAUNCHD_LABEL)" || echo "[launchd] context-manager agent is not loaded."
+	@launchctl list | grep "$(LAUNCHD_LABEL)$$" || echo "[launchd] context-manager MCP agent is not loaded."
+
+# Install launchd agent for the web dashboard (port 3847) on macOS.
+# Reads token from ~/.claude-context/.env. Binds to 127.0.0.1 (local-only, no bearer auth required).
+server-launchd-web-install: server-init build
+	@if [ ! -f "$(SERVER_ENV)" ]; then \
+		echo "ERROR: $(SERVER_ENV) not found. Run 'make server-init' first."; exit 1; \
+	fi
+	@source "$(SERVER_ENV)" && TOKEN="$$CONTEXT_MANAGER_TOKEN" && \
+	sed \
+		-e "s|{{NODE_PATH}}|$(NODE_BIN)|g" \
+		-e "s|{{PROJECT_ROOT}}|$(CURDIR)|g" \
+		-e "s|{{HOME}}|$(HOME)|g" \
+		-e "s|{{TOKEN}}|$$TOKEN|g" \
+		scripts/com.mrlesmithjr.context-manager-web.plist.template \
+		> "$(LAUNCHD_PLIST_WEB)" && \
+	launchctl load "$(LAUNCHD_PLIST_WEB)" && \
+	echo "[launchd-web] Web dashboard agent installed and started." && \
+	echo "  Plist: $(LAUNCHD_PLIST_WEB)" && \
+	echo "  Logs:  $(HOME)/.claude-context/web.log" && \
+	sleep 2 && make server-launchd-web-status
+
+# Remove web dashboard launchd agent.
+server-launchd-web-uninstall:
+	@if [ -f "$(LAUNCHD_PLIST_WEB)" ]; then \
+		launchctl unload "$(LAUNCHD_PLIST_WEB)" 2>/dev/null || true; \
+		rm -f "$(LAUNCHD_PLIST_WEB)"; \
+		echo "[launchd-web] Web dashboard agent removed."; \
+	else \
+		echo "[launchd-web] No plist found at $(LAUNCHD_PLIST_WEB)."; \
+	fi
+
+# Show web dashboard launchd agent status.
+server-launchd-web-status:
+	@launchctl list | grep "$(LAUNCHD_LABEL_WEB)" || echo "[launchd-web] context-manager web agent is not loaded."
 
 # Stop the native launchd service without removing the plist.
 # The plist stays in place so 'make server-launchd-install' can restart it later.
 # Falls back to server.pid kill for the one-shot nohup path.
 server-stop-native:
-	@if launchctl list 2>/dev/null | grep -q "$(LAUNCHD_LABEL)"; then \
+	@if launchctl list 2>/dev/null | grep -q "$(LAUNCHD_LABEL)$$"; then \
 		launchctl unload "$(LAUNCHD_PLIST)" 2>/dev/null && \
-			echo "[native] Service unloaded (plist preserved at $(LAUNCHD_PLIST))." || \
-			echo "[native] launchctl unload failed."; \
+			echo "[native] MCP service unloaded (plist preserved)." || \
+			echo "[native] MCP launchctl unload failed."; \
 	else \
-		echo "[native] launchd service is not loaded."; \
+		echo "[native] MCP launchd service is not loaded."; \
 		PID_FILE="$(HOME)/.claude-context/server.pid"; \
 		if [ -f "$$PID_FILE" ]; then \
 			PID=$$(cat "$$PID_FILE"); \
 			if kill -0 "$$PID" 2>/dev/null; then \
-				kill "$$PID" && echo "[native] Stopped background server (PID $$PID)."; \
+				kill "$$PID" && echo "[native] Stopped background MCP server (PID $$PID)."; \
 			fi; \
 			rm -f "$$PID_FILE"; \
 		fi; \
+	fi
+	@if launchctl list 2>/dev/null | grep -q "$(LAUNCHD_LABEL_WEB)$$"; then \
+		launchctl unload "$(LAUNCHD_PLIST_WEB)" 2>/dev/null && \
+			echo "[native] Web service unloaded (plist preserved)." || \
+			echo "[native] Web launchctl unload failed."; \
+	else \
+		echo "[native] Web launchd service is not loaded."; \
 	fi
 	@for PORT in 4000 3847; do \
 		if lsof -i :$$PORT -t >/dev/null 2>&1; then \
@@ -290,19 +334,22 @@ server-stop-native:
 		fi; \
 	done
 
-# One-shot macOS setup: generate token, write .env, install launchd agent.
+# One-shot macOS setup: generate token, write .env, install both launchd agents.
 # After this completes, restart Claude Code -- remote mode activates automatically.
 # Hooks read ~/.claude-context/.env at startup; no shell exports or launchctl setenv needed.
-server-quickstart: server-launchd-install
+server-quickstart: server-launchd-install server-launchd-web-install
 	@echo ""
 	@echo "================================================================"
-	@echo " context-manager server setup complete"
+	@echo " context-manager setup complete"
 	@echo "================================================================"
 	@echo ""
 	@echo "Restart Claude Code to activate remote mode."
 	@echo "Hooks will read ~/.claude-context/.env automatically."
 	@echo ""
-	@echo "Verify: make server-native-status"
+	@echo "  MCP server:    http://localhost:4000  (hook capture)"
+	@echo "  Web dashboard: http://localhost:3847"
+	@echo ""
+	@echo "Verify: make server-status"
 	@echo "================================================================"
 
 # --- Deployment mode migration ---
@@ -348,5 +395,6 @@ switch-to-native:
 	if lsof -i :3847 -t >/dev/null 2>&1; then \
 		echo "ERROR: Port 3847 is still occupied. Cannot start native service."; exit 1; \
 	fi; \
-	echo "[switch] Ports are free. Installing native launchd service..."
+	echo "[switch] Ports are free. Installing native launchd services..."
 	$(MAKE) server-launchd-install
+	$(MAKE) server-launchd-web-install
