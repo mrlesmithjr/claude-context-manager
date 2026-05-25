@@ -2555,6 +2555,9 @@ function calculateImportance(toolName, toolInput, toolResponse, filesTouched) {
   }
   return { importance, importance_score: Math.round(score * 100) / 100 };
 }
+var BASH_SKIP_THRESHOLD = 0.15;
+var MCP_SUMMARY_TRUNCATE_CHARS = 160;
+var MCP_SUMMARY_SCORE_THRESHOLD = 0.3;
 function processToolCapture(capture) {
   const sanitizedResponse = capture.tool_response ? sanitizeContent(capture.tool_response) : "";
   const extracted = extractOutput(
@@ -2562,7 +2565,7 @@ function processToolCapture(capture) {
     capture.tool_name,
     capture.tool_input
   );
-  const summary = summarizeTool(
+  let summary = summarizeTool(
     capture.tool_name,
     capture.tool_input,
     sanitizedResponse
@@ -2581,6 +2584,12 @@ ${extracted.stored_output}`;
     sanitizedResponse,
     filesTouched
   );
+  if (capture.tool_name === "Bash" && importance_score < BASH_SKIP_THRESHOLD) {
+    return { status: "skipped" };
+  }
+  if (capture.tool_name.startsWith("mcp__") && importance_score < MCP_SUMMARY_SCORE_THRESHOLD && summary.length > MCP_SUMMARY_TRUNCATE_CHARS) {
+    summary = summary.substring(0, MCP_SUMMARY_TRUNCATE_CHARS) + "...";
+  }
   const command = capture.tool_input && typeof capture.tool_input === "object" ? capture.tool_input.command : void 0;
   const tags = inferTags(capture.tool_name, filesTouched, command);
   const sanitizedToolInput = capture.tool_input ? { ...capture.tool_input } : void 0;
@@ -2728,15 +2737,19 @@ async function main() {
 [stderr]
 ${stderr}` : stdout;
       }
-      const observation2 = processToolCapture({
+      const result2 = processToolCapture({
         session_id: sessionId,
         project: cwd,
         tool_name: toolName,
         tool_input: obj.tool_input,
         tool_response: toolResponse
       });
+      if ("status" in result2) {
+        await writeResponse({ status: result2.status });
+        return;
+      }
       try {
-        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, observation2);
+        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, result2);
         await writeResponse({ status: "captured" });
       } catch (error) {
         console.error("[context-manager] Remote capture error:", error);
@@ -2749,13 +2762,18 @@ ${stderr}` : stdout;
       await writeResponse({ status: "skipped" });
       return;
     }
-    const observation = processToolCapture({
+    const result = processToolCapture({
       session_id: input.session_id,
       project: input.cwd,
       tool_name: input.tool_name,
       tool_input: input.tool_input,
       tool_response: input.tool_response
     });
+    if ("status" in result) {
+      await writeResponse({ status: result.status });
+      return;
+    }
+    const observation = result;
     storage = new SQLiteStorage();
     await storage.initialize();
     if (observation.files_touched.length > 0) {
