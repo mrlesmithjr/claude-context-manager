@@ -60398,7 +60398,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.28" : "unknown"
+      version: true ? "0.8.31" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -62604,6 +62604,84 @@ ${storedOutput}`;
 };
 
 // src/server/http.ts
+async function backgroundEmbed(storage) {
+  await new Promise((resolve) => setTimeout(resolve, 5e3));
+  try {
+    if (!await storage.isVectorSearchEnabled())
+      return;
+    const pending = storage.countUnembedded();
+    if (pending === 0)
+      return;
+    const embeddingService = getEmbeddingService();
+    const { status } = embeddingService.getStatus();
+    if (status === "unavailable")
+      return;
+    const loaded = await embeddingService.load();
+    if (!loaded)
+      return;
+    console.error(`[context-manager-http] Background embedding: ${pending} observations pending`);
+    const BATCH_SIZE = 50;
+    const BATCH_DELAY_MS = 500;
+    let totalEmbedded = 0;
+    while (true) {
+      const batch = await storage.getUnembeddedObservations(BATCH_SIZE);
+      if (batch.length === 0)
+        break;
+      const texts = batch.map((obs) => {
+        const parts = [obs.summary];
+        if (obs.files_touched.length > 0) {
+          parts.push(obs.files_touched.join(", "));
+        }
+        return parts.join(" | ");
+      });
+      const embeddings = await embeddingService.embedBatch(texts);
+      if (!embeddings)
+        break;
+      for (let j = 0; j < batch.length; j++) {
+        const obs = batch[j];
+        const emb = embeddings[j];
+        if (!obs?.id || !emb)
+          continue;
+        try {
+          await storage.saveEmbedding(obs.id, emb);
+          totalEmbedded++;
+        } catch {
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+    }
+    if (totalEmbedded > 0) {
+      console.error(`[context-manager-http] Background embedding complete: ${totalEmbedded} observations embedded`);
+    }
+    const pendingSessions = await storage.countUnembeddedSessions();
+    if (pendingSessions > 0) {
+      console.error(`[context-manager-http] Background session embedding: ${pendingSessions} sessions pending`);
+      let totalSessionEmbedded = 0;
+      const sessionBatch = await storage.getUnembeddedSessions(50);
+      for (const session of sessionBatch) {
+        try {
+          const prompts = await storage.getSessionPrompts(session.id);
+          const observations = await storage.getSessionObservations(session.id);
+          const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+          if (enrichedText.length < 20)
+            continue;
+          const sessionEmb = await embeddingService.embed(enrichedText);
+          if (sessionEmb) {
+            await storage.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
+            totalSessionEmbedded++;
+          }
+        } catch {
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (totalSessionEmbedded > 0) {
+        console.error(`[context-manager-http] Background session embedding complete: ${totalSessionEmbedded} sessions embedded`);
+      }
+    }
+  } catch (err) {
+    console.error("[context-manager-http] Background embedding error:", err);
+  }
+}
 async function startHttpServer(options = {}) {
   const port = options.port ?? parseInt(process.env.CONTEXT_MANAGER_PORT || "4666", 10);
   const host = options.host ?? (process.env.CONTEXT_MANAGER_HOST || "0.0.0.0");
@@ -62819,6 +62897,9 @@ async function startHttpServer(options = {}) {
     await fastify.listen({ port, host });
     console.error(`[context-manager-http] Server listening on http://${host}:${port}`);
     console.error(`[context-manager-http] MCP endpoint: http://${host}:${port}/mcp`);
+    backgroundEmbed(storage).catch((err) => {
+      console.error("[context-manager-http] Background embedding uncaught error:", err);
+    });
   } catch (err) {
     console.error("[context-manager-http] Failed to start:", err);
     await storage.close();
