@@ -15,6 +15,7 @@ COMPOSE_FILE     := docker-compose.e2e.yml
 COMPOSE          := docker compose -f $(COMPOSE_FILE)
 E2E_IMAGE        := context-manager-e2e:latest
 
+SERVER_IMAGE     := context-manager-server:latest
 SERVER_ENV       := $(HOME)/.claude-context/.env
 SERVER_COMPOSE   := docker compose -f docker-compose.server.yml
 LAUNCHD_LABEL    := com.mrlesmithjr.context-manager
@@ -22,7 +23,8 @@ LAUNCHD_PLIST    := $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL).plist
 NODE_BIN         := $(shell which node)
 
 .PHONY: build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
-        server-init server-start server-stop server-logs server-status server-env \
+        server-build server-clean server-init server-start server-stop server-logs \
+        server-status server-env \
         server-native-start server-native-stop server-native-status \
         server-launchd-install server-launchd-uninstall server-launchd-status \
         server-quickstart
@@ -78,21 +80,29 @@ e2e-clean: test-e2e-down
 
 # --- Local HTTP server (remote-mode for hooks) ---
 #
-# Runs the context-manager HTTP MCP server in Docker, bound to localhost:4000.
-# Mounts ~/.claude-context/ so existing observations are immediately available.
-# The same Docker image used by the E2E tests is reused here.
+# Runs the HTTP MCP server in Docker using a named volume for SQLite.
+# Works on macOS and Linux (no bind mount, no WAL corruption).
 #
 # Quickstart:
 #   make server-init   generate token, write ~/.claude-context/.env
 #   make server-env    print env var setup instructions for Claude Code
-#   make server-start  start the server (builds image if needed)
+#   make server-start  build image (if needed) and start the server
+
+# Build the production server image from Dockerfile.server.
+server-build:
+	$(SERVER_COMPOSE) build --pull
+
+# Remove the server image to force a full rebuild on the next run.
+server-clean: server-stop
+	docker image rm -f $(SERVER_IMAGE) 2>/dev/null || true
+	@echo "Server image removed. Run 'make server-start' to rebuild."
 
 # Generate a random bearer token and write it to ~/.claude-context/.env.
 # Idempotent: will not overwrite an existing env file.
 server-init:
 	@mkdir -p "$(HOME)/.claude-context"
 	@if [ -f "$(SERVER_ENV)" ]; then \
-		echo "[server-init] $(SERVER_ENV) already exists — skipping token generation."; \
+		echo "[server-init] $(SERVER_ENV) already exists, skipping token generation."; \
 		echo "  Delete it and re-run to rotate the token."; \
 	else \
 		TOKEN=$$(openssl rand -hex 32); \
@@ -108,7 +118,7 @@ server-env: server-init
 
 # Build the server image (if needed) and start the server in the background.
 # Reads the token from ~/.claude-context/.env.
-server-start: server-init e2e-build
+server-start: server-init server-build
 	@if [ ! -f "$(SERVER_ENV)" ]; then \
 		echo "ERROR: $(SERVER_ENV) not found. Run 'make server-init' first."; exit 1; \
 	fi
@@ -121,7 +131,7 @@ server-start: server-init e2e-build
 	@echo "If Claude Code hooks are not yet configured for remote mode:"
 	@echo "  make server-env"
 
-# Stop the server. Data in ~/.claude-context/ is preserved.
+# Stop the server. Data in the named volume is preserved.
 server-stop:
 	$(SERVER_COMPOSE) --env-file "$(SERVER_ENV)" down
 

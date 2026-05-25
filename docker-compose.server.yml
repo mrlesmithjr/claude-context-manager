@@ -1,42 +1,33 @@
-# NOTE: This docker-compose file is intended for Linux deployments only.
-# On macOS, Docker Desktop uses a Linux VM with VirtioFS for bind mounts.
-# SQLite WAL mode requires POSIX advisory locks that do not work correctly
-# across this virtualization layer, causing database corruption.
-# macOS users: use 'make server-launchd-install' instead.
+# context-manager server stack.
 #
-# context-manager HTTP MCP server — persistent local instance.
+# Works on macOS and Linux: SQLite lives in a Docker-managed named volume, never
+# a bind mount. Bind-mounting ~/.claude-context/ causes WAL locking corruption on
+# macOS due to Docker Desktop VirtioFS (Design Decision #17).
 #
-# Runs the HTTP MCP server using your existing ~/.claude-context/ data directory
-# so all observations written via hooks are stored in the same SQLite database
-# your local mode was already using. No migration needed.
+# Architecture:
+#   Mac hooks  →  CONTEXT_MANAGER_URL=http://localhost:4000  →  context-server
+#   context-server owns /data/context.db in named volume (no host FS exposure)
 #
-# Usage (preferred — reads token from ~/.claude-context/.env):
-#   make server-start        # first run: generates token, starts server
-#   make server-stop         # stop
-#   make server-logs         # tail logs
-#   make server-status       # check health
+# Usage:
+#   make server-init    generate token, write ~/.claude-context/.env
+#   make server-build   build the server image
+#   make server-start   start all services (builds image if needed)
+#   make server-stop    stop all services
+#   make server-logs    tail logs
+#   make server-status  check health
 #
-# Manual (if you need to pass the token explicitly):
-#   CONTEXT_MANAGER_TOKEN=<secret> docker compose -f docker-compose.server.yml up -d
-#
-# Hook env vars (set ONCE in shell, then restart Claude Code):
-#   export CONTEXT_MANAGER_URL=http://localhost:4000
-#   export CONTEXT_MANAGER_TOKEN=<same secret>
-#
-# The server binds to 127.0.0.1:4000 only — not accessible from other machines
-# on the network. For multi-machine setups, change the port binding.
+# Data lives in the 'context-manager-data' named volume.
+# To migrate from an existing local DB, see issue #52 (web UI import).
 
 services:
   context-server:
     build:
       context: .
-      dockerfile: Dockerfile.e2e
-    image: context-manager-e2e:latest
-    # Use the tsc-compiled dist/server/http.js via start-server.mjs.
-    # The esbuild-bundled dist/cli.js has a CJS/ESM incompatibility with fastify.
-    command: node /app/test/e2e/start-server.mjs
+      dockerfile: Dockerfile.server
+    image: context-manager-server:latest
+    command: node /app/docker/start-mcp-server.mjs
     ports:
-      # Bind to localhost only — not externally reachable.
+      # Bind to localhost only — not externally reachable from other machines.
       - "127.0.0.1:4000:4000"
     environment:
       CONTEXT_MANAGER_DB: /data/context.db
@@ -45,8 +36,9 @@ services:
       CONTEXT_MANAGER_HOST: "0.0.0.0"
       LOG_LEVEL: info
     volumes:
-      # Mount existing data directory so all prior observations are available immediately.
-      - ${HOME}/.claude-context:/data
+      # Docker-managed named volume: SQLite WAL locking works correctly.
+      # Data persists across container restarts, stops, and image rebuilds.
+      - context-manager-data:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:4000/health"]
@@ -54,3 +46,27 @@ services:
       timeout: 5s
       retries: 6
       start_period: 15s
+
+  # web-ui is defined in issue #52 after web auth is added for network mode.
+  # web-ui:
+  #   image: context-manager-server:latest
+  #   command: node /app/dist/web/server.js
+  #   ports:
+  #     - "127.0.0.1:3847:3847"
+  #   environment:
+  #     CONTEXT_MANAGER_DB: /data/context.db
+  #     CONTEXT_MANAGER_TOKEN: ${CONTEXT_MANAGER_TOKEN}
+  #     CONTEXT_MANAGER_PORT: "3847"
+  #     CONTEXT_MANAGER_HOST: "0.0.0.0"
+  #     LOG_LEVEL: info
+  #   volumes:
+  #     - context-manager-data:/data
+  #   depends_on:
+  #     context-server:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+
+volumes:
+  context-manager-data:
+    # Docker-managed named volume. Never bind-mount the host filesystem here.
+    driver: local

@@ -1,0 +1,87 @@
+# syntax=docker/dockerfile:1.7
+# Production server image: HTTP MCP server (port 4000) and web dashboard (port 3847).
+#
+# Architecture: Docker-managed named volume owns the SQLite DB. No bind mount.
+# This avoids WAL locking corruption that occurs when bind-mounting ~/.claude-context/
+# across Docker Desktop's VirtioFS layer on macOS (Design Decision #17).
+#
+# Mac hooks connect via remote capture mode over HTTP:
+#   CONTEXT_MANAGER_URL=http://localhost:4000
+#   CONTEXT_MANAGER_TOKEN=<token from make server-init>
+#
+# Build: docker compose -f docker-compose.server.yml build
+# Run:   make server-start
+
+# --- Builder stage: compile TypeScript and install native modules ---
+FROM node:20-slim AS builder
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Build dependencies:
+#   build-essential + python3: compile better-sqlite3 and sqlite-vec native modules
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    build-essential \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install all dependencies (including devDependencies for build tools).
+# Layer-cached until package-lock.json changes.
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Copy source files needed for compilation
+COPY tsconfig.json ./
+COPY src/ ./src/
+COPY web/server/ ./web/server/
+COPY cli/ ./cli/
+COPY scripts/ ./scripts/
+COPY plugin/ ./plugin/
+
+# Build:
+#   build:src  - tsc compiles src/ to dist/ (used by docker/start-mcp-server.mjs)
+#   build:web  - esbuild bundles web/server/index.ts to dist/web/server.js
+RUN npm run build:src && npm run build:web
+
+# Copy Docker entrypoint scripts
+COPY docker/ ./docker/
+
+# --- Runtime stage: minimal image with compiled artifacts ---
+FROM node:20-slim AS runtime
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Runtime dependencies:
+#   curl: used by Docker healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json ./
+
+# Copy pre-compiled node_modules from builder (includes native .node binaries).
+# Both stages use the same base image so binary compatibility is guaranteed.
+COPY --from=builder /app/node_modules/ ./node_modules/
+
+# Copy compiled server artifacts
+COPY --from=builder /app/dist/ ./dist/
+
+# Copy web client static assets (HTML, JS, vendored CSS — no build step needed)
+COPY web/client/ ./web/client/
+
+# Copy Docker entrypoint scripts
+COPY --from=builder /app/docker/ ./docker/
+
+# Data volume mount point — DB lives here in Docker-managed volume, never a bind mount
+RUN mkdir -p /data
+
+ENV CONTEXT_MANAGER_DB=/data/context.db
+
+# 4000: HTTP MCP server (remote capture endpoint for hooks)
+# 3847: Web dashboard
+EXPOSE 4000 3847
