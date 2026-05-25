@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 25, 2026 (v0.8.31)
+**Last Updated**: May 25, 2026 (v0.8.32)
 
 ---
 
@@ -208,6 +208,7 @@ claude-context-manager/
 |   |   +-- sqlite.ts          # SQLite implementation + sqlite-vec
 |   +-- utils/
 |       +-- classify.ts        # Query classification for retrieval routing (keyword/semantic/hybrid)
+|       +-- env.ts             # loadDotEnv() shared utility; reads ~/.claude-context/.env at startup
 |       +-- hash.ts            # sha256() for exact dedup, l2DistanceToCosine() for vector search
 |       +-- sanitize.ts        # Privacy tag stripping
 |       +-- validation.ts      # Input validation
@@ -431,6 +432,12 @@ The fix: `src/mcp/server.ts` calls `loadDotEnv()` at startup (before any proxy c
 
 The `.env` file is already written by `make server-init`, so users who follow the server setup instructions get proxy mode for free on the next MCP server restart. No additional configuration step is required.
 
+**Hook .env loading (v0.8.32):**
+
+Extended the same `loadDotEnv()` pattern to all four hooks (`context-inject.ts`, `capture-tool.ts`, `capture-prompt.ts`, `session-end.ts`). `loadDotEnv()` was extracted into `src/utils/env.ts` as a shared utility. Hooks call it as the first statement in `main()`, before any `process.env` reads.
+
+Combined with the MCP server's existing `.env` loading, this means the entire remote mode setup requires no shell configuration at all: run `make server-quickstart` (macOS) or `make server-init && make server-start` (Linux), restart Claude Code, and proxy mode activates automatically.
+
 ### 17. Native Server on macOS (Docker incompatible)
 
 The `docker-compose.server.yml` Docker approach for local server deployment does NOT work on macOS. Docker Desktop uses a Linux VM with VirtioFS for bind mount filesystem sharing. SQLite WAL mode requires POSIX advisory file locks and shared memory (`-shm` files) that do not work correctly across this virtualization layer.
@@ -532,7 +539,7 @@ make e2e-clean     # Stop containers and remove the Docker image
 
 # Local HTTP server — Docker (Linux only; see Design Decision #17 for macOS)
 make server-init   # Generate token, write ~/.claude-context/.env (idempotent)
-make server-env    # Print env var setup instructions for Claude Code hooks
+make server-env    # Print remote mode environment summary
 make server-start  # Build image (if needed) and start server in background
 make server-stop   # Stop the Docker server
 make server-logs   # Tail Docker server logs
@@ -547,6 +554,7 @@ make server-native-status # Health check for native server
 make server-launchd-install    # Fill plist template and install to ~/Library/LaunchAgents/
 make server-launchd-uninstall  # Unload and remove launchd plist
 make server-launchd-status     # Check launchd agent status via launchctl list
+make server-quickstart         # macOS all-in-one: init token + install launchd + start server
 ```
 
 ---
@@ -562,7 +570,7 @@ Environment variables (optional):
 | `CONTEXT_MANAGER_PORT` | `3847` | Web dashboard port |
 | `CONTEXT_MANAGER_HOST` | `localhost` | Web dashboard host |
 | `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic/hybrid search results; FTS5 results are never filtered |
-| `CONTEXT_MANAGER_URL` | _(unset)_ | When set, hooks POST to this URL instead of writing local SQLite (remote capture mode) |
+| `CONTEXT_MANAGER_URL` | _(unset)_ | When set, hooks POST to this URL instead of writing local SQLite (remote capture mode). All hooks and the stdio MCP server read this from `~/.claude-context/.env` automatically; no shell export needed. |
 | `CONTEXT_MANAGER_TOKEN` | _(unset)_ | Bearer token for remote capture mode and HTTP MCP server; required when `CONTEXT_MANAGER_URL` is set |
 
 ---

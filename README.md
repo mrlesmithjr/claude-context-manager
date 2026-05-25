@@ -74,10 +74,10 @@ Environment variables (all optional):
 | `CONTEXT_MANAGER_PORT` | `3847` | Web dashboard port |
 | `CONTEXT_MANAGER_HOST` | `localhost` | Web dashboard host |
 | `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic and hybrid search results; FTS5 results are never filtered |
-| `CONTEXT_MANAGER_URL` | _(unset)_ | When set, hooks POST captures to this URL instead of local SQLite (proxy mode) |
+| `CONTEXT_MANAGER_URL` | _(unset)_ | When set, hooks POST captures to this URL instead of local SQLite (proxy mode). All hooks and the stdio MCP server read this from `~/.claude-context/.env` automatically; no shell export needed. |
 | `CONTEXT_MANAGER_TOKEN` | _(unset)_ | Bearer token for the HTTP server and proxy mode; required when `CONTEXT_MANAGER_URL` is set |
 
-For proxy mode, place variables in `~/.claude-context/.env`. The stdio MCP server loads this file at startup because Claude Code does not inject `settings.json` env vars into stdio MCP server processes.
+Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server load this file at startup. No shell configuration, `.zshrc` exports, or launchctl overrides are needed.
 
 ---
 
@@ -108,40 +108,36 @@ No server setup required. Hooks write directly to `~/.claude-context/context.db`
 
 Run a central server so multiple machines share one database. Hooks become thin HTTP clients when `CONTEXT_MANAGER_URL` is set.
 
-**Step 1: Initialize the server (generates token, writes `~/.claude-context/.env`)**
+**macOS (recommended: launchd for reboot persistence)**
 
 ```bash
-make server-init
+make server-quickstart
 ```
 
-**Step 2: Start the server**
+This one command generates a bearer token, writes `~/.claude-context/.env`, and installs the server as a launchd agent that starts automatically on login. Then restart Claude Code. Hooks read `.env` automatically, no shell configuration needed.
 
-On macOS, use native mode (Docker bind mounts are incompatible with SQLite WAL on macOS):
+**Linux**
 
 ```bash
-# One-shot background start
-make server-native-start
-
-# Or install as a launchd agent for persistent startup across reboots (recommended)
-make server-launchd-install
+make server-init && make server-start
 ```
 
-On Linux, Docker works correctly:
+Then restart Claude Code.
+
+**Verify**
 
 ```bash
-make server-start
+curl -s http://localhost:4000/health
+make server-native-status   # macOS
 ```
-
-**Step 3: Proxy mode activates automatically**
-
-`make server-init` writes `CONTEXT_MANAGER_URL` to `~/.claude-context/.env`. The stdio MCP server reads this file at startup and enables proxy mode. No additional configuration is needed after the server is running.
 
 **Server management commands:**
 
 | Command | Purpose |
 |---------|---------|
+| `make server-quickstart` | macOS: init token, install launchd agent, start server (all-in-one) |
 | `make server-init` | Generate token and write `~/.claude-context/.env` (idempotent) |
-| `make server-env` | Print env var setup instructions |
+| `make server-env` | Print remote mode environment summary |
 | `make server-native-start` | Start server natively in background |
 | `make server-native-stop` | Stop native background server |
 | `make server-native-status` | Health check for native server |
