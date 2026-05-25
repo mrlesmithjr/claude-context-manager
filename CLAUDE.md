@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 25, 2026 (v0.8.35)
+**Last Updated**: May 25, 2026 (v0.8.36)
 
 ---
 
@@ -358,7 +358,7 @@ claude-context-manager/
 - Graceful degradation: if embeddings unavailable, all strategies fall back to keyword
 - Search method included in output for transparency
 
-### 13. Session Narrative Selection (v0.8.3)
+### 13. Session Narrative Selection (v0.8.3, extended v0.8.36)
 - The Stop hook previously used the **last** assistant message as the session summary — often a closing remark ("Yes.", "Now bump the version...")
 - Now scores all assistant messages for narrative quality and picks the best candidate
 - Scorer (`scoreForNarrative`) favors messages that describe work done:
@@ -368,6 +368,20 @@ claude-context-manager/
   - Short affirmations ("Yes", "Sure", "Ok", "Let me...") score 0 even if they pass length check
 - Best-scoring message used if score >= 0.25; falls back to last assistant message otherwise
 - Result: session narratives in `context_list` now reflect what was accomplished, not how the session closed
+
+**v0.8.36 extension: discussion and planning session support**
+
+The original scorer only rewarded code-change signals. Discussion and planning sessions produced none of those signals, so the scorer picked weak candidates (verification outputs, closing remarks) instead of the message capturing what was actually decided.
+
+Two fixes were applied:
+
+1. **New discussion scoring signals in `scoreForNarrative`** (`src/utils/transcript.ts`):
+   - Decision language (+0.15): "decided", "going with", "recommendation", "best option", "the plan is", etc.
+   - Comparison/analysis structure (+0.15): markdown tables, "vs", "trade-off", "pros and cons", "the gap is", etc.
+   - Conclusion framing (+0.10): "bottom line", "in summary", "to summarize", "here is what", etc.
+   - Priority/planning language (+0.05): "priority", "next step", "first step", "tackle first"
+
+2. **Conversation observation fallback**: `pickBestNarrative` now returns `bestScore`. In `session-end.ts` and the `capture-prompt.ts` checkpoint path, when `bestScore < 0.20`, the top Conversation observation for the session is retrieved via `getTopConversationObservation(sessionId)` and used as the summary instead. Conversation observations are already scored for decision language, tables, and recommendations by the existing insight extractor (Design Decision #5a), making them reliable fallback content for sessions that are entirely discussion-based.
 
 ### 14. Domain Tag Inference (v0.8.6)
 - Every observation gets domain tags inferred at capture time from file paths and Bash commands
