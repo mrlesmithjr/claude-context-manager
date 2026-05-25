@@ -104,6 +104,8 @@ Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server 
 
 ## Deployment
 
+> New to context-manager or setting up on a new machine? See the [Setup Guide](docs/SETUP.md) for a step-by-step walkthrough of all three deployment modes.
+
 ### Default: local SQLite (single machine)
 
 No server setup required. Hooks write directly to `~/.claude-context/context.db`. This is the default after plugin install.
