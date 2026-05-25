@@ -6804,6 +6804,11 @@ var require_dist = __commonJS({
   }
 });
 
+// src/mcp/server.ts
+import { readFileSync as readFileSync4 } from "node:fs";
+import { join as join5 } from "node:path";
+import { homedir as homedir5 } from "node:os";
+
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 import process3 from "node:process";
 
@@ -32924,7 +32929,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.28" : "unknown"
+      version: true ? "0.8.30" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -33641,6 +33646,33 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
 }
 
 // src/mcp/server.ts
+function loadDotEnv() {
+  const envPath = join5(homedir5(), ".claude-context", ".env");
+  try {
+    const content = readFileSync4(envPath, "utf8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#"))
+        continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx < 1)
+        continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      let value = trimmed.slice(eqIdx + 1).trim();
+      if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+        value = value.slice(1, -1);
+      }
+      if (key && !process.env[key]) {
+        process.env[key] = value;
+      }
+    }
+  } catch (err) {
+    if (!(err instanceof Error) || err.code !== "ENOENT") {
+      console.error("[context-manager-mcp] Warning: could not read ~/.claude-context/.env:", err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+loadDotEnv();
 var REMOTE_URL = process.env.CONTEXT_MANAGER_URL || "";
 var REMOTE_TOKEN = process.env.CONTEXT_MANAGER_TOKEN || "";
 var storage = null;

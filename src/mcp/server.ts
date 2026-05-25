@@ -11,12 +11,58 @@
  * developer laptops to share context captured on a central host.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { SQLiteStorage } from '../storage/sqlite.js';
 import { getEmbeddingService } from '../embedding/service.js';
 import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
 import { createContextManagerServer } from './create-server.js';
 import { loadPathPrefixMap } from '../utils/path-map.js';
+
+/**
+ * Load environment variables from ~/.claude-context/.env into process.env.
+ *
+ * Claude Code injects settings.json `env` vars into hook subprocesses but NOT
+ * into stdio MCP server processes (spawned via .mcp.json). Reading the shared
+ * .env file at startup ensures CONTEXT_MANAGER_URL and CONTEXT_MANAGER_TOKEN
+ * are available so proxy mode activates correctly.
+ *
+ * Existing process.env values are never overridden (explicit env vars win).
+ */
+function loadDotEnv(): void {
+  const envPath = join(homedir(), '.claude-context', '.env');
+  try {
+    const content = readFileSync(envPath, 'utf8');
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx < 1) continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      let value = trimmed.slice(eqIdx + 1).trim();
+      // Strip matching surrounding quotes added by manual edits (e.g. VAR="value")
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      if (key && !process.env[key]) {
+        process.env[key] = value;
+      }
+    }
+  } catch (err: unknown) {
+    // ENOENT: .env file is optional, silently skip
+    // Any other error (EACCES etc.) is worth surfacing
+    if (!(err instanceof Error) || (err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('[context-manager-mcp] Warning: could not read ~/.claude-context/.env:', (err instanceof Error ? err.message : String(err)));
+    }
+  }
+}
+
+loadDotEnv();
 
 // Proxy configuration: when set, all tool calls are forwarded to the remote server
 const REMOTE_URL = process.env.CONTEXT_MANAGER_URL || '';
