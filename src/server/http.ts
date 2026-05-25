@@ -22,6 +22,118 @@ import { createContextManagerServer } from '../mcp/create-server.js';
 import { SQLiteStorage } from '../storage/sqlite.js';
 import { loadPathPrefixMap, normalizePath } from '../utils/path-map.js';
 import { exportToAutoMemory, resolveMemoryDir } from '../export/memory.js';
+import { getEmbeddingService } from '../embedding/service.js';
+import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
+
+// --- Background Embedding ---
+
+/**
+ * Embed observations and sessions in the background after the HTTP server starts.
+ * Runs in batches with a delay between each to avoid hogging resources.
+ * Silently skips if dependencies aren't installed yet (first context_embed
+ * call will trigger auto-install and future startups will embed automatically).
+ */
+async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
+  // Short delay to let the server finish startup
+  await new Promise(resolve => setTimeout(resolve, 5000));
+
+  try {
+    if (!await storage.isVectorSearchEnabled()) return;
+
+    // Check if there's anything to embed
+    const pending = storage.countUnembedded();
+    if (pending === 0) return;
+
+    const embeddingService = getEmbeddingService();
+
+    // Only proceed if transformers is already installed.
+    // Don't auto-install in background. That's a first-run experience
+    // that should happen via explicit context_embed call.
+    const { status } = embeddingService.getStatus();
+    if (status === 'unavailable') return;
+
+    const loaded = await embeddingService.load();
+    if (!loaded) return;
+
+    console.error(`[context-manager-http] Background embedding: ${pending} observations pending`);
+
+    const BATCH_SIZE = 50;
+    const BATCH_DELAY_MS = 500; // pause between batches to stay gentle
+    let totalEmbedded = 0;
+
+    while (true) {
+      const batch = await storage.getUnembeddedObservations(BATCH_SIZE);
+      if (batch.length === 0) break;
+
+      const texts = batch.map(obs => {
+        const parts = [obs.summary];
+        if (obs.files_touched.length > 0) {
+          parts.push(obs.files_touched.join(', '));
+        }
+        return parts.join(' | ');
+      });
+
+      const embeddings = await embeddingService.embedBatch(texts);
+      if (!embeddings) break;
+
+      for (let j = 0; j < batch.length; j++) {
+        const obs = batch[j];
+        const emb = embeddings[j];
+        if (!obs?.id || !emb) continue;
+        try {
+          await storage.saveEmbedding(obs.id, emb);
+          totalEmbedded++;
+        } catch {
+          // skip individual failures
+        }
+      }
+
+      // Pause between batches
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+    }
+
+    if (totalEmbedded > 0) {
+      console.error(`[context-manager-http] Background embedding complete: ${totalEmbedded} observations embedded`);
+    }
+
+    // --- Session embeddings ---
+    const pendingSessions = await storage.countUnembeddedSessions();
+    if (pendingSessions > 0) {
+      console.error(`[context-manager-http] Background session embedding: ${pendingSessions} sessions pending`);
+
+      let totalSessionEmbedded = 0;
+      const sessionBatch = await storage.getUnembeddedSessions(50);
+
+      for (const session of sessionBatch) {
+        try {
+          const prompts = await storage.getSessionPrompts(session.id);
+          const observations = await storage.getSessionObservations(session.id);
+
+          const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+          if (enrichedText.length < 20) continue;
+
+          const sessionEmb = await embeddingService.embed(enrichedText);
+          if (sessionEmb) {
+            await storage.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
+            totalSessionEmbedded++;
+          }
+        } catch {
+          // skip individual failures
+        }
+
+        // Brief pause between sessions
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      if (totalSessionEmbedded > 0) {
+        console.error(`[context-manager-http] Background session embedding complete: ${totalSessionEmbedded} sessions embedded`);
+      }
+    }
+  } catch (err) {
+    // Background task must never crash the server
+    console.error('[context-manager-http] Background embedding error:', err);
+  }
+}
 
 export interface HttpServerOptions {
   port?: number;
@@ -368,10 +480,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     await fastify.listen({ port, host });
     console.error(`[context-manager-http] Server listening on http://${host}:${port}`);
     console.error(`[context-manager-http] MCP endpoint: http://${host}:${port}/mcp`);
-    // TODO(#1 phase 8): background embedding is not yet started in HTTP server mode.
-    // Hook-proxied observations written to the server will need an explicit context_embed
-    // call to generate embeddings. Add a backgroundEmbed() call here once the embedding
-    // service is verified safe for long-running server processes with sqlite-vec.
+    // Fire-and-forget: embed pending observations and sessions in the background.
+    // Wraps in a catch so any uncaught rejection inside backgroundEmbed is logged,
+    // not left as an unhandled promise rejection that could crash the process.
+    backgroundEmbed(storage).catch((err) => {
+      console.error('[context-manager-http] Background embedding uncaught error:', err);
+    });
   } catch (err) {
     console.error('[context-manager-http] Failed to start:', err);
     await storage.close();
