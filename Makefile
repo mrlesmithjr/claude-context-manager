@@ -24,13 +24,55 @@ LAUNCHD_LABEL_WEB    := com.mrlesmithjr.context-manager-web
 LAUNCHD_PLIST_WEB    := $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL_WEB).plist
 NODE_BIN         := $(shell which node)
 
-.PHONY: build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
+.PHONY: help build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
         server-build server-clean server-init server-start server-stop server-logs \
         server-status server-env \
         server-native-start server-native-stop server-native-status \
         server-launchd-install server-launchd-uninstall server-launchd-status \
         server-quickstart server-stop-native switch-to-docker switch-to-native \
         server-launchd-web-install server-launchd-web-uninstall server-launchd-web-status
+
+# --- Help (default target) ---
+
+help:
+	@echo "claude-context-manager"
+	@echo ""
+	@echo "Build"
+	@echo "  make build               Build all components (hooks, CLI, web)"
+	@echo "  make build:plugin        Build and prepare plugin for local install"
+	@echo "  make test-unit           Run Vitest unit tests"
+	@echo ""
+	@echo "E2E tests (requires Docker)"
+	@echo "  make test-e2e            Build, run all scenarios, tear down"
+	@echo "  make test-e2e-up         Start services for manual exploration"
+	@echo "  make test-e2e-down       Stop and remove containers"
+	@echo "  make e2e-clean           Remove E2E image to force rebuild"
+	@echo ""
+	@echo "Server: macOS native (launchd)"
+	@echo "  make server-quickstart   One-shot setup: token + both launchd agents"
+	@echo "  make server-stop-native  Stop both agents (plists preserved)"
+	@echo "  make server-launchd-install          Install/restart MCP server agent"
+	@echo "  make server-launchd-uninstall        Remove MCP server agent"
+	@echo "  make server-launchd-status           MCP server agent status"
+	@echo "  make server-launchd-web-install      Install/restart web dashboard agent"
+	@echo "  make server-launchd-web-uninstall    Remove web dashboard agent"
+	@echo "  make server-launchd-web-status       Web dashboard agent status"
+	@echo ""
+	@echo "Server: Docker"
+	@echo "  make server-init         Generate token, write ~/.claude-context/.env"
+	@echo "  make server-build        Build Docker image"
+	@echo "  make server-start        Start MCP server + web dashboard containers"
+	@echo "  make server-stop         Stop containers (data preserved)"
+	@echo "  make server-logs         Tail container logs"
+	@echo "  make server-clean        Remove Docker image"
+	@echo ""
+	@echo "Server: shared"
+	@echo "  make server-status       Health check + deployment mode detection"
+	@echo "  make server-env          Print remote mode env setup instructions"
+	@echo "  make switch-to-docker    Stop native, start Docker"
+	@echo "  make switch-to-native    Stop Docker, start native"
+	@echo ""
+	@echo "See docs/SETUP.md for a full setup walkthrough."
 
 # --- Build ---
 
