@@ -10,6 +10,7 @@
 
 import Database from 'better-sqlite3';
 import { homedir } from 'os';
+import { randomUUID } from 'crypto';
 import path from 'path';
 import { mkdirSync } from 'fs';
 import * as sqliteVec from 'sqlite-vec';
@@ -241,6 +242,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add last_checkpoint_at column for periodic checkpoint tracking
     this.migrateAddLastCheckpointAt();
+
+    // Migration: add source column to sessions for manual vs hook sessions
+    this.migrateAddSessionSource();
   }
 
   /**
@@ -1765,6 +1769,108 @@ export class SQLiteStorage implements ContextStorage {
     if (!columnNames.has('last_checkpoint_at')) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN last_checkpoint_at INTEGER`);
     }
+  }
+
+  /**
+   * Migration: add source column to sessions table.
+   * Distinguishes hook-driven sessions ('hook') from manually-created sessions ('manual').
+   * Existing rows default to 'hook' — no backfill needed.
+   */
+  private migrateAddSessionSource(): void {
+    const columns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('source')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'hook'`);
+    }
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_source_project
+      ON sessions(source, project, started_at DESC)
+    `);
+  }
+
+  async getOrCreateManualSession(project: string): Promise<string> {
+    // Reuse the active manual session for this project created today. At most one active
+    // manual session exists per calendar day per project under normal conditions. Stale GC
+    // may close an idle session after 2 hours, in which case the next call creates a second
+    // session for the same day — observations are still scoped correctly.
+    const existing = this.db.prepare(`
+      SELECT id FROM sessions
+      WHERE project = ?
+        AND source = 'manual'
+        AND date(started_at) = date('now', 'localtime')
+        AND status = 'active'
+      LIMIT 1
+    `).get(project) as { id: string } | undefined;
+
+    if (existing) {
+      return existing.id;
+    }
+
+    // Create a new manual session for today
+    const sessionId = randomUUID();
+    this.db.prepare(`
+      INSERT INTO sessions (id, project, started_at, status, source)
+      VALUES (?, ?, ?, 'active', 'manual')
+    `).run(sessionId, project, new Date().toISOString());
+
+    return sessionId;
+  }
+
+  async addManualObservation(params: {
+    text: string;
+    project: string;
+    sessionId: string;
+    importanceScore: number;
+    tags: string | undefined;
+  }): Promise<number | undefined> {
+    const { text, project, sessionId, importanceScore, tags } = params;
+
+    // Derive importance level from score (same thresholds used throughout)
+    let importance: ImportanceLevel;
+    if (importanceScore >= 0.65) {
+      importance = 'high';
+    } else if (importanceScore >= 0.35) {
+      importance = 'medium';
+    } else {
+      importance = 'low';
+    }
+
+    const tokenEstimate = Math.ceil(text.length / 4);
+    const createdAt = new Date().toISOString();
+
+    // SHA256 dedup — skip if identical text already stored in this project
+    const contentHash = sha256(`${text}\n[]\n`);
+
+    const hashCheck = this.db.prepare(`
+      SELECT COUNT(*) as count FROM observations
+      WHERE project LIKE ? AND content_hash = ?
+    `).get(project + '%', contentHash) as { count: number };
+
+    if (hashCheck.count > 0) {
+      return undefined;
+    }
+
+    const info = this.db.prepare(`
+      INSERT INTO observations (
+        session_id, project, tool_name, summary,
+        files_touched, metadata, token_estimate,
+        importance, importance_score, tags, content_hash, created_at
+      ) VALUES (?, ?, 'Manual', ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
+    `).run(
+      sessionId,
+      project,
+      text,
+      tokenEstimate,
+      importance,
+      importanceScore,
+      tags ?? null,
+      contentHash,
+      createdAt,
+    );
+
+    return Number(info.lastInsertRowid);
   }
 
   async saveSessionEmbedding(sessionId: string, embedding: Float32Array, enrichedText: string): Promise<void> {

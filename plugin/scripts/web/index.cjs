@@ -31308,7 +31308,7 @@ var require_parse_url = __commonJS({
 var require_form_data = __commonJS({
   "node_modules/light-my-request/lib/form-data.js"(exports2, module2) {
     "use strict";
-    var { randomUUID } = require("node:crypto");
+    var { randomUUID: randomUUID2 } = require("node:crypto");
     var { Readable } = require("node:stream");
     var textEncoder;
     function isFormDataLike(payload) {
@@ -31316,7 +31316,7 @@ var require_form_data = __commonJS({
     }
     function formDataToStream(formdata) {
       textEncoder = textEncoder ?? new TextEncoder();
-      const boundary = `----formdata-${randomUUID()}`;
+      const boundary = `----formdata-${randomUUID2()}`;
       const prefix = `--${boundary}\r
 Content-Disposition: form-data`;
       const escape2 = (str) => str.replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/"/g, "%22");
@@ -44016,7 +44016,7 @@ var import_fastify = __toESM(require_fastify(), 1);
 var import_static = __toESM(require_static(), 1);
 var import_cors = __toESM(require_cors(), 1);
 var import_rate_limit = __toESM(require_rate_limit(), 1);
-var import_crypto2 = require("crypto");
+var import_crypto3 = require("crypto");
 var import_os2 = require("os");
 var import_path2 = require("path");
 var import_fs2 = require("fs");
@@ -44028,6 +44028,7 @@ var better_sqlite3_default = __betterSqlite3;
 
 // src/storage/sqlite.ts
 var import_os = require("os");
+var import_crypto2 = require("crypto");
 var import_path = __toESM(require("path"), 1);
 var import_fs = require("fs");
 
@@ -44201,6 +44202,7 @@ var SQLiteStorage = class {
     this.migrateAddContentHash();
     this.migrateAddSummaryExtended();
     this.migrateAddLastCheckpointAt();
+    this.migrateAddSessionSource();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -45301,6 +45303,82 @@ ${storedOutput}`;
       this.db.exec(`ALTER TABLE sessions ADD COLUMN last_checkpoint_at INTEGER`);
     }
   }
+  /**
+   * Migration: add source column to sessions table.
+   * Distinguishes hook-driven sessions ('hook') from manually-created sessions ('manual').
+   * Existing rows default to 'hook' — no backfill needed.
+   */
+  migrateAddSessionSource() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("source")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'hook'`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_source_project
+      ON sessions(source, project, started_at DESC)
+    `);
+  }
+  async getOrCreateManualSession(project) {
+    const existing = this.db.prepare(`
+      SELECT id FROM sessions
+      WHERE project = ?
+        AND source = 'manual'
+        AND date(started_at) = date('now', 'localtime')
+        AND status = 'active'
+      LIMIT 1
+    `).get(project);
+    if (existing) {
+      return existing.id;
+    }
+    const sessionId = (0, import_crypto2.randomUUID)();
+    this.db.prepare(`
+      INSERT INTO sessions (id, project, started_at, status, source)
+      VALUES (?, ?, ?, 'active', 'manual')
+    `).run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
+    return sessionId;
+  }
+  async addManualObservation(params) {
+    const { text, project, sessionId, importanceScore, tags } = params;
+    let importance;
+    if (importanceScore >= 0.65) {
+      importance = "high";
+    } else if (importanceScore >= 0.35) {
+      importance = "medium";
+    } else {
+      importance = "low";
+    }
+    const tokenEstimate = Math.ceil(text.length / 4);
+    const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+    const contentHash = sha256(`${text}
+[]
+`);
+    const hashCheck = this.db.prepare(`
+      SELECT COUNT(*) as count FROM observations
+      WHERE project LIKE ? AND content_hash = ?
+    `).get(project + "%", contentHash);
+    if (hashCheck.count > 0) {
+      return void 0;
+    }
+    const info = this.db.prepare(`
+      INSERT INTO observations (
+        session_id, project, tool_name, summary,
+        files_touched, metadata, token_estimate,
+        importance, importance_score, tags, content_hash, created_at
+      ) VALUES (?, ?, 'Manual', ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
+    `).run(
+      sessionId,
+      project,
+      text,
+      tokenEstimate,
+      importance,
+      importanceScore,
+      tags ?? null,
+      contentHash,
+      createdAt
+    );
+    return Number(info.lastInsertRowid);
+  }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
       throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
@@ -45912,7 +45990,7 @@ async function main() {
       const actual = Buffer.alloc(expected.length);
       Buffer.from(provided).copy(actual, 0, 0, expected.length);
       const lengthMatch = provided.length === TOKEN.length;
-      const contentMatch = (0, import_crypto2.timingSafeEqual)(expected, actual);
+      const contentMatch = (0, import_crypto3.timingSafeEqual)(expected, actual);
       if (!lengthMatch || !contentMatch) {
         reply.status(401).header("WWW-Authenticate", "Bearer").send({ error: "Unauthorized" });
       }

@@ -394,6 +394,44 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     }
   });
 
+  // POST /capture/add — save a manual observation from context_add MCP tool.
+  // Accepts { text, project, importance_score?, tags? } and returns { status, session_id }.
+  fastify.post('/capture/add', async (request, reply) => {
+    try {
+      const body = request.body as Record<string, unknown>;
+
+      const text = strBound(body['text'], OBS_SUMMARY_MAX, 'text');
+      const project = strBound(body['project'], PROJECT_MAX, 'project');
+
+      const rawScore = body['importance_score'];
+      const importanceScore =
+        typeof rawScore === 'number'
+          ? Math.max(0.0, Math.min(1.0, rawScore))
+          : 0.60;
+
+      const rawTags = body['tags'];
+      const tags =
+        typeof rawTags === 'string' && rawTags.trim().length > 0
+          ? rawTags.substring(0, 256)
+          : undefined;
+
+      const normalizedProject = normalizePath(project, pathMap);
+      const sessionId = await storage.getOrCreateManualSession(normalizedProject);
+      const obsId = await storage.addManualObservation({
+        text,
+        project: normalizedProject,
+        sessionId,
+        importanceScore,
+        tags,
+      });
+
+      await reply.send({ status: 'ok', session_id: sessionId, stored: obsId !== undefined });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(400).send({ error: msg });
+    }
+  });
+
   // POST /capture/export — trigger server-side memory export for a project.
   // The server runs exportToAutoMemory(), writes its local memory file,
   // and returns the full file content so the caller can inject it at SessionStart.

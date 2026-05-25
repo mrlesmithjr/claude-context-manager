@@ -75,6 +75,7 @@ var init_hash = __esm({
 
 // src/storage/sqlite.ts
 import { homedir } from "os";
+import { randomUUID } from "crypto";
 import path from "path";
 import { mkdirSync } from "fs";
 var DEFAULT_DB_PATH, SQLiteStorage;
@@ -240,6 +241,7 @@ var init_sqlite = __esm({
         this.migrateAddContentHash();
         this.migrateAddSummaryExtended();
         this.migrateAddLastCheckpointAt();
+        this.migrateAddSessionSource();
       }
       /**
        * Add importance and compaction columns if they don't exist.
@@ -1339,6 +1341,82 @@ ${storedOutput}`;
         if (!columnNames.has("last_checkpoint_at")) {
           this.db.exec(`ALTER TABLE sessions ADD COLUMN last_checkpoint_at INTEGER`);
         }
+      }
+      /**
+       * Migration: add source column to sessions table.
+       * Distinguishes hook-driven sessions ('hook') from manually-created sessions ('manual').
+       * Existing rows default to 'hook' — no backfill needed.
+       */
+      migrateAddSessionSource() {
+        const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+        const columnNames = new Set(columns.map((c) => c.name));
+        if (!columnNames.has("source")) {
+          this.db.exec(`ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'hook'`);
+        }
+        this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_source_project
+      ON sessions(source, project, started_at DESC)
+    `);
+      }
+      async getOrCreateManualSession(project) {
+        const existing = this.db.prepare(`
+      SELECT id FROM sessions
+      WHERE project = ?
+        AND source = 'manual'
+        AND date(started_at) = date('now', 'localtime')
+        AND status = 'active'
+      LIMIT 1
+    `).get(project);
+        if (existing) {
+          return existing.id;
+        }
+        const sessionId = randomUUID();
+        this.db.prepare(`
+      INSERT INTO sessions (id, project, started_at, status, source)
+      VALUES (?, ?, ?, 'active', 'manual')
+    `).run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
+        return sessionId;
+      }
+      async addManualObservation(params) {
+        const { text, project, sessionId, importanceScore, tags } = params;
+        let importance;
+        if (importanceScore >= 0.65) {
+          importance = "high";
+        } else if (importanceScore >= 0.35) {
+          importance = "medium";
+        } else {
+          importance = "low";
+        }
+        const tokenEstimate = Math.ceil(text.length / 4);
+        const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+        const contentHash = sha256(`${text}
+[]
+`);
+        const hashCheck = this.db.prepare(`
+      SELECT COUNT(*) as count FROM observations
+      WHERE project LIKE ? AND content_hash = ?
+    `).get(project + "%", contentHash);
+        if (hashCheck.count > 0) {
+          return void 0;
+        }
+        const info = this.db.prepare(`
+      INSERT INTO observations (
+        session_id, project, tool_name, summary,
+        files_touched, metadata, token_estimate,
+        importance, importance_score, tags, content_hash, created_at
+      ) VALUES (?, ?, 'Manual', ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
+    `).run(
+          sessionId,
+          project,
+          text,
+          tokenEstimate,
+          importance,
+          importanceScore,
+          tags ?? null,
+          contentHash,
+          createdAt
+        );
+        return Number(info.lastInsertRowid);
       }
       async saveSessionEmbedding(sessionId, embedding, enrichedText) {
         if (!this.vecEnabled) {
@@ -16388,9 +16466,9 @@ var require_json_schema_traverse = __commonJS({
       cb = opts.cb || cb;
       var pre = typeof cb == "function" ? cb : cb.pre || function() {
       };
-      var post = cb.post || function() {
+      var post2 = cb.post || function() {
       };
-      _traverse(opts, pre, post, schema, "", schema);
+      _traverse(opts, pre, post2, schema, "", schema);
     };
     traverse.keywords = {
       additionalItems: true,
@@ -16436,7 +16514,7 @@ var require_json_schema_traverse = __commonJS({
       maxProperties: true,
       minProperties: true
     };
-    function _traverse(opts, pre, post, schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex) {
+    function _traverse(opts, pre, post2, schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex) {
       if (schema && typeof schema == "object" && !Array.isArray(schema)) {
         pre(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
         for (var key in schema) {
@@ -16444,18 +16522,18 @@ var require_json_schema_traverse = __commonJS({
           if (Array.isArray(sch)) {
             if (key in traverse.arrayKeywords) {
               for (var i = 0; i < sch.length; i++)
-                _traverse(opts, pre, post, sch[i], jsonPtr + "/" + key + "/" + i, rootSchema, jsonPtr, key, schema, i);
+                _traverse(opts, pre, post2, sch[i], jsonPtr + "/" + key + "/" + i, rootSchema, jsonPtr, key, schema, i);
             }
           } else if (key in traverse.propsKeywords) {
             if (sch && typeof sch == "object") {
               for (var prop in sch)
-                _traverse(opts, pre, post, sch[prop], jsonPtr + "/" + key + "/" + escapeJsonPtr(prop), rootSchema, jsonPtr, key, schema, prop);
+                _traverse(opts, pre, post2, sch[prop], jsonPtr + "/" + key + "/" + escapeJsonPtr(prop), rootSchema, jsonPtr, key, schema, prop);
             }
           } else if (key in traverse.keywords || opts.allKeys && !(key in traverse.skipKeywords)) {
-            _traverse(opts, pre, post, sch, jsonPtr + "/" + key, rootSchema, jsonPtr, key, schema);
+            _traverse(opts, pre, post2, sch, jsonPtr + "/" + key, rootSchema, jsonPtr, key, schema);
           }
         }
-        post(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
+        post2(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
       }
     }
     function escapeJsonPtr(str) {
@@ -18697,11 +18775,11 @@ var require_core = __commonJS({
     }
     function addRule(keyword, definition, dataType) {
       var _a2;
-      const post = definition === null || definition === void 0 ? void 0 : definition.post;
-      if (dataType && post)
+      const post2 = definition === null || definition === void 0 ? void 0 : definition.post;
+      if (dataType && post2)
         throw new Error('keyword with "post" flag cannot have "type"');
       const { RULES } = this;
-      let ruleGroup = post ? RULES.post : RULES.rules.find(({ type: t }) => t === dataType);
+      let ruleGroup = post2 ? RULES.post : RULES.rules.find(({ type: t }) => t === dataType);
       if (!ruleGroup) {
         ruleGroup = { type: dataType, rules: [] };
         RULES.rules.push(ruleGroup);
@@ -33367,7 +33445,7 @@ var require_parse_url = __commonJS({
 var require_form_data = __commonJS({
   "node_modules/light-my-request/lib/form-data.js"(exports, module) {
     "use strict";
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID4 } = __require("node:crypto");
     var { Readable: Readable2 } = __require("node:stream");
     var textEncoder;
     function isFormDataLike(payload) {
@@ -33375,7 +33453,7 @@ var require_form_data = __commonJS({
     }
     function formDataToStream(formdata) {
       textEncoder = textEncoder ?? new TextEncoder();
-      const boundary = `----formdata-${randomUUID2()}`;
+      const boundary = `----formdata-${randomUUID4()}`;
       const prefix = `--${boundary}\r
 Content-Disposition: form-data`;
       const escape2 = (str) => str.replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/"/g, "%22");
@@ -63012,8 +63090,129 @@ var init_path_map = __esm({
   }
 });
 
+// src/capture/remote-client.ts
+var remote_client_exports = {};
+__export(remote_client_exports, {
+  remoteAddObservation: () => remoteAddObservation,
+  remoteCreateSession: () => remoteCreateSession,
+  remoteEndSession: () => remoteEndSession,
+  remoteExportMemory: () => remoteExportMemory,
+  remoteGetMemory: () => remoteGetMemory,
+  remoteMcpText: () => remoteMcpText,
+  remoteSaveObservation: () => remoteSaveObservation,
+  remoteSavePrompt: () => remoteSavePrompt
+});
+import { randomUUID as randomUUID2 } from "crypto";
+async function post(client, path2, body) {
+  const response = await fetch(`${client.url}${path2}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${client.token}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Remote ${path2} returned ${response.status}: ${text}`);
+  }
+  return response.json().catch(() => ({}));
+}
+async function remoteCreateSession(client, sessionId, project) {
+  await post(client, "/capture/session", {
+    action: "create",
+    session_id: sessionId,
+    project
+  });
+}
+async function remoteEndSession(client, sessionId, summary, summaryExtended) {
+  await post(client, "/capture/session", {
+    action: "end",
+    session_id: sessionId,
+    summary,
+    summary_extended: summaryExtended
+  });
+}
+async function remoteSaveObservation(client, observation) {
+  await post(client, "/capture/observation", observation);
+}
+async function remoteSavePrompt(client, prompt) {
+  await post(client, "/capture/prompt", prompt);
+}
+async function remoteExportMemory(client, project, sessionId) {
+  try {
+    const data = await post(client, "/capture/export", {
+      project,
+      ...sessionId !== void 0 ? { session_id: sessionId } : {}
+    });
+    return typeof data.content === "string" ? data.content : "";
+  } catch {
+    return "";
+  }
+}
+async function remoteGetMemory(client, project) {
+  try {
+    const response = await fetch(
+      `${client.url}/memory?project=${encodeURIComponent(project)}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${client.token}`
+        }
+      }
+    );
+    if (!response.ok)
+      return "";
+    const data = await response.json();
+    return typeof data.content === "string" ? data.content : "";
+  } catch {
+    return "";
+  }
+}
+async function remoteAddObservation(client, params) {
+  try {
+    const data = await post(client, "/capture/add", {
+      text: params.text,
+      project: params.project,
+      importance_score: params.importanceScore,
+      tags: params.tags
+    });
+    return typeof data.session_id === "string" ? data.session_id : void 0;
+  } catch {
+    return void 0;
+  }
+}
+async function remoteMcpText(client, toolName, args) {
+  try {
+    const response = await fetch(`${client.url}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${client.token}`,
+        "Accept": "application/json, text/event-stream"
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "tools/call",
+        id: randomUUID2(),
+        params: { name: toolName, arguments: args }
+      })
+    });
+    if (!response.ok)
+      return "";
+    const data = await response.json();
+    return data.result?.content?.[0]?.text ?? "";
+  } catch {
+    return "";
+  }
+}
+var init_remote_client = __esm({
+  "src/capture/remote-client.ts"() {
+    "use strict";
+  }
+});
+
 // src/mcp/create-server.ts
-import { randomUUID } from "crypto";
+import { randomUUID as randomUUID3 } from "crypto";
 function formatObservations(observations) {
   if (observations.length === 0) {
     return "No observations found.";
@@ -63150,7 +63349,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
       body: JSON.stringify({
         jsonrpc: "2.0",
         method: "tools/call",
-        id: randomUUID(),
+        id: randomUUID3(),
         params: { name: toolName, arguments: args }
       })
     });
@@ -63410,6 +63609,91 @@ ${formatPrompts(prompts)}`);
             text: `Recent sessions for ${project}:
 
 ${lines.join("\n")}`
+          }
+        ]
+      };
+    }
+  );
+  server.tool(
+    "context_add",
+    "Write a manual observation into the context store. Use this to save notes, decisions, or insights from any MCP client (Claude Desktop, etc.) \u2014 not just Claude Code sessions. Observations are stored with the project scope and become searchable via context_search.",
+    {
+      text: external_exports.string().min(1).describe("The observation content to store"),
+      project: external_exports.string().optional().describe("Project path to scope the observation. Omit to use the server default project."),
+      importance: external_exports.union([external_exports.string(), external_exports.number()]).optional().describe('Importance level: "high" (0.80), "medium" (0.60, default), "low" (0.40), or a float 0.0\u20131.0'),
+      tags: external_exports.string().optional().describe("Comma-separated domain tags (auth, database, testing, infra, config, frontend, api, git, build, deps). If omitted, no tags are assigned.")
+    },
+    async ({ text, project, importance, tags }) => {
+      const resolvedProject = np(project) ?? project ?? process.cwd();
+      let importanceScore = 0.6;
+      if (importance !== void 0) {
+        if (typeof importance === "number") {
+          importanceScore = Math.max(0, Math.min(1, importance));
+        } else {
+          switch (importance.toLowerCase()) {
+            case "high":
+              importanceScore = 0.8;
+              break;
+            case "medium":
+              importanceScore = 0.6;
+              break;
+            case "low":
+              importanceScore = 0.4;
+              break;
+            default: {
+              const parsed = parseFloat(importance);
+              if (!isNaN(parsed)) {
+                importanceScore = Math.max(0, Math.min(1, parsed));
+              }
+              break;
+            }
+          }
+        }
+      }
+      let importanceLabel;
+      if (importanceScore >= 0.65) {
+        importanceLabel = "high";
+      } else if (importanceScore >= 0.35) {
+        importanceLabel = "medium";
+      } else {
+        importanceLabel = "low";
+      }
+      const resolvedTags = tags !== void 0 ? tags.trim() || void 0 : void 0;
+      if (isProxy) {
+        const { remoteAddObservation: remoteAddObservation2 } = await Promise.resolve().then(() => (init_remote_client(), remote_client_exports));
+        const remoteClient = { url: remoteUrl, token: remoteToken };
+        const sessionId2 = await remoteAddObservation2(remoteClient, {
+          text,
+          project: resolvedProject,
+          importanceScore,
+          tags: resolvedTags
+        });
+        const preview2 = text.length > 60 ? text.substring(0, 60) + "..." : text;
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Saved: "${preview2}" (importance: ${importanceLabel}, session: ${sessionId2 ?? "unknown"})`
+            }
+          ]
+        };
+      }
+      const db = await getDb();
+      const sessionId = await db.getOrCreateManualSession(resolvedProject);
+      const obsId = await db.addManualObservation({
+        text,
+        project: resolvedProject,
+        sessionId,
+        importanceScore,
+        tags: resolvedTags
+      });
+      const preview = text.length > 60 ? text.substring(0, 60) + "..." : text;
+      const dedupNote = obsId === void 0 ? " (duplicate, not stored)" : "";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${dedupNote}`
           }
         ]
       };
@@ -64173,6 +64457,30 @@ async function startHttpServer(options = {}) {
         created_at: createdAt
       });
       await reply.send({ status: "ok" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(400).send({ error: msg });
+    }
+  });
+  fastify.post("/capture/add", async (request, reply) => {
+    try {
+      const body = request.body;
+      const text = strBound(body["text"], OBS_SUMMARY_MAX, "text");
+      const project = strBound(body["project"], PROJECT_MAX, "project");
+      const rawScore = body["importance_score"];
+      const importanceScore = typeof rawScore === "number" ? Math.max(0, Math.min(1, rawScore)) : 0.6;
+      const rawTags = body["tags"];
+      const tags = typeof rawTags === "string" && rawTags.trim().length > 0 ? rawTags.substring(0, 256) : void 0;
+      const normalizedProject = normalizePath(project, pathMap);
+      const sessionId = await storage2.getOrCreateManualSession(normalizedProject);
+      const obsId = await storage2.addManualObservation({
+        text,
+        project: normalizedProject,
+        sessionId,
+        importanceScore,
+        tags
+      });
+      await reply.send({ status: "ok", session_id: sessionId, stored: obsId !== void 0 });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await reply.status(400).send({ error: msg });

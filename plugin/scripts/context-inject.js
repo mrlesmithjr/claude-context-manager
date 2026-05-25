@@ -9,6 +9,7 @@ var better_sqlite3_default = __betterSqlite3;
 
 // src/storage/sqlite.ts
 import { homedir } from "os";
+import { randomUUID } from "crypto";
 import path from "path";
 import { mkdirSync } from "fs";
 
@@ -182,6 +183,7 @@ var SQLiteStorage = class {
     this.migrateAddContentHash();
     this.migrateAddSummaryExtended();
     this.migrateAddLastCheckpointAt();
+    this.migrateAddSessionSource();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -1282,6 +1284,82 @@ ${storedOutput}`;
       this.db.exec(`ALTER TABLE sessions ADD COLUMN last_checkpoint_at INTEGER`);
     }
   }
+  /**
+   * Migration: add source column to sessions table.
+   * Distinguishes hook-driven sessions ('hook') from manually-created sessions ('manual').
+   * Existing rows default to 'hook' — no backfill needed.
+   */
+  migrateAddSessionSource() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("source")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'hook'`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_source_project
+      ON sessions(source, project, started_at DESC)
+    `);
+  }
+  async getOrCreateManualSession(project) {
+    const existing = this.db.prepare(`
+      SELECT id FROM sessions
+      WHERE project = ?
+        AND source = 'manual'
+        AND date(started_at) = date('now', 'localtime')
+        AND status = 'active'
+      LIMIT 1
+    `).get(project);
+    if (existing) {
+      return existing.id;
+    }
+    const sessionId = randomUUID();
+    this.db.prepare(`
+      INSERT INTO sessions (id, project, started_at, status, source)
+      VALUES (?, ?, ?, 'active', 'manual')
+    `).run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
+    return sessionId;
+  }
+  async addManualObservation(params) {
+    const { text, project, sessionId, importanceScore, tags } = params;
+    let importance;
+    if (importanceScore >= 0.65) {
+      importance = "high";
+    } else if (importanceScore >= 0.35) {
+      importance = "medium";
+    } else {
+      importance = "low";
+    }
+    const tokenEstimate = Math.ceil(text.length / 4);
+    const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+    const contentHash = sha256(`${text}
+[]
+`);
+    const hashCheck = this.db.prepare(`
+      SELECT COUNT(*) as count FROM observations
+      WHERE project LIKE ? AND content_hash = ?
+    `).get(project + "%", contentHash);
+    if (hashCheck.count > 0) {
+      return void 0;
+    }
+    const info = this.db.prepare(`
+      INSERT INTO observations (
+        session_id, project, tool_name, summary,
+        files_touched, metadata, token_estimate,
+        importance, importance_score, tags, content_hash, created_at
+      ) VALUES (?, ?, 'Manual', ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
+    `).run(
+      sessionId,
+      project,
+      text,
+      tokenEstimate,
+      importance,
+      importanceScore,
+      tags ?? null,
+      contentHash,
+      createdAt
+    );
+    return Number(info.lastInsertRowid);
+  }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
       throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
@@ -1690,7 +1768,7 @@ import { join as join2 } from "path";
 import { homedir as homedir4 } from "os";
 
 // src/capture/remote-client.ts
-import { randomUUID } from "crypto";
+import { randomUUID as randomUUID2 } from "crypto";
 async function post(client, path3, body) {
   const response = await fetch(`${client.url}${path3}`, {
     method: "POST",
@@ -1743,7 +1821,7 @@ async function remoteMcpText(client, toolName, args) {
       body: JSON.stringify({
         jsonrpc: "2.0",
         method: "tools/call",
-        id: randomUUID(),
+        id: randomUUID2(),
         params: { name: toolName, arguments: args }
       })
     });

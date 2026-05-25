@@ -19,7 +19,7 @@ import { getEmbeddingService } from '../embedding/service.js';
 import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
 import { auditMemoryDirectories, formatAuditReport } from '../memory/audit.js';
 import { consolidateMemories, formatConsolidationReport } from '../memory/consolidate.js';
-import type { ImportanceLevel, Observation, Session, Stats, UserPrompt } from '../storage/interface.js';
+import type { ImportanceLevel, Observation, ObservationTag, Session, Stats, UserPrompt } from '../storage/interface.js';
 import {
   computeSessionDuration,
   extractSessionNarrative,
@@ -602,6 +602,108 @@ export function createContextManagerServer(
           {
             type: 'text' as const,
             text: `Recent sessions for ${project}:\n\n${lines.join('\n')}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    'context_add',
+    'Write a manual observation into the context store. Use this to save notes, decisions, or insights from any MCP client (Claude Desktop, etc.) — not just Claude Code sessions. Observations are stored with the project scope and become searchable via context_search.',
+    {
+      text: z.string().min(1).describe('The observation content to store'),
+      project: z
+        .string()
+        .optional()
+        .describe('Project path to scope the observation. Omit to use the server default project.'),
+      importance: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe('Importance level: "high" (0.80), "medium" (0.60, default), "low" (0.40), or a float 0.0–1.0'),
+      tags: z
+        .string()
+        .optional()
+        .describe('Comma-separated domain tags (auth, database, testing, infra, config, frontend, api, git, build, deps). If omitted, no tags are assigned.'),
+    },
+    async ({ text, project, importance, tags }) => {
+      // Resolve the project path: explicit param > server-configured default
+      const resolvedProject = np(project) ?? project ?? process.cwd();
+
+      // Resolve importance score
+      let importanceScore = 0.60; // default: medium
+      if (importance !== undefined) {
+        if (typeof importance === 'number') {
+          importanceScore = Math.max(0.0, Math.min(1.0, importance));
+        } else {
+          switch (importance.toLowerCase()) {
+            case 'high':   importanceScore = 0.80; break;
+            case 'medium': importanceScore = 0.60; break;
+            case 'low':    importanceScore = 0.40; break;
+            default: {
+              const parsed = parseFloat(importance);
+              if (!isNaN(parsed)) {
+                importanceScore = Math.max(0.0, Math.min(1.0, parsed));
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      // Resolve importance level label for the confirmation message
+      let importanceLabel: string;
+      if (importanceScore >= 0.65) {
+        importanceLabel = 'high';
+      } else if (importanceScore >= 0.35) {
+        importanceLabel = 'medium';
+      } else {
+        importanceLabel = 'low';
+      }
+
+      // Resolve tags: explicit value only — tag inference requires file paths or Bash commands
+      // and cannot be applied to free-form text. Users should pass explicit tags when needed.
+      const resolvedTags = tags !== undefined ? (tags.trim() || undefined) : undefined;
+
+      if (isProxy) {
+        // Forward to the remote server's /capture/add endpoint
+        const { remoteAddObservation } = await import('../capture/remote-client.js');
+        const remoteClient = { url: remoteUrl, token: remoteToken };
+        const sessionId = await remoteAddObservation(remoteClient, {
+          text,
+          project: resolvedProject,
+          importanceScore,
+          tags: resolvedTags,
+        });
+
+        const preview = text.length > 60 ? text.substring(0, 60) + '...' : text;
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId ?? 'unknown'})`,
+            },
+          ],
+        };
+      }
+
+      const db = await getDb();
+      const sessionId = await db.getOrCreateManualSession(resolvedProject);
+      const obsId = await db.addManualObservation({
+        text,
+        project: resolvedProject,
+        sessionId,
+        importanceScore,
+        tags: resolvedTags,
+      });
+
+      const preview = text.length > 60 ? text.substring(0, 60) + '...' : text;
+      const dedupNote = obsId === undefined ? ' (duplicate, not stored)' : '';
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${dedupNote}`,
           },
         ],
       };

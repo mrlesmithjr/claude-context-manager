@@ -450,6 +450,35 @@ export interface ContextStorage {
   getTopConversationObservation(sessionId: string): Promise<Observation | null>;
 
   /**
+   * Get or create the daily "manual" session for a project.
+   * One manual session is reused per calendar day per project so that multiple
+   * context_add calls within the same day share a single session row.
+   *
+   * @param project - Project path to scope the session
+   * @returns The session ID (existing or newly created)
+   */
+  getOrCreateManualSession(project: string): Promise<string>;
+
+  /**
+   * Save a manually-written observation from the context_add MCP tool.
+   * Skips surprise scoring and relationship inference (no file path context).
+   *
+   * @param params.text - Observation content
+   * @param params.project - Project path
+   * @param params.sessionId - Session ID (from getOrCreateManualSession)
+   * @param params.importanceScore - Numeric score 0.0–1.0
+   * @param params.tags - Domain tags (comma-separated string or undefined)
+   * @returns The inserted observation ID, or undefined if deduplicated
+   */
+  addManualObservation(params: {
+    text: string;
+    project: string;
+    sessionId: string;
+    importanceScore: number;
+    tags: string | undefined;
+  }): Promise<number | undefined>;
+
+  /**
    * Close storage connection
    */
   close(): Promise<void>;

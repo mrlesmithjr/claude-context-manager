@@ -7,6 +7,9 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
@@ -14334,9 +14337,9 @@ var require_json_schema_traverse = __commonJS({
       cb = opts.cb || cb;
       var pre = typeof cb == "function" ? cb : cb.pre || function() {
       };
-      var post = cb.post || function() {
+      var post2 = cb.post || function() {
       };
-      _traverse(opts, pre, post, schema, "", schema);
+      _traverse(opts, pre, post2, schema, "", schema);
     };
     traverse.keywords = {
       additionalItems: true,
@@ -14382,7 +14385,7 @@ var require_json_schema_traverse = __commonJS({
       maxProperties: true,
       minProperties: true
     };
-    function _traverse(opts, pre, post, schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex) {
+    function _traverse(opts, pre, post2, schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex) {
       if (schema && typeof schema == "object" && !Array.isArray(schema)) {
         pre(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
         for (var key in schema) {
@@ -14390,18 +14393,18 @@ var require_json_schema_traverse = __commonJS({
           if (Array.isArray(sch)) {
             if (key in traverse.arrayKeywords) {
               for (var i = 0; i < sch.length; i++)
-                _traverse(opts, pre, post, sch[i], jsonPtr + "/" + key + "/" + i, rootSchema, jsonPtr, key, schema, i);
+                _traverse(opts, pre, post2, sch[i], jsonPtr + "/" + key + "/" + i, rootSchema, jsonPtr, key, schema, i);
             }
           } else if (key in traverse.propsKeywords) {
             if (sch && typeof sch == "object") {
               for (var prop in sch)
-                _traverse(opts, pre, post, sch[prop], jsonPtr + "/" + key + "/" + escapeJsonPtr(prop), rootSchema, jsonPtr, key, schema, prop);
+                _traverse(opts, pre, post2, sch[prop], jsonPtr + "/" + key + "/" + escapeJsonPtr(prop), rootSchema, jsonPtr, key, schema, prop);
             }
           } else if (key in traverse.keywords || opts.allKeys && !(key in traverse.skipKeywords)) {
-            _traverse(opts, pre, post, sch, jsonPtr + "/" + key, rootSchema, jsonPtr, key, schema);
+            _traverse(opts, pre, post2, sch, jsonPtr + "/" + key, rootSchema, jsonPtr, key, schema);
           }
         }
-        post(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
+        post2(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
       }
     }
     function escapeJsonPtr(str) {
@@ -16643,11 +16646,11 @@ var require_core = __commonJS({
     }
     function addRule(keyword, definition, dataType) {
       var _a2;
-      const post = definition === null || definition === void 0 ? void 0 : definition.post;
-      if (dataType && post)
+      const post2 = definition === null || definition === void 0 ? void 0 : definition.post;
+      if (dataType && post2)
         throw new Error('keyword with "post" flag cannot have "type"');
       const { RULES } = this;
-      let ruleGroup = post ? RULES.post : RULES.rules.find(({ type: t }) => t === dataType);
+      let ruleGroup = post2 ? RULES.post : RULES.rules.find(({ type: t }) => t === dataType);
       if (!ruleGroup) {
         ruleGroup = { type: dataType, rules: [] };
         RULES.rules.push(ruleGroup);
@@ -31313,7 +31316,7 @@ var require_parse_url = __commonJS({
 var require_form_data = __commonJS({
   "node_modules/light-my-request/lib/form-data.js"(exports2, module2) {
     "use strict";
-    var { randomUUID: randomUUID2 } = require("node:crypto");
+    var { randomUUID: randomUUID4 } = require("node:crypto");
     var { Readable: Readable2 } = require("node:stream");
     var textEncoder;
     function isFormDataLike(payload) {
@@ -31321,7 +31324,7 @@ var require_form_data = __commonJS({
     }
     function formDataToStream(formdata) {
       textEncoder = textEncoder ?? new TextEncoder();
-      const boundary = `----formdata-${randomUUID2()}`;
+      const boundary = `----formdata-${randomUUID4()}`;
       const prefix = `--${boundary}\r
 Content-Disposition: form-data`;
       const escape2 = (str) => str.replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/"/g, "%22");
@@ -34589,6 +34592,128 @@ var require_cors = __commonJS({
     module2.exports = _fastifyCors;
     module2.exports.fastifyCors = _fastifyCors;
     module2.exports.default = _fastifyCors;
+  }
+});
+
+// src/capture/remote-client.ts
+var remote_client_exports = {};
+__export(remote_client_exports, {
+  remoteAddObservation: () => remoteAddObservation,
+  remoteCreateSession: () => remoteCreateSession,
+  remoteEndSession: () => remoteEndSession,
+  remoteExportMemory: () => remoteExportMemory,
+  remoteGetMemory: () => remoteGetMemory,
+  remoteMcpText: () => remoteMcpText,
+  remoteSaveObservation: () => remoteSaveObservation,
+  remoteSavePrompt: () => remoteSavePrompt
+});
+async function post(client, path2, body) {
+  const response = await fetch(`${client.url}${path2}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${client.token}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Remote ${path2} returned ${response.status}: ${text}`);
+  }
+  return response.json().catch(() => ({}));
+}
+async function remoteCreateSession(client, sessionId, project) {
+  await post(client, "/capture/session", {
+    action: "create",
+    session_id: sessionId,
+    project
+  });
+}
+async function remoteEndSession(client, sessionId, summary, summaryExtended) {
+  await post(client, "/capture/session", {
+    action: "end",
+    session_id: sessionId,
+    summary,
+    summary_extended: summaryExtended
+  });
+}
+async function remoteSaveObservation(client, observation) {
+  await post(client, "/capture/observation", observation);
+}
+async function remoteSavePrompt(client, prompt) {
+  await post(client, "/capture/prompt", prompt);
+}
+async function remoteExportMemory(client, project, sessionId) {
+  try {
+    const data = await post(client, "/capture/export", {
+      project,
+      ...sessionId !== void 0 ? { session_id: sessionId } : {}
+    });
+    return typeof data.content === "string" ? data.content : "";
+  } catch {
+    return "";
+  }
+}
+async function remoteGetMemory(client, project) {
+  try {
+    const response = await fetch(
+      `${client.url}/memory?project=${encodeURIComponent(project)}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${client.token}`
+        }
+      }
+    );
+    if (!response.ok)
+      return "";
+    const data = await response.json();
+    return typeof data.content === "string" ? data.content : "";
+  } catch {
+    return "";
+  }
+}
+async function remoteAddObservation(client, params) {
+  try {
+    const data = await post(client, "/capture/add", {
+      text: params.text,
+      project: params.project,
+      importance_score: params.importanceScore,
+      tags: params.tags
+    });
+    return typeof data.session_id === "string" ? data.session_id : void 0;
+  } catch {
+    return void 0;
+  }
+}
+async function remoteMcpText(client, toolName, args) {
+  try {
+    const response = await fetch(`${client.url}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${client.token}`,
+        "Accept": "application/json, text/event-stream"
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "tools/call",
+        id: (0, import_crypto2.randomUUID)(),
+        params: { name: toolName, arguments: args }
+      })
+    });
+    if (!response.ok)
+      return "";
+    const data = await response.json();
+    return data.result?.content?.[0]?.text ?? "";
+  } catch {
+    return "";
+  }
+}
+var import_crypto2;
+var init_remote_client = __esm({
+  "src/capture/remote-client.ts"() {
+    "use strict";
+    import_crypto2 = require("crypto");
   }
 });
 
@@ -51143,7 +51268,7 @@ var StreamableHTTPServerTransport = class {
 };
 
 // src/server/http.ts
-var import_crypto4 = require("crypto");
+var import_crypto6 = require("crypto");
 var import_os5 = require("os");
 var import_path6 = require("path");
 var import_fs6 = require("fs");
@@ -59062,7 +59187,7 @@ var EMPTY_COMPLETION_RESULT = {
 };
 
 // src/mcp/create-server.ts
-var import_crypto2 = require("crypto");
+var import_crypto3 = require("crypto");
 
 // src/export/memory.ts
 var import_fs = require("fs");
@@ -60365,7 +60490,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
       body: JSON.stringify({
         jsonrpc: "2.0",
         method: "tools/call",
-        id: (0, import_crypto2.randomUUID)(),
+        id: (0, import_crypto3.randomUUID)(),
         params: { name: toolName, arguments: args }
       })
     });
@@ -60625,6 +60750,91 @@ ${formatPrompts(prompts)}`);
             text: `Recent sessions for ${project}:
 
 ${lines.join("\n")}`
+          }
+        ]
+      };
+    }
+  );
+  server.tool(
+    "context_add",
+    "Write a manual observation into the context store. Use this to save notes, decisions, or insights from any MCP client (Claude Desktop, etc.) \u2014 not just Claude Code sessions. Observations are stored with the project scope and become searchable via context_search.",
+    {
+      text: external_exports.string().min(1).describe("The observation content to store"),
+      project: external_exports.string().optional().describe("Project path to scope the observation. Omit to use the server default project."),
+      importance: external_exports.union([external_exports.string(), external_exports.number()]).optional().describe('Importance level: "high" (0.80), "medium" (0.60, default), "low" (0.40), or a float 0.0\u20131.0'),
+      tags: external_exports.string().optional().describe("Comma-separated domain tags (auth, database, testing, infra, config, frontend, api, git, build, deps). If omitted, no tags are assigned.")
+    },
+    async ({ text, project, importance, tags }) => {
+      const resolvedProject = np(project) ?? project ?? process.cwd();
+      let importanceScore = 0.6;
+      if (importance !== void 0) {
+        if (typeof importance === "number") {
+          importanceScore = Math.max(0, Math.min(1, importance));
+        } else {
+          switch (importance.toLowerCase()) {
+            case "high":
+              importanceScore = 0.8;
+              break;
+            case "medium":
+              importanceScore = 0.6;
+              break;
+            case "low":
+              importanceScore = 0.4;
+              break;
+            default: {
+              const parsed = parseFloat(importance);
+              if (!isNaN(parsed)) {
+                importanceScore = Math.max(0, Math.min(1, parsed));
+              }
+              break;
+            }
+          }
+        }
+      }
+      let importanceLabel;
+      if (importanceScore >= 0.65) {
+        importanceLabel = "high";
+      } else if (importanceScore >= 0.35) {
+        importanceLabel = "medium";
+      } else {
+        importanceLabel = "low";
+      }
+      const resolvedTags = tags !== void 0 ? tags.trim() || void 0 : void 0;
+      if (isProxy) {
+        const { remoteAddObservation: remoteAddObservation2 } = await Promise.resolve().then(() => (init_remote_client(), remote_client_exports));
+        const remoteClient = { url: remoteUrl, token: remoteToken };
+        const sessionId2 = await remoteAddObservation2(remoteClient, {
+          text,
+          project: resolvedProject,
+          importanceScore,
+          tags: resolvedTags
+        });
+        const preview2 = text.length > 60 ? text.substring(0, 60) + "..." : text;
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Saved: "${preview2}" (importance: ${importanceLabel}, session: ${sessionId2 ?? "unknown"})`
+            }
+          ]
+        };
+      }
+      const db = await getDb();
+      const sessionId = await db.getOrCreateManualSession(resolvedProject);
+      const obsId = await db.addManualObservation({
+        text,
+        project: resolvedProject,
+        sessionId,
+        importanceScore,
+        tags: resolvedTags
+      });
+      const preview = text.length > 60 ? text.substring(0, 60) + "..." : text;
+      const dedupNote = obsId === void 0 ? " (duplicate, not stored)" : "";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${dedupNote}`
           }
         ]
       };
@@ -61138,6 +61348,7 @@ var better_sqlite3_default = __betterSqlite3;
 
 // src/storage/sqlite.ts
 var import_os4 = require("os");
+var import_crypto5 = require("crypto");
 var import_path5 = __toESM(require("path"), 1);
 var import_fs5 = require("fs");
 
@@ -61146,9 +61357,9 @@ var load = __sqliteVec.load;
 var sqlite_vec_default = __sqliteVec;
 
 // src/utils/hash.ts
-var import_crypto3 = require("crypto");
+var import_crypto4 = require("crypto");
 function sha256(content) {
-  return (0, import_crypto3.createHash)("sha256").update(content, "utf8").digest("hex");
+  return (0, import_crypto4.createHash)("sha256").update(content, "utf8").digest("hex");
 }
 function l2DistanceToCosine(l2Distance) {
   return Math.max(0, Math.min(1, 1 - l2Distance * l2Distance / 2));
@@ -61311,6 +61522,7 @@ var SQLiteStorage = class {
     this.migrateAddContentHash();
     this.migrateAddSummaryExtended();
     this.migrateAddLastCheckpointAt();
+    this.migrateAddSessionSource();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -62411,6 +62623,82 @@ ${storedOutput}`;
       this.db.exec(`ALTER TABLE sessions ADD COLUMN last_checkpoint_at INTEGER`);
     }
   }
+  /**
+   * Migration: add source column to sessions table.
+   * Distinguishes hook-driven sessions ('hook') from manually-created sessions ('manual').
+   * Existing rows default to 'hook' — no backfill needed.
+   */
+  migrateAddSessionSource() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("source")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'hook'`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_source_project
+      ON sessions(source, project, started_at DESC)
+    `);
+  }
+  async getOrCreateManualSession(project) {
+    const existing = this.db.prepare(`
+      SELECT id FROM sessions
+      WHERE project = ?
+        AND source = 'manual'
+        AND date(started_at) = date('now', 'localtime')
+        AND status = 'active'
+      LIMIT 1
+    `).get(project);
+    if (existing) {
+      return existing.id;
+    }
+    const sessionId = (0, import_crypto5.randomUUID)();
+    this.db.prepare(`
+      INSERT INTO sessions (id, project, started_at, status, source)
+      VALUES (?, ?, ?, 'active', 'manual')
+    `).run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
+    return sessionId;
+  }
+  async addManualObservation(params) {
+    const { text, project, sessionId, importanceScore, tags } = params;
+    let importance;
+    if (importanceScore >= 0.65) {
+      importance = "high";
+    } else if (importanceScore >= 0.35) {
+      importance = "medium";
+    } else {
+      importance = "low";
+    }
+    const tokenEstimate = Math.ceil(text.length / 4);
+    const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+    const contentHash = sha256(`${text}
+[]
+`);
+    const hashCheck = this.db.prepare(`
+      SELECT COUNT(*) as count FROM observations
+      WHERE project LIKE ? AND content_hash = ?
+    `).get(project + "%", contentHash);
+    if (hashCheck.count > 0) {
+      return void 0;
+    }
+    const info = this.db.prepare(`
+      INSERT INTO observations (
+        session_id, project, tool_name, summary,
+        files_touched, metadata, token_estimate,
+        importance, importance_score, tags, content_hash, created_at
+      ) VALUES (?, ?, 'Manual', ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
+    `).run(
+      sessionId,
+      project,
+      text,
+      tokenEstimate,
+      importance,
+      importanceScore,
+      tags ?? null,
+      contentHash,
+      createdAt
+    );
+    return Number(info.lastInsertRowid);
+  }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
       throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
@@ -62869,7 +63157,7 @@ async function startHttpServer(options = {}) {
     const actualBuf = Buffer.alloc(expectedBuf.length, 0);
     Buffer.from(provided).copy(actualBuf, 0, 0, expectedBuf.length);
     const lengthMatch = provided.length === token.length;
-    const contentMatch = (0, import_crypto4.timingSafeEqual)(expectedBuf, actualBuf);
+    const contentMatch = (0, import_crypto6.timingSafeEqual)(expectedBuf, actualBuf);
     if (!lengthMatch || !contentMatch) {
       await reply.status(401).header("WWW-Authenticate", "Bearer").send({ error: "Unauthorized" });
     }
@@ -62979,6 +63267,30 @@ async function startHttpServer(options = {}) {
         created_at: createdAt
       });
       await reply.send({ status: "ok" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(400).send({ error: msg });
+    }
+  });
+  fastify.post("/capture/add", async (request, reply) => {
+    try {
+      const body = request.body;
+      const text = strBound(body["text"], OBS_SUMMARY_MAX, "text");
+      const project = strBound(body["project"], PROJECT_MAX, "project");
+      const rawScore = body["importance_score"];
+      const importanceScore = typeof rawScore === "number" ? Math.max(0, Math.min(1, rawScore)) : 0.6;
+      const rawTags = body["tags"];
+      const tags = typeof rawTags === "string" && rawTags.trim().length > 0 ? rawTags.substring(0, 256) : void 0;
+      const normalizedProject = normalizePath(project, pathMap);
+      const sessionId = await storage.getOrCreateManualSession(normalizedProject);
+      const obsId = await storage.addManualObservation({
+        text,
+        project: normalizedProject,
+        sessionId,
+        importanceScore,
+        tags
+      });
+      await reply.send({ status: "ok", session_id: sessionId, stored: obsId !== void 0 });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await reply.status(400).send({ error: msg });

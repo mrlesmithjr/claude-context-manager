@@ -152,6 +152,34 @@ export async function remoteGetMemory(
 }
 
 /**
+ * Save a manual observation via the remote server's /capture/add endpoint.
+ *
+ * Returns the session ID used on the server, or undefined on any failure
+ * (never throws — callers treat the result as best-effort).
+ */
+export async function remoteAddObservation(
+  client: RemoteClient,
+  params: {
+    text: string;
+    project: string;
+    importanceScore: number;
+    tags: string | undefined;
+  },
+): Promise<string | undefined> {
+  try {
+    const data = (await post(client, '/capture/add', {
+      text: params.text,
+      project: params.project,
+      importance_score: params.importanceScore,
+      tags: params.tags,
+    })) as Record<string, unknown>;
+    return typeof data.session_id === 'string' ? data.session_id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Call an MCP tool on the remote server and return the text of the first
  * content block, or empty string on any error (never throws).
  *
