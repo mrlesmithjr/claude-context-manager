@@ -39,7 +39,7 @@ export class ProjectFilter extends Component {
     this.setState({ loading: true, error: null });
 
     try {
-      const response = await fetch('/api/projects');
+      const response = await apiFetch('/api/projects');
       if (!response.ok) throw new Error('Failed to load projects');
 
       const data = await response.json();

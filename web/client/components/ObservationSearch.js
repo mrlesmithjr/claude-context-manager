@@ -112,7 +112,7 @@ export class ObservationSearch extends Component {
    */
   async loadTools() {
     try {
-      const response = await fetch('/api/stats');
+      const response = await apiFetch('/api/stats');
       if (!response.ok) throw new Error('Failed to load stats');
 
       const stats = await response.json();
@@ -165,7 +165,7 @@ export class ObservationSearch extends Component {
       if (project) params.append('project', project);
       if (selectedTool) params.append('tool', selectedTool);
 
-      const response = await fetch(`/api/observations?${params}`);
+      const response = await apiFetch(`/api/observations?${params}`);
       if (!response.ok) throw new Error('Failed to search observations');
 
       const data = await response.json();

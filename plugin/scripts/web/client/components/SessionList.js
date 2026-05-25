@@ -86,7 +86,7 @@ export class SessionList extends Component {
       const params = new URLSearchParams({ limit, offset });
       if (project) params.append('project', project);
 
-      const response = await fetch(`/api/sessions?${params}`);
+      const response = await apiFetch(`/api/sessions?${params}`);
       if (!response.ok) throw new Error('Failed to load sessions');
 
       const data = await response.json();
@@ -105,7 +105,7 @@ export class SessionList extends Component {
     this.setState({ loadingDetail: true });
 
     try {
-      const response = await fetch(`/api/sessions/${sessionId}`);
+      const response = await apiFetch(`/api/sessions/${sessionId}`);
       if (!response.ok) throw new Error('Failed to load session detail');
 
       const data = await response.json();

@@ -11,6 +11,19 @@ import { ObservationSearch } from './components/ObservationSearch.js';
 import { TokenAnalytics } from './components/TokenAnalytics.js';
 
 /**
+ * Authenticated fetch helper.
+ * Attaches the Bearer token from window.__CTX_TOKEN when present.
+ * In local mode the token is an empty string and no Authorization header is added,
+ * so existing local-dev behavior is preserved.
+ */
+window.apiFetch = function apiFetch(path, opts = {}) {
+  const token = window.__CTX_TOKEN;
+  const headers = { ...(opts.headers || {}) };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return fetch(path, { ...opts, headers });
+};
+
+/**
  * Main application component
  */
 class App extends Component {
@@ -43,7 +56,7 @@ class App extends Component {
 
   async loadStats() {
     try {
-      const response = await fetch('/api/stats');
+      const response = await apiFetch('/api/stats');
       if (!response.ok) throw new Error('Failed to load stats');
       const stats = await response.json();
       this.setState({ stats });

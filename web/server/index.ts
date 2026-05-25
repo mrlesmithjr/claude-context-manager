@@ -19,7 +19,7 @@ import fastifyRateLimit from '@fastify/rate-limit';
 import { timingSafeEqual } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { SQLiteStorage } from '../../src/storage/sqlite.js';
@@ -79,8 +79,11 @@ async function main() {
   // Bearer token auth: enforced on all routes in network mode
   if (isNetworkMode) {
     fastify.addHook('onRequest', async (request, reply) => {
-      // Allow the health check without auth so monitoring tools can probe it
-      if (request.url === '/api/health') return;
+      // Allow the health check and the root page without auth.
+      // The root page (GET /) injects the token into HTML; a browser visiting for
+      // the first time has no token yet so it must load without auth first.
+      const rawPath = request.url.split('?')[0];
+      if (rawPath === '/api/health' || rawPath === '/') return;
 
       const authHeader = request.headers['authorization'] || '';
       const provided = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -117,6 +120,30 @@ async function main() {
   await fastify.register(fastifyStatic, {
     root: clientPath,
     prefix: '/',
+    // index.html is served dynamically via GET / below — disable auto-index serving
+    index: false,
+  });
+
+  // Dynamic GET / : serve index.html with token injected so the browser client
+  // can attach Bearer auth headers in network mode.
+  // In local mode token is an empty string and the client adds no header.
+  fastify.get('/', async (_request, reply) => {
+    const indexPath = join(clientPath, 'index.html');
+    if (!existsSync(indexPath)) {
+      reply.status(503).send({ error: 'Dashboard not built. Run npm run build:plugin.' });
+      return;
+    }
+    const raw = readFileSync(indexPath, 'utf8');
+    const tokenValue = isNetworkMode ? TOKEN : '';
+    const safeToken = JSON.stringify(tokenValue).replace(/<\/script>/gi, '<\\/script>');
+    const injected = raw.replace(
+      '</head>',
+      `<script>window.__CTX_TOKEN = ${safeToken};</script>\n</head>`
+    );
+    reply
+      .header('Content-Type', 'text/html; charset=utf-8')
+      .header('Cache-Control', 'no-store')
+      .send(injected);
   });
 
   // Register API routes (pass network mode flag for scope validation)

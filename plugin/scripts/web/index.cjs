@@ -45982,7 +45982,8 @@ async function main() {
   });
   if (isNetworkMode) {
     fastify.addHook("onRequest", async (request, reply) => {
-      if (request.url === "/api/health")
+      const rawPath = request.url.split("?")[0];
+      if (rawPath === "/api/health" || rawPath === "/")
         return;
       const authHeader = request.headers["authorization"] || "";
       const provided = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
@@ -46003,7 +46004,25 @@ async function main() {
   const clientPath = (0, import_fs2.existsSync)((0, import_path2.join)(__scriptDir, "client")) ? (0, import_path2.join)(__scriptDir, "client") : (0, import_path2.join)(__scriptDir, "..", "..", "web", "client");
   await fastify.register(import_static.default, {
     root: clientPath,
-    prefix: "/"
+    prefix: "/",
+    // index.html is served dynamically via GET / below — disable auto-index serving
+    index: false
+  });
+  fastify.get("/", async (_request, reply) => {
+    const indexPath = (0, import_path2.join)(clientPath, "index.html");
+    if (!(0, import_fs2.existsSync)(indexPath)) {
+      reply.status(503).send({ error: "Dashboard not built. Run npm run build:plugin." });
+      return;
+    }
+    const raw = (0, import_fs2.readFileSync)(indexPath, "utf8");
+    const tokenValue = isNetworkMode ? TOKEN : "";
+    const safeToken = JSON.stringify(tokenValue).replace(/<\/script>/gi, "<\\/script>");
+    const injected = raw.replace(
+      "</head>",
+      `<script>window.__CTX_TOKEN = ${safeToken};</script>
+</head>`
+    );
+    reply.header("Content-Type", "text/html; charset=utf-8").header("Cache-Control", "no-store").send(injected);
   });
   await registerApiRoutes(fastify, storage, isNetworkMode);
   fastify.get("/api/health", async (request, reply) => {

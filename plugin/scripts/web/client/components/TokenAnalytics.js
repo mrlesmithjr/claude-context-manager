@@ -113,8 +113,8 @@ export class TokenAnalytics extends Component {
       if (project) timelineParams.append('project', project);
 
       const [statsResponse, timelineResponse] = await Promise.all([
-        fetch(`/api/stats?${statsParams}`),
-        fetch(`/api/stats/timeline?${timelineParams}`),
+        apiFetch(`/api/stats?${statsParams}`),
+        apiFetch(`/api/stats/timeline?${timelineParams}`),
       ]);
 
       if (!statsResponse.ok) throw new Error('Failed to load stats');
