@@ -36,86 +36,21 @@ import {
   remoteExportMemory,
 } from '../../src/capture/remote-client.js';
 import { loadDotEnv } from '../../src/utils/env.js';
+import {
+  extractTextFromTranscriptLine,
+  pickBestNarrative,
+  type TranscriptLine,
+} from '../../src/utils/transcript.js';
 
 const debugLog = createDebugLogger('stop-hook-debug.log');
 
-interface TranscriptMessage {
-  type: string;
-  message?: {
-    role?: string;
-    content?: string | Array<{ type: string; text?: string }>;
-  };
-  summary?: string;
-}
+// Re-export the shared type alias for use within this file
+type TranscriptMessage = TranscriptLine;
 
-/**
- * Score an assistant message for narrative quality.
- * Distinct from scoreAssistantBlock() which scores for structured knowledge.
- * This scores for "describes what was done in this session."
- * Returns 0.0-1.0 (0 = skip, higher = better narrative candidate).
- */
-function scoreForNarrative(text: string): number {
-  if (text.length < 50) return 0;
-
-  const lower = text.toLowerCase().trimStart();
-
-  // Skip short affirmations and confirmations
-  if (text.length < 200) {
-    if (/^(yes|sure|ok|okay|alright|got it|sounds good|perfect|great|done|correct|right|no problem|will do|absolutely)\b/.test(lower)) return 0;
-    if (/^(let me |i'll |i've |checking|looking|reading|searching)/.test(lower)) return 0;
-  }
-
-  let score = 0;
-
-  // Length sweet spot: 150-1500 chars
-  if (text.length >= 150) score += 0.15;
-  if (text.length >= 400) score += 0.10;
-  if (text.length > 3000) score -= 0.10; // Long raw dumps make poor narratives
-
-  // Technical/work-describing content
-  if (/\b(implement|add|fix|update|creat|refactor|chang|remov|improv|build|replac|rewrit)\w*\b/i.test(text)) score += 0.20;
-  if (/\b\w+\.(ts|js|py|yaml|yml|json|md|sql)\b/.test(text)) score += 0.15;
-  if (text.includes('```')) score += 0.10;
-
-  // Structured content (bullet lists suggest substantive output)
-  const bulletCount = (text.match(/^[-*]\s/gm) || []).length;
-  if (bulletCount >= 2) score += 0.10;
-
-  // Slight penalty for responses that end as questions
-  if (text.trimEnd().endsWith('?')) score -= 0.10;
-
-  return Math.max(0, Math.min(1.0, score));
-}
-
-/**
- * Extract text content from a parsed transcript message.
- */
-function extractTextFromMessage(msg: TranscriptMessage): string {
-  const msgContent = msg.message?.content;
-  if (!msgContent) return '';
-  if (typeof msgContent === 'string') return msgContent;
-  if (Array.isArray(msgContent)) {
-    return msgContent
-      .filter(block => block.type === 'text' && block.text)
-      .map(block => block.text!)
-      .join('\n');
-  }
-  return '';
-}
-
-/**
- * Extract summary and extended summary from the transcript file.
- *
- * The transcript is JSONL format. We look for:
- * 1. First line may contain a summary field
- * 2. Best-scoring assistant message (by narrative quality, threshold 0.25)
- * 3. Falls back to last assistant message if no good candidate
- *
- * summary_extended: top-3 scoring messages joined with separators, for multi-beat sessions.
- */
 /**
  * Extract session summary and extended narrative from pre-parsed transcript lines.
  * Accepts string[] (already read+split) so the caller controls the single file read.
+ * Delegates to pickBestNarrative() from the shared transcript util.
  */
 function extractSummaryFromLines(lines: string[]): {
   summary: string | undefined;
@@ -127,65 +62,18 @@ function extractSummaryFromLines(lines: string[]): {
       return { summary: undefined, summaryExtended: undefined };
     }
 
-    // Check first line for summary field (Claude Code sometimes includes this)
-    try {
-      const firstLine = JSON.parse(lines[0]) as TranscriptMessage;
-      if (firstLine.summary && typeof firstLine.summary === 'string') {
-        debugLog('FOUND_SUMMARY_IN_FIRST_LINE', firstLine.summary.substring(0, 200));
-        return { summary: firstLine.summary, summaryExtended: undefined };
-      }
-    } catch {
-      // First line might not be valid JSON, continue
-    }
+    const result = pickBestNarrative(lines);
 
-    // Collect all assistant messages with narrative scores
-    const scored: Array<{ text: string; score: number }> = [];
-    let lastAssistantContent = '';
-
-    for (const rawLine of lines) {
-      try {
-        const msg = JSON.parse(rawLine) as TranscriptMessage;
-        if (msg.type !== 'assistant' || msg.message?.role !== 'assistant') continue;
-
-        const text = extractTextFromMessage(msg);
-        if (!text) continue;
-
-        lastAssistantContent = text;
-
-        const score = scoreForNarrative(text);
-        scored.push({ text, score });
-      } catch {
-        continue;
-      }
-    }
-
-    // Sort by score descending; use threshold 0.25 to avoid 0-score messages beating the fallback
-    scored.sort((a, b) => b.score - a.score);
-    const qualifying = scored.filter(m => m.score >= 0.25);
-
-    // Primary summary: best single message, fall back to last assistant message
-    const bestText = qualifying.length > 0 ? qualifying[0].text : lastAssistantContent;
-    const bestScore = qualifying.length > 0 ? qualifying[0].score : -1;
-
-    if (!bestText) {
+    if (!result.summary) {
       debugLog('NO_ASSISTANT_MESSAGE_FOUND', { lineCount: lines.length });
-      return { summary: undefined, summaryExtended: undefined };
+    } else {
+      debugLog('EXTRACTED_SUMMARY', { length: result.summary.length, preview: result.summary.substring(0, 200) });
+      if (result.summaryExtended) {
+        debugLog('EXTRACTED_SUMMARY_EXTENDED', { length: result.summaryExtended.length });
+      }
     }
 
-    const summary = bestText.length > 1500 ? bestText.substring(0, 1500) + '...' : bestText;
-    debugLog('EXTRACTED_SUMMARY', { score: bestScore, length: summary.length, preview: summary.substring(0, 200) });
-
-    // Extended summary: top-3 qualifying messages joined, only when there are multiple beats
-    let summaryExtended: string | undefined;
-    if (qualifying.length >= 2) {
-      const beats = qualifying.slice(0, 3).map(m =>
-        m.text.length > 800 ? m.text.substring(0, 800) + '...' : m.text
-      );
-      summaryExtended = beats.join('\n\n---\n\n');
-      debugLog('EXTRACTED_SUMMARY_EXTENDED', { beats: beats.length, length: summaryExtended.length });
-    }
-
-    return { summary, summaryExtended };
+    return result;
   } catch (error) {
     debugLog('TRANSCRIPT_PARSE_ERROR', { error: String(error) });
     return { summary: undefined, summaryExtended: undefined };
@@ -330,17 +218,8 @@ function extractConversationInsights(
         const msg = JSON.parse(line) as TranscriptMessage;
         if (msg.type !== 'assistant' || msg.message?.role !== 'assistant') continue;
 
-        // Extract text from assistant message
-        let text = '';
-        const msgContent = msg.message.content;
-        if (typeof msgContent === 'string') {
-          text = msgContent;
-        } else if (Array.isArray(msgContent)) {
-          text = msgContent
-            .filter(block => block.type === 'text' && block.text)
-            .map(block => block.text!)
-            .join('\n');
-        }
+        // Extract text from assistant message using shared utility
+        const text = extractTextFromTranscriptLine(msg);
 
         if (!text) continue;
 

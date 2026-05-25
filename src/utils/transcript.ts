@@ -1,7 +1,8 @@
 /**
  * Transcript Parsing Utilities
  *
- * Parse Claude Code session transcripts to extract "Previously" context.
+ * Parse Claude Code session transcripts to extract "Previously" context,
+ * narrative scoring, and session summary selection.
  */
 
 import { readFileSync, existsSync } from 'fs';
@@ -216,6 +217,139 @@ export function parseTranscriptForLastMessage(
     // Return null on any error (file not found, permission denied, etc.)
     return null;
   }
+}
+
+/**
+ * JSONL message shape used by the Stop hook and checkpoint runner.
+ * Kept minimal: only the fields actually accessed at runtime.
+ */
+export interface TranscriptLine {
+  type: string;
+  message?: {
+    role?: string;
+    content?: string | Array<{ type: string; text?: string }>;
+  };
+  summary?: string;
+}
+
+/**
+ * Extract plain text from a parsed TranscriptLine.
+ * Returns empty string when no text content is present.
+ */
+export function extractTextFromTranscriptLine(msg: TranscriptLine): string {
+  const content = msg.message?.content;
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(block => block.type === 'text' && block.text)
+      .map(block => block.text!)
+      .join('\n');
+  }
+  return '';
+}
+
+/**
+ * Score an assistant message for narrative quality.
+ * Returns 0.0-1.0 (0 = skip, higher = better narrative candidate).
+ * Favors messages that describe completed work rather than in-progress commentary.
+ */
+export function scoreForNarrative(text: string): number {
+  if (text.length < 50) return 0;
+
+  const lower = text.toLowerCase().trimStart();
+
+  // Skip short affirmations and confirmations
+  if (text.length < 200) {
+    if (/^(yes|sure|ok|okay|alright|got it|sounds good|perfect|great|done|correct|right|no problem|will do|absolutely)\b/.test(lower)) return 0;
+    if (/^(let me |i'll |i've |checking|looking|reading|searching)/.test(lower)) return 0;
+  }
+
+  let score = 0;
+
+  // Length sweet spot: 150-1500 chars
+  if (text.length >= 150) score += 0.15;
+  if (text.length >= 400) score += 0.10;
+  if (text.length > 3000) score -= 0.10; // Long raw dumps make poor narratives
+
+  // Technical/work-describing content
+  if (/\b(implement|add|fix|update|creat|refactor|chang|remov|improv|build|replac|rewrit)\w*\b/i.test(text)) score += 0.20;
+  if (/\b\w+\.(ts|js|py|yaml|yml|json|md|sql)\b/.test(text)) score += 0.15;
+  if (text.includes('```')) score += 0.10;
+
+  // Structured content (bullet lists suggest substantive output)
+  const bulletCount = (text.match(/^[-*]\s/gm) || []).length;
+  if (bulletCount >= 2) score += 0.10;
+
+  // Slight penalty for responses that end as questions
+  if (text.trimEnd().endsWith('?')) score -= 0.10;
+
+  return Math.max(0, Math.min(1.0, score));
+}
+
+/**
+ * Parse pre-read JSONL lines and pick the best narrative summary for a session.
+ *
+ * Returns:
+ *   summary          - Best single assistant message (capped at 1500 chars)
+ *   summaryExtended  - Top-3 messages joined with separators (only when 2+)
+ *
+ * Used by both session-end.ts (Stop hook) and the checkpoint runner in
+ * capture-prompt.ts so narrative scoring logic stays in one place.
+ */
+export function pickBestNarrative(lines: string[]): {
+  summary: string | undefined;
+  summaryExtended: string | undefined;
+} {
+  if (lines.length === 0) return { summary: undefined, summaryExtended: undefined };
+
+  // Check first line for an embedded summary field
+  const firstLine = lines[0];
+  if (firstLine !== undefined) {
+    try {
+      const first = JSON.parse(firstLine) as TranscriptLine;
+      if (first.summary && typeof first.summary === 'string') {
+        return { summary: first.summary, summaryExtended: undefined };
+      }
+    } catch {
+      // Not valid JSON or no summary field. Continue.
+    }
+  }
+
+  const scored: Array<{ text: string; score: number }> = [];
+  let lastAssistantContent = '';
+
+  for (const rawLine of lines) {
+    try {
+      const msg = JSON.parse(rawLine) as TranscriptLine;
+      if (msg.type !== 'assistant' || msg.message?.role !== 'assistant') continue;
+      const text = extractTextFromTranscriptLine(msg);
+      if (!text) continue;
+      lastAssistantContent = text;
+      scored.push({ text, score: scoreForNarrative(text) });
+    } catch {
+      continue;
+    }
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  const qualifying = scored.filter(m => m.score >= 0.25);
+
+  const bestText = qualifying.length > 0 ? qualifying[0]!.text : lastAssistantContent;
+
+  if (!bestText) return { summary: undefined, summaryExtended: undefined };
+
+  const summary = bestText.length > 1500 ? bestText.substring(0, 1500) + '...' : bestText;
+
+  let summaryExtended: string | undefined;
+  if (qualifying.length >= 2) {
+    const beats = qualifying.slice(0, 3).map(m =>
+      m.text.length > 800 ? m.text.substring(0, 800) + '...' : m.text
+    );
+    summaryExtended = beats.join('\n\n---\n\n');
+  }
+
+  return { summary, summaryExtended };
 }
 
 /**

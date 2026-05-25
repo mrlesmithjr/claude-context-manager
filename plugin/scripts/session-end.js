@@ -181,6 +181,7 @@ var SQLiteStorage = class {
     this.migrateAddTagsColumn();
     this.migrateAddContentHash();
     this.migrateAddSummaryExtended();
+    this.migrateAddLastCheckpointAt();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -551,6 +552,24 @@ ${storedOutput}`;
       WHERE id = ?
     `);
     stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, summaryExtended || null, sessionId);
+  }
+  async updateSessionDraftSummary(sessionId, summary) {
+    if (!summary)
+      return;
+    this.db.prepare(`
+      UPDATE sessions SET summary = ? WHERE id = ?
+    `).run(summary, sessionId);
+  }
+  async updateSessionCheckpoint(sessionId, timestamp) {
+    this.db.prepare(`
+      UPDATE sessions SET last_checkpoint_at = ? WHERE id = ?
+    `).run(timestamp, sessionId);
+  }
+  async getSessionTimestamps(sessionId) {
+    const row = this.db.prepare(`
+      SELECT started_at, last_checkpoint_at FROM sessions WHERE id = ?
+    `).get(sessionId);
+    return row ?? null;
   }
   async getRecentSessions(project, limit) {
     const stmt = this.db.prepare(`
@@ -1228,6 +1247,18 @@ ${storedOutput}`;
       this.db.exec(`ALTER TABLE sessions ADD COLUMN summary_extended TEXT`);
     }
   }
+  /**
+   * Migration: add last_checkpoint_at column for periodic checkpoint tracking.
+   * Stores the Unix epoch millisecond timestamp of the last checkpoint run.
+   * NULL means no checkpoint has run for this session (use started_at as baseline).
+   */
+  migrateAddLastCheckpointAt() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("last_checkpoint_at")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN last_checkpoint_at INTEGER`);
+    }
+  }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
       throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
@@ -1611,6 +1642,91 @@ import { homedir as homedir4 } from "os";
 // src/utils/transcript.ts
 function convertPathToDashed(projectPath) {
   return projectPath.replace(/\//g, "-");
+}
+function extractTextFromTranscriptLine(msg) {
+  const content = msg.message?.content;
+  if (!content)
+    return "";
+  if (typeof content === "string")
+    return content;
+  if (Array.isArray(content)) {
+    return content.filter((block) => block.type === "text" && block.text).map((block) => block.text).join("\n");
+  }
+  return "";
+}
+function scoreForNarrative(text) {
+  if (text.length < 50)
+    return 0;
+  const lower = text.toLowerCase().trimStart();
+  if (text.length < 200) {
+    if (/^(yes|sure|ok|okay|alright|got it|sounds good|perfect|great|done|correct|right|no problem|will do|absolutely)\b/.test(lower))
+      return 0;
+    if (/^(let me |i'll |i've |checking|looking|reading|searching)/.test(lower))
+      return 0;
+  }
+  let score = 0;
+  if (text.length >= 150)
+    score += 0.15;
+  if (text.length >= 400)
+    score += 0.1;
+  if (text.length > 3e3)
+    score -= 0.1;
+  if (/\b(implement|add|fix|update|creat|refactor|chang|remov|improv|build|replac|rewrit)\w*\b/i.test(text))
+    score += 0.2;
+  if (/\b\w+\.(ts|js|py|yaml|yml|json|md|sql)\b/.test(text))
+    score += 0.15;
+  if (text.includes("```"))
+    score += 0.1;
+  const bulletCount = (text.match(/^[-*]\s/gm) || []).length;
+  if (bulletCount >= 2)
+    score += 0.1;
+  if (text.trimEnd().endsWith("?"))
+    score -= 0.1;
+  return Math.max(0, Math.min(1, score));
+}
+function pickBestNarrative(lines) {
+  if (lines.length === 0)
+    return { summary: void 0, summaryExtended: void 0 };
+  const firstLine = lines[0];
+  if (firstLine !== void 0) {
+    try {
+      const first = JSON.parse(firstLine);
+      if (first.summary && typeof first.summary === "string") {
+        return { summary: first.summary, summaryExtended: void 0 };
+      }
+    } catch {
+    }
+  }
+  const scored = [];
+  let lastAssistantContent = "";
+  for (const rawLine of lines) {
+    try {
+      const msg = JSON.parse(rawLine);
+      if (msg.type !== "assistant" || msg.message?.role !== "assistant")
+        continue;
+      const text = extractTextFromTranscriptLine(msg);
+      if (!text)
+        continue;
+      lastAssistantContent = text;
+      scored.push({ text, score: scoreForNarrative(text) });
+    } catch {
+      continue;
+    }
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const qualifying = scored.filter((m) => m.score >= 0.25);
+  const bestText = qualifying.length > 0 ? qualifying[0].text : lastAssistantContent;
+  if (!bestText)
+    return { summary: void 0, summaryExtended: void 0 };
+  const summary = bestText.length > 1500 ? bestText.substring(0, 1500) + "..." : bestText;
+  let summaryExtended;
+  if (qualifying.length >= 2) {
+    const beats = qualifying.slice(0, 3).map(
+      (m) => m.text.length > 800 ? m.text.substring(0, 800) + "..." : m.text
+    );
+    summaryExtended = beats.join("\n\n---\n\n");
+  }
+  return { summary, summaryExtended };
 }
 
 // src/utils/session-format.ts
@@ -2053,97 +2169,22 @@ function loadDotEnv() {
 
 // plugin/hooks/session-end.ts
 var debugLog = createDebugLogger("stop-hook-debug.log");
-function scoreForNarrative(text) {
-  if (text.length < 50)
-    return 0;
-  const lower = text.toLowerCase().trimStart();
-  if (text.length < 200) {
-    if (/^(yes|sure|ok|okay|alright|got it|sounds good|perfect|great|done|correct|right|no problem|will do|absolutely)\b/.test(lower))
-      return 0;
-    if (/^(let me |i'll |i've |checking|looking|reading|searching)/.test(lower))
-      return 0;
-  }
-  let score = 0;
-  if (text.length >= 150)
-    score += 0.15;
-  if (text.length >= 400)
-    score += 0.1;
-  if (text.length > 3e3)
-    score -= 0.1;
-  if (/\b(implement|add|fix|update|creat|refactor|chang|remov|improv|build|replac|rewrit)\w*\b/i.test(text))
-    score += 0.2;
-  if (/\b\w+\.(ts|js|py|yaml|yml|json|md|sql)\b/.test(text))
-    score += 0.15;
-  if (text.includes("```"))
-    score += 0.1;
-  const bulletCount = (text.match(/^[-*]\s/gm) || []).length;
-  if (bulletCount >= 2)
-    score += 0.1;
-  if (text.trimEnd().endsWith("?"))
-    score -= 0.1;
-  return Math.max(0, Math.min(1, score));
-}
-function extractTextFromMessage(msg) {
-  const msgContent = msg.message?.content;
-  if (!msgContent)
-    return "";
-  if (typeof msgContent === "string")
-    return msgContent;
-  if (Array.isArray(msgContent)) {
-    return msgContent.filter((block) => block.type === "text" && block.text).map((block) => block.text).join("\n");
-  }
-  return "";
-}
 function extractSummaryFromLines(lines) {
   try {
     if (lines.length === 0) {
       debugLog("TRANSCRIPT_EMPTY", { lineCount: 0 });
       return { summary: void 0, summaryExtended: void 0 };
     }
-    try {
-      const firstLine = JSON.parse(lines[0]);
-      if (firstLine.summary && typeof firstLine.summary === "string") {
-        debugLog("FOUND_SUMMARY_IN_FIRST_LINE", firstLine.summary.substring(0, 200));
-        return { summary: firstLine.summary, summaryExtended: void 0 };
-      }
-    } catch {
-    }
-    const scored = [];
-    let lastAssistantContent = "";
-    for (const rawLine of lines) {
-      try {
-        const msg = JSON.parse(rawLine);
-        if (msg.type !== "assistant" || msg.message?.role !== "assistant")
-          continue;
-        const text = extractTextFromMessage(msg);
-        if (!text)
-          continue;
-        lastAssistantContent = text;
-        const score = scoreForNarrative(text);
-        scored.push({ text, score });
-      } catch {
-        continue;
-      }
-    }
-    scored.sort((a, b) => b.score - a.score);
-    const qualifying = scored.filter((m) => m.score >= 0.25);
-    const bestText = qualifying.length > 0 ? qualifying[0].text : lastAssistantContent;
-    const bestScore = qualifying.length > 0 ? qualifying[0].score : -1;
-    if (!bestText) {
+    const result = pickBestNarrative(lines);
+    if (!result.summary) {
       debugLog("NO_ASSISTANT_MESSAGE_FOUND", { lineCount: lines.length });
-      return { summary: void 0, summaryExtended: void 0 };
+    } else {
+      debugLog("EXTRACTED_SUMMARY", { length: result.summary.length, preview: result.summary.substring(0, 200) });
+      if (result.summaryExtended) {
+        debugLog("EXTRACTED_SUMMARY_EXTENDED", { length: result.summaryExtended.length });
+      }
     }
-    const summary = bestText.length > 1500 ? bestText.substring(0, 1500) + "..." : bestText;
-    debugLog("EXTRACTED_SUMMARY", { score: bestScore, length: summary.length, preview: summary.substring(0, 200) });
-    let summaryExtended;
-    if (qualifying.length >= 2) {
-      const beats = qualifying.slice(0, 3).map(
-        (m) => m.text.length > 800 ? m.text.substring(0, 800) + "..." : m.text
-      );
-      summaryExtended = beats.join("\n\n---\n\n");
-      debugLog("EXTRACTED_SUMMARY_EXTENDED", { beats: beats.length, length: summaryExtended.length });
-    }
-    return { summary, summaryExtended };
+    return result;
   } catch (error) {
     debugLog("TRANSCRIPT_PARSE_ERROR", { error: String(error) });
     return { summary: void 0, summaryExtended: void 0 };
@@ -2258,13 +2299,7 @@ function extractConversationInsights(lines, sessionId, project) {
         const msg = JSON.parse(line);
         if (msg.type !== "assistant" || msg.message?.role !== "assistant")
           continue;
-        let text = "";
-        const msgContent = msg.message.content;
-        if (typeof msgContent === "string") {
-          text = msgContent;
-        } else if (Array.isArray(msgContent)) {
-          text = msgContent.filter((block) => block.type === "text" && block.text).map((block) => block.text).join("\n");
-        }
+        const text = extractTextFromTranscriptLine(msg);
         if (!text)
           continue;
         const score = scoreAssistantBlock(text);

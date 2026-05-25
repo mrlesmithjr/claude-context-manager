@@ -181,6 +181,7 @@ var SQLiteStorage = class {
     this.migrateAddTagsColumn();
     this.migrateAddContentHash();
     this.migrateAddSummaryExtended();
+    this.migrateAddLastCheckpointAt();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -551,6 +552,24 @@ ${storedOutput}`;
       WHERE id = ?
     `);
     stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, summaryExtended || null, sessionId);
+  }
+  async updateSessionDraftSummary(sessionId, summary) {
+    if (!summary)
+      return;
+    this.db.prepare(`
+      UPDATE sessions SET summary = ? WHERE id = ?
+    `).run(summary, sessionId);
+  }
+  async updateSessionCheckpoint(sessionId, timestamp) {
+    this.db.prepare(`
+      UPDATE sessions SET last_checkpoint_at = ? WHERE id = ?
+    `).run(timestamp, sessionId);
+  }
+  async getSessionTimestamps(sessionId) {
+    const row = this.db.prepare(`
+      SELECT started_at, last_checkpoint_at FROM sessions WHERE id = ?
+    `).get(sessionId);
+    return row ?? null;
   }
   async getRecentSessions(project, limit) {
     const stmt = this.db.prepare(`
@@ -1228,6 +1247,18 @@ ${storedOutput}`;
       this.db.exec(`ALTER TABLE sessions ADD COLUMN summary_extended TEXT`);
     }
   }
+  /**
+   * Migration: add last_checkpoint_at column for periodic checkpoint tracking.
+   * Stores the Unix epoch millisecond timestamp of the last checkpoint run.
+   * NULL means no checkpoint has run for this session (use started_at as baseline).
+   */
+  migrateAddLastCheckpointAt() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("last_checkpoint_at")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN last_checkpoint_at INTEGER`);
+    }
+  }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
       throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
@@ -1676,8 +1707,8 @@ function createDebugLogger(logFileName) {
 }
 
 // src/capture/remote-client.ts
-async function post(client, path3, body) {
-  const response = await fetch(`${client.url}${path3}`, {
+async function post(client, path4, body) {
+  const response = await fetch(`${client.url}${path4}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1687,12 +1718,23 @@ async function post(client, path3, body) {
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Remote ${path3} returned ${response.status}: ${text}`);
+    throw new Error(`Remote ${path4} returned ${response.status}: ${text}`);
   }
   return response.json().catch(() => ({}));
 }
 async function remoteSavePrompt(client, prompt) {
   await post(client, "/capture/prompt", prompt);
+}
+async function remoteExportMemory(client, project, sessionId) {
+  try {
+    const data = await post(client, "/capture/export", {
+      project,
+      ...sessionId !== void 0 ? { session_id: sessionId } : {}
+    });
+    return typeof data.content === "string" ? data.content : "";
+  } catch {
+    return "";
+  }
 }
 
 // src/utils/env.ts
@@ -1726,7 +1768,469 @@ function loadDotEnv() {
   }
 }
 
+// src/export/memory.ts
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, writeFileSync as writeFileSync2, existsSync } from "fs";
+import { join as join3 } from "path";
+import { homedir as homedir5 } from "os";
+
+// src/utils/transcript.ts
+function convertPathToDashed(projectPath) {
+  return projectPath.replace(/\//g, "-");
+}
+function extractTextFromTranscriptLine(msg) {
+  const content = msg.message?.content;
+  if (!content)
+    return "";
+  if (typeof content === "string")
+    return content;
+  if (Array.isArray(content)) {
+    return content.filter((block) => block.type === "text" && block.text).map((block) => block.text).join("\n");
+  }
+  return "";
+}
+function scoreForNarrative(text) {
+  if (text.length < 50)
+    return 0;
+  const lower = text.toLowerCase().trimStart();
+  if (text.length < 200) {
+    if (/^(yes|sure|ok|okay|alright|got it|sounds good|perfect|great|done|correct|right|no problem|will do|absolutely)\b/.test(lower))
+      return 0;
+    if (/^(let me |i'll |i've |checking|looking|reading|searching)/.test(lower))
+      return 0;
+  }
+  let score = 0;
+  if (text.length >= 150)
+    score += 0.15;
+  if (text.length >= 400)
+    score += 0.1;
+  if (text.length > 3e3)
+    score -= 0.1;
+  if (/\b(implement|add|fix|update|creat|refactor|chang|remov|improv|build|replac|rewrit)\w*\b/i.test(text))
+    score += 0.2;
+  if (/\b\w+\.(ts|js|py|yaml|yml|json|md|sql)\b/.test(text))
+    score += 0.15;
+  if (text.includes("```"))
+    score += 0.1;
+  const bulletCount = (text.match(/^[-*]\s/gm) || []).length;
+  if (bulletCount >= 2)
+    score += 0.1;
+  if (text.trimEnd().endsWith("?"))
+    score -= 0.1;
+  return Math.max(0, Math.min(1, score));
+}
+function pickBestNarrative(lines) {
+  if (lines.length === 0)
+    return { summary: void 0, summaryExtended: void 0 };
+  const firstLine = lines[0];
+  if (firstLine !== void 0) {
+    try {
+      const first = JSON.parse(firstLine);
+      if (first.summary && typeof first.summary === "string") {
+        return { summary: first.summary, summaryExtended: void 0 };
+      }
+    } catch {
+    }
+  }
+  const scored = [];
+  let lastAssistantContent = "";
+  for (const rawLine of lines) {
+    try {
+      const msg = JSON.parse(rawLine);
+      if (msg.type !== "assistant" || msg.message?.role !== "assistant")
+        continue;
+      const text = extractTextFromTranscriptLine(msg);
+      if (!text)
+        continue;
+      lastAssistantContent = text;
+      scored.push({ text, score: scoreForNarrative(text) });
+    } catch {
+      continue;
+    }
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const qualifying = scored.filter((m) => m.score >= 0.25);
+  const bestText = qualifying.length > 0 ? qualifying[0].text : lastAssistantContent;
+  if (!bestText)
+    return { summary: void 0, summaryExtended: void 0 };
+  const summary = bestText.length > 1500 ? bestText.substring(0, 1500) + "..." : bestText;
+  let summaryExtended;
+  if (qualifying.length >= 2) {
+    const beats = qualifying.slice(0, 3).map(
+      (m) => m.text.length > 800 ? m.text.substring(0, 800) + "..." : m.text
+    );
+    summaryExtended = beats.join("\n\n---\n\n");
+  }
+  return { summary, summaryExtended };
+}
+
+// src/utils/session-format.ts
+function computeSessionDuration(session) {
+  if (!session.ended_at)
+    return "active";
+  const start = new Date(session.started_at).getTime();
+  const end = new Date(session.ended_at).getTime();
+  if (isNaN(start) || isNaN(end) || end <= start)
+    return "unknown";
+  const minutes = Math.round((end - start) / 6e4);
+  if (minutes < 1)
+    return "<1m";
+  if (minutes < 60)
+    return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remaining = minutes % 60;
+  return remaining > 0 ? `${hours}h ${remaining}m` : `${hours}h`;
+}
+function extractSessionNarrative(summary, maxLen = 120) {
+  if (!summary || summary.length < 10)
+    return "";
+  let text = summary.replace(/\*\*/g, "").replace(/`/g, "").trim();
+  const sentenceEnd = text.search(/[.!?\n]/);
+  if (sentenceEnd > 0 && sentenceEnd < maxLen) {
+    text = text.substring(0, sentenceEnd + 1);
+  } else if (text.length > maxLen) {
+    text = text.substring(0, maxLen).replace(/\s+\S*$/, "") + "...";
+  }
+  if (text.match(/^(Let me|I'll|Here's the|Looking at|No response|Checking)/i)) {
+    const afterFiller = summary.indexOf("\n");
+    if (afterFiller > 0 && afterFiller < 200) {
+      const next = summary.substring(afterFiller + 1).trim();
+      if (next.length > 10) {
+        return extractSessionNarrative(next, maxLen);
+      }
+    }
+  }
+  return text;
+}
+
+// src/utils/version.ts
+function isVersionBump(filePath) {
+  return /package\.json|pyproject\.toml|version\.ts/.test(filePath);
+}
+
+// src/export/memory.ts
+var TOPIC_FILE = "context-manager-activity.md";
+var DEFAULT_MAX_LINES = 150;
+var MAX_ITEMS_PER_SESSION = 6;
+function resolveMemoryDir(projectPath) {
+  const dashedPath = convertPathToDashed(projectPath);
+  return join3(homedir5(), ".claude", "projects", dashedPath, "memory");
+}
+function formatObservationsForMemory(observations, sessions) {
+  if (observations.length === 0)
+    return "";
+  const sessionLookup = /* @__PURE__ */ new Map();
+  if (sessions) {
+    for (const s of sessions) {
+      sessionLookup.set(s.id, s);
+    }
+  }
+  const byDate = /* @__PURE__ */ new Map();
+  for (const obs of observations) {
+    const date = obs.created_at.split("T")[0] ?? "unknown";
+    if (!byDate.has(date))
+      byDate.set(date, /* @__PURE__ */ new Map());
+    const dateGroup = byDate.get(date);
+    if (!dateGroup.has(obs.session_id))
+      dateGroup.set(obs.session_id, []);
+    dateGroup.get(obs.session_id).push(obs);
+  }
+  const lines = [];
+  for (const [date, sessionMap] of byDate) {
+    lines.push(`## ${date}`);
+    lines.push("");
+    for (const [sessionId, sessionObs] of sessionMap) {
+      const block = formatSessionBlock(sessionObs, sessionLookup.get(sessionId));
+      if (block) {
+        lines.push(block);
+        lines.push("");
+      }
+    }
+  }
+  return lines.join("\n");
+}
+function formatSessionBlock(observations, session) {
+  const sessionId = observations[0]?.session_id || "unknown";
+  const shortId = sessionId.substring(0, 8);
+  let heading;
+  if (session) {
+    const duration = computeSessionDuration(session);
+    heading = `### Session ${shortId} (${duration}, ${observations.length} actions)`;
+  } else {
+    heading = `### ${shortId}`;
+  }
+  const narrative = session ? extractSessionNarrative(session.summary) : "";
+  const created = [];
+  const edited = /* @__PURE__ */ new Map();
+  const commits = [];
+  const commands = [];
+  const insights = [];
+  for (const obs of observations) {
+    const file = obs.files_touched[0] || "";
+    const shortFile = file ? file.split("/").slice(-2).join("/") : "";
+    switch (obs.tool_name) {
+      case "Write":
+        created.push(shortFile);
+        break;
+      case "Edit": {
+        const desc = describeEdit(obs);
+        if (!edited.has(shortFile))
+          edited.set(shortFile, []);
+        edited.get(shortFile).push(desc);
+        break;
+      }
+      case "Bash": {
+        if (obs.summary.includes("git commit")) {
+          const msg = obs.summary.match(/commit -m ["'](.+?)["']/)?.[1] || obs.summary.match(/"([^"]+)"/)?.[1] || "";
+          if (msg)
+            commits.push(msg.substring(0, 70));
+        } else if (obs.summary.includes("git push")) {
+          commands.push("Git push");
+        } else if (obs.summary.includes("npm install") || obs.summary.includes("yarn add")) {
+          commands.push("Install dependencies");
+        } else if (obs.summary.includes("npm run test") || obs.summary.includes("npm test")) {
+          commands.push("Tests");
+        }
+        break;
+      }
+      case "Conversation": {
+        const insightText = obs.summary.substring(0, 80);
+        if (insightText.length > 5) {
+          insights.push(insightText);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  const items = [];
+  if (created.length > 0) {
+    if (created.length <= 3) {
+      items.push(`Created ${created.join(", ")}`);
+    } else {
+      items.push(`Created ${created.slice(0, 3).join(", ")} + ${created.length - 3} more`);
+    }
+  }
+  for (const [file, descriptions] of edited) {
+    const meaningful = descriptions.filter((d) => d.length > 0);
+    if (meaningful.length === 0)
+      continue;
+    const best = meaningful.find((d) => d.startsWith("Added") || d.startsWith("Schema")) || meaningful.find((d) => d.startsWith("Changed") || d.startsWith("Removed")) || meaningful[0] || "modified";
+    items.push(`Edited ${file} \u2014 ${best}`);
+  }
+  if (commits.length > 0) {
+    if (commits.length === 1) {
+      items.push(`Commit: "${commits[0]}"`);
+    } else {
+      items.push(`${commits.length} commits: "${commits[0]}", "${commits[1]}"${commits.length > 2 ? ` + ${commits.length - 2} more` : ""}`);
+    }
+  }
+  const uniqueCommands = [...new Set(commands)];
+  if (uniqueCommands.length > 0) {
+    items.push(uniqueCommands.join(", "));
+  }
+  for (const insight of insights.slice(0, 2)) {
+    items.push(`Key insight: ${insight}`);
+  }
+  const cappedItems = items.slice(0, MAX_ITEMS_PER_SESSION);
+  if (items.length > MAX_ITEMS_PER_SESSION) {
+    cappedItems.push(`+ ${items.length - MAX_ITEMS_PER_SESSION} more changes`);
+  }
+  if (cappedItems.length === 0 && !narrative)
+    return "";
+  const itemLines = cappedItems.map((item) => `- ${item}`).join("\n");
+  const parts = [heading];
+  if (narrative)
+    parts.push(narrative);
+  if (itemLines)
+    parts.push(itemLines);
+  return parts.join("\n");
+}
+function describeEdit(obs) {
+  const toolInput = obs.metadata?.tool_input;
+  if (!toolInput)
+    return "";
+  const oldStr = toolInput.old_string || "";
+  const newStr = toolInput.new_string || "";
+  if (!oldStr && !newStr)
+    return "";
+  const filePath = obs.files_touched[0] ?? "";
+  if (filePath && isVersionBump(filePath))
+    return "";
+  const oldLines = oldStr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const newLines = newStr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const oldSet = new Set(oldLines);
+  const addedLines = newLines.filter((l) => !oldSet.has(l));
+  for (const line of addedLines) {
+    const funcMatch = line.match(/(?:function|async function|class|const|export)\s+(\w+)/);
+    if (funcMatch)
+      return `Added ${funcMatch[0].substring(0, 60)}`;
+    const importMatch = line.match(/import\s+.+from\s+['"](.+?)['"]/);
+    if (importMatch)
+      return `Added import from '${importMatch[1]}'`;
+    const typeMatch = line.match(/(?:interface|type)\s+(\w+)/);
+    if (typeMatch)
+      return `Added ${typeMatch[0]}`;
+    const toolMatch = line.match(/['"](\w+)['"]/);
+    if (line.includes("server.tool") && toolMatch)
+      return `Added tool '${toolMatch[1]}'`;
+    if (line.includes('"dependencies"') || line.match(/["']\w+["']\s*:\s*["']\^/)) {
+      const depMatch = line.match(/["'](@?[\w/-]+)["']\s*:/);
+      if (depMatch)
+        return `Added dependency ${depMatch[1]}`;
+    }
+    if (line.includes("CREATE TABLE") || line.includes("CREATE VIRTUAL TABLE") || line.includes("ALTER TABLE")) {
+      return `Schema change: ${line.substring(0, 60)}`;
+    }
+  }
+  const netLines = newLines.length - oldLines.length;
+  if (netLines > 5)
+    return `Added ~${netLines} lines`;
+  if (netLines < -5)
+    return `Removed ~${Math.abs(netLines)} lines`;
+  if (addedLines.length > 0) {
+    const hint = addedLines[0].substring(0, 60);
+    if (hint.length >= 10 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
+      return `Changed: ${hint}`;
+    }
+  }
+  return "";
+}
+function mergeSessionBlocks(existingBody, newContent) {
+  if (!existingBody && !newContent)
+    return "";
+  if (!existingBody)
+    return newContent.trimEnd();
+  if (!newContent)
+    return existingBody.trimEnd();
+  const existingBlocks = parseSessionBlocks(existingBody);
+  const newBlocks = parseSessionBlocks(newContent);
+  for (const newBlock of newBlocks) {
+    const existing = existingBlocks.find((b) => b.sessionId === newBlock.sessionId);
+    if (existing) {
+      if (!existing.narrative && newBlock.narrative) {
+        existing.narrative = newBlock.narrative;
+      }
+      const existingItems = new Set(existing.items.map((l) => l.trim()));
+      for (const item of newBlock.items) {
+        if (!existingItems.has(item.trim())) {
+          existing.items.push(item);
+        }
+      }
+      if (existing.items.length > MAX_ITEMS_PER_SESSION) {
+        const overflow = existing.items.length - MAX_ITEMS_PER_SESSION;
+        existing.items = existing.items.slice(0, MAX_ITEMS_PER_SESSION);
+        existing.items.push(`+ ${overflow} more changes`);
+      }
+    } else {
+      existingBlocks.push(newBlock);
+    }
+  }
+  return rebuildFromBlocks(existingBlocks);
+}
+function parseSessionBlocks(body) {
+  const blocks = [];
+  let currentDate = "";
+  let currentBlock = null;
+  for (const line of body.split("\n")) {
+    if (line.startsWith("## ")) {
+      currentDate = line.substring(3).trim();
+    } else if (line.startsWith("### ")) {
+      if (currentBlock)
+        blocks.push(currentBlock);
+      const headingText = line.substring(4).trim();
+      const sessionId = headingText.replace(/^Session\s+/, "").split(/[\s—(]/)[0] || headingText;
+      currentBlock = {
+        date: currentDate,
+        sessionId,
+        heading: line,
+        items: []
+      };
+    } else if (line.startsWith("- ") && currentBlock) {
+      currentBlock.items.push(line);
+    } else if (line && !line.startsWith("#") && !line.startsWith("**") && currentBlock) {
+      currentBlock.narrative = ((currentBlock.narrative || "") + line + " ").trimEnd();
+    }
+  }
+  if (currentBlock)
+    blocks.push(currentBlock);
+  return blocks;
+}
+function rebuildFromBlocks(blocks) {
+  const byDate = /* @__PURE__ */ new Map();
+  for (const block of blocks) {
+    if (!byDate.has(block.date))
+      byDate.set(block.date, []);
+    byDate.get(block.date).push(block);
+  }
+  const lines = [];
+  for (const [date, dateBlocks] of byDate) {
+    lines.push(`## ${date}`);
+    lines.push("");
+    for (const block of dateBlocks) {
+      lines.push(block.heading);
+      if (block.narrative)
+        lines.push(block.narrative);
+      lines.push(...block.items);
+      lines.push("");
+    }
+  }
+  return lines.join("\n").trimEnd();
+}
+function writeActivityToMemory(projectPath, newContent, maxLines = DEFAULT_MAX_LINES) {
+  const memoryDir = resolveMemoryDir(projectPath);
+  mkdirSync3(memoryDir, { recursive: true });
+  const filePath = join3(memoryDir, TOPIC_FILE);
+  const header = [
+    "# Project Activity Log",
+    "",
+    `> Auto-generated by context-manager. Updated ${(/* @__PURE__ */ new Date()).toISOString()}.`,
+    "> Use context_search MCP tool for full history search.",
+    ""
+  ].join("\n");
+  let existingBody = "";
+  if (existsSync(filePath)) {
+    const existing = readFileSync3(filePath, "utf-8");
+    const bodyMatch = existing.match(/^(## .+)/m);
+    if (bodyMatch?.index !== void 0) {
+      existingBody = existing.substring(bodyMatch.index);
+    }
+  }
+  const fullBody = mergeSessionBlocks(existingBody, newContent);
+  const bodyLines = fullBody.split("\n");
+  const trimmedBody = bodyLines.length > maxLines ? bodyLines.slice(bodyLines.length - maxLines).join("\n") : fullBody;
+  const finalContent = header + trimmedBody + "\n";
+  writeFileSync2(filePath, finalContent);
+  return { filePath, linesWritten: trimmedBody.split("\n").length };
+}
+async function exportToAutoMemory(storage, projectPath, sessionId) {
+  const observations = await storage.getUnexportedHighImportance(
+    projectPath,
+    sessionId
+  );
+  if (observations.length === 0) {
+    return { exported: 0, filePath: null };
+  }
+  const sessionIds = [...new Set(observations.map((o) => o.session_id))];
+  const sessions = await storage.getRecentSessions(projectPath, 50);
+  const relevantSessions = sessions.filter((s) => sessionIds.includes(s.id));
+  const formatted = formatObservationsForMemory(observations, relevantSessions);
+  const { filePath } = writeActivityToMemory(projectPath, formatted);
+  const ids = observations.map((o) => o.id).filter((id) => id !== void 0);
+  if (ids.length > 0) {
+    await storage.markExported(ids);
+  }
+  return { exported: observations.length, filePath };
+}
+
 // plugin/hooks/capture-prompt.ts
+import * as fs from "fs";
+import { realpathSync as realpathSync2 } from "fs";
+import { homedir as homedir6 } from "os";
+import path3 from "path";
+var debugLog = createDebugLogger("prompt-hook-debug.log");
+var DEFAULT_CHECKPOINT_INTERVAL_MINUTES = 30;
+var CHECKPOINT_WALL_CLOCK_BUDGET_MS = 3e3;
 async function readStdin() {
   return new Promise((resolve) => {
     let data = "";
@@ -1746,10 +2250,79 @@ function writeResponse(data) {
     }
   });
 }
+function readCheckpointIntervalMs() {
+  const raw = process.env["CONTEXT_MANAGER_CHECKPOINT_INTERVAL"];
+  if (raw !== void 0) {
+    const minutes = parseInt(raw, 10);
+    if (Number.isFinite(minutes) && minutes > 0) {
+      return minutes * 60 * 1e3;
+    }
+  }
+  return DEFAULT_CHECKPOINT_INTERVAL_MINUTES * 60 * 1e3;
+}
+function safeResolveTranscriptPath(raw) {
+  if (typeof raw !== "string" || raw.length === 0)
+    return null;
+  const expectedRoot = path3.resolve(homedir6(), ".claude", "projects");
+  try {
+    const resolved = realpathSync2(raw);
+    if (resolved.startsWith(expectedRoot + path3.sep))
+      return resolved;
+    return null;
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      const lexical = path3.resolve(raw);
+      return lexical.startsWith(expectedRoot + path3.sep) ? lexical : null;
+    }
+    return null;
+  }
+}
+async function runCheckpoint(storage, sessionId, project, transcriptPath) {
+  const sessionObs = await storage.getSessionObservations(sessionId);
+  if (sessionObs.length === 0) {
+    debugLog("CHECKPOINT_SKIP_NO_OBS", { sessionId });
+    return;
+  }
+  let draftSummary;
+  if (transcriptPath) {
+    try {
+      const content = fs.readFileSync(transcriptPath, "utf8");
+      const lines = content.trim().split("\n").filter((line) => line.trim().length > 0);
+      const { summary } = pickBestNarrative(lines);
+      draftSummary = summary;
+    } catch {
+      debugLog("CHECKPOINT_TRANSCRIPT_ERROR", { transcriptPath });
+    }
+  }
+  if (draftSummary) {
+    await storage.updateSessionDraftSummary(sessionId, draftSummary);
+    debugLog("CHECKPOINT_DRAFT_SUMMARY", { sessionId, length: draftSummary.length });
+  }
+  try {
+    const result = await exportToAutoMemory(storage, project, sessionId);
+    if (result.exported > 0) {
+      debugLog("CHECKPOINT_EXPORTED", { sessionId, exported: result.exported });
+      console.error(
+        `[context-manager] Checkpoint: exported ${result.exported} observations to auto-memory`
+      );
+    }
+  } catch (exportError) {
+    console.error("[context-manager] Checkpoint export failed:", exportError);
+  }
+  await storage.updateSessionCheckpoint(sessionId, Date.now());
+  debugLog("CHECKPOINT_COMPLETE", { sessionId });
+}
+async function isCheckpointDue(storage, sessionId, intervalMs) {
+  const timestamps = await storage.getSessionTimestamps(sessionId);
+  if (!timestamps)
+    return false;
+  const now = Date.now();
+  const baseline = timestamps.last_checkpoint_at !== null ? timestamps.last_checkpoint_at : new Date(timestamps.started_at).getTime();
+  return now - baseline >= intervalMs;
+}
 async function main() {
   loadDotEnv();
   let storage = null;
-  const debugLog = createDebugLogger("prompt-hook-debug.log");
   try {
     const inputStr = await readStdin();
     let rawInput;
@@ -1795,11 +2368,34 @@ async function main() {
       };
       try {
         await remoteSavePrompt({ url: remoteUrl, token: remoteToken }, remotePayload);
-        await writeResponse({ status: "captured" });
       } catch (error) {
         console.error("[context-manager] Remote prompt capture error:", error);
         await writeResponse({ status: "error" });
+        return;
       }
+      try {
+        const checkpointTimer = new Promise((resolve) => {
+          const t = setTimeout(resolve, CHECKPOINT_WALL_CLOCK_BUDGET_MS);
+          if (typeof t === "object" && t !== null && "unref" in t)
+            t.unref();
+        });
+        await Promise.race([
+          (async () => {
+            const exportedContent = await remoteExportMemory(
+              { url: remoteUrl, token: remoteToken },
+              cwd,
+              sessionId
+            );
+            if (exportedContent.trim().length > 0) {
+              debugLog("CHECKPOINT_REMOTE_EXPORTED", { sessionId });
+              console.error("[context-manager] Checkpoint: remote memory export triggered");
+            }
+          })(),
+          checkpointTimer
+        ]);
+      } catch {
+      }
+      await writeResponse({ status: "captured" });
       return;
     }
     const input = validateUserPromptSubmitInput(rawInput);
@@ -1819,6 +2415,31 @@ async function main() {
     storage = new SQLiteStorage();
     await storage.initialize();
     await storage.saveUserPrompt(promptPayload);
+    try {
+      const intervalMs = readCheckpointIntervalMs();
+      const checkpointDue = await isCheckpointDue(storage, input.session_id, intervalMs);
+      if (checkpointDue) {
+        debugLog("CHECKPOINT_DUE", { sessionId: input.session_id });
+        const rawObj = rawInput;
+        const transcriptPath = safeResolveTranscriptPath(rawObj["transcript_path"]);
+        const wallClockGuard = new Promise((resolve) => {
+          const t = setTimeout(() => {
+            debugLog("CHECKPOINT_TIMEOUT", { sessionId: input.session_id });
+            console.error("[context-manager] Checkpoint: wall-clock budget exceeded, aborting");
+            resolve();
+          }, CHECKPOINT_WALL_CLOCK_BUDGET_MS);
+          if (typeof t === "object" && t !== null && "unref" in t)
+            t.unref();
+        });
+        await Promise.race([
+          runCheckpoint(storage, input.session_id, input.cwd, transcriptPath),
+          wallClockGuard
+        ]);
+      }
+    } catch (checkpointError) {
+      debugLog("CHECKPOINT_ERROR", { error: String(checkpointError) });
+      console.error("[context-manager] Checkpoint error:", checkpointError);
+    }
     await writeResponse({ status: "captured" });
   } catch (error) {
     console.error("[context-manager] Prompt capture error:", error);

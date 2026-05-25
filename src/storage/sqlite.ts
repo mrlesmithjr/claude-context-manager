@@ -238,6 +238,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add summary_extended column for multi-beat session narratives
     this.migrateAddSummaryExtended();
+
+    // Migration: add last_checkpoint_at column for periodic checkpoint tracking
+    this.migrateAddLastCheckpointAt();
   }
 
   /**
@@ -750,6 +753,31 @@ export class SQLiteStorage implements ContextStorage {
     `);
 
     stmt.run(new Date().toISOString(), summary || null, summaryExtended || null, sessionId);
+  }
+
+  async updateSessionDraftSummary(sessionId: string, summary: string): Promise<void> {
+    if (!summary) return;
+    // Only update summary. Leave status, ended_at, and all other fields intact.
+    // The Stop hook will overwrite summary with the final version on clean exit.
+    this.db.prepare(`
+      UPDATE sessions SET summary = ? WHERE id = ?
+    `).run(summary, sessionId);
+  }
+
+  async updateSessionCheckpoint(sessionId: string, timestamp: number): Promise<void> {
+    this.db.prepare(`
+      UPDATE sessions SET last_checkpoint_at = ? WHERE id = ?
+    `).run(timestamp, sessionId);
+  }
+
+  async getSessionTimestamps(
+    sessionId: string
+  ): Promise<{ started_at: string; last_checkpoint_at: number | null } | null> {
+    const row = this.db.prepare(`
+      SELECT started_at, last_checkpoint_at FROM sessions WHERE id = ?
+    `).get(sessionId) as { started_at: string; last_checkpoint_at: number | null } | undefined;
+
+    return row ?? null;
   }
 
   async getRecentSessions(project: string, limit: number): Promise<Session[]> {
@@ -1690,6 +1718,20 @@ export class SQLiteStorage implements ContextStorage {
 
     if (!columnNames.has('summary_extended')) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN summary_extended TEXT`);
+    }
+  }
+
+  /**
+   * Migration: add last_checkpoint_at column for periodic checkpoint tracking.
+   * Stores the Unix epoch millisecond timestamp of the last checkpoint run.
+   * NULL means no checkpoint has run for this session (use started_at as baseline).
+   */
+  private migrateAddLastCheckpointAt(): void {
+    const columns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('last_checkpoint_at')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN last_checkpoint_at INTEGER`);
     }
   }
 

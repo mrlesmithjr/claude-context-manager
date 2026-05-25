@@ -48,6 +48,7 @@ export interface Session {
   summary_extended?: string; // Top-3 scored narrative messages joined with separators
   status: 'active' | 'complete';
   similarity_score?: number; // Cosine similarity [0,1], only present on vector search results
+  last_checkpoint_at?: number; // Unix epoch ms of last checkpoint run; NULL means no checkpoint yet
 }
 
 export interface UserPrompt {
@@ -150,6 +151,30 @@ export interface ContextStorage {
    * End a session with optional summary
    */
   endSession(sessionId: string, summary?: string, summaryExtended?: string): Promise<void>;
+
+  /**
+   * Update sessions.summary with a draft narrative without changing status or ended_at.
+   * Used by the checkpoint runner to write a best-effort summary before the session ends.
+   * The Stop hook overwrites this with the final summary on clean exit.
+   * @param sessionId - Session ID
+   * @param summary - Draft summary text
+   */
+  updateSessionDraftSummary(sessionId: string, summary: string): Promise<void>;
+
+  /**
+   * Update the last_checkpoint_at timestamp for a session.
+   * Called after a successful periodic checkpoint to record when it ran.
+   * @param sessionId - Session ID
+   * @param timestamp - Unix epoch milliseconds
+   */
+  updateSessionCheckpoint(sessionId: string, timestamp: number): Promise<void>;
+
+  /**
+   * Get the last_checkpoint_at and started_at for a session.
+   * Used by the checkpoint runner to decide whether a checkpoint is due.
+   * Returns null if the session does not exist.
+   */
+  getSessionTimestamps(sessionId: string): Promise<{ started_at: string; last_checkpoint_at: number | null } | null>;
 
   /**
    * Get recent sessions for a project

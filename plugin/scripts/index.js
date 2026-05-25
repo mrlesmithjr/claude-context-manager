@@ -239,6 +239,7 @@ var init_sqlite = __esm({
         this.migrateAddTagsColumn();
         this.migrateAddContentHash();
         this.migrateAddSummaryExtended();
+        this.migrateAddLastCheckpointAt();
       }
       /**
        * Add importance and compaction columns if they don't exist.
@@ -609,6 +610,24 @@ ${storedOutput}`;
       WHERE id = ?
     `);
         stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, summaryExtended || null, sessionId);
+      }
+      async updateSessionDraftSummary(sessionId, summary) {
+        if (!summary)
+          return;
+        this.db.prepare(`
+      UPDATE sessions SET summary = ? WHERE id = ?
+    `).run(summary, sessionId);
+      }
+      async updateSessionCheckpoint(sessionId, timestamp) {
+        this.db.prepare(`
+      UPDATE sessions SET last_checkpoint_at = ? WHERE id = ?
+    `).run(timestamp, sessionId);
+      }
+      async getSessionTimestamps(sessionId) {
+        const row = this.db.prepare(`
+      SELECT started_at, last_checkpoint_at FROM sessions WHERE id = ?
+    `).get(sessionId);
+        return row ?? null;
       }
       async getRecentSessions(project, limit) {
         const stmt = this.db.prepare(`
@@ -1284,6 +1303,18 @@ ${storedOutput}`;
         const columnNames = new Set(columns.map((c) => c.name));
         if (!columnNames.has("summary_extended")) {
           this.db.exec(`ALTER TABLE sessions ADD COLUMN summary_extended TEXT`);
+        }
+      }
+      /**
+       * Migration: add last_checkpoint_at column for periodic checkpoint tracking.
+       * Stores the Unix epoch millisecond timestamp of the last checkpoint run.
+       * NULL means no checkpoint has run for this session (use started_at as baseline).
+       */
+      migrateAddLastCheckpointAt() {
+        const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+        const columnNames = new Set(columns.map((c) => c.name));
+        if (!columnNames.has("last_checkpoint_at")) {
+          this.db.exec(`ALTER TABLE sessions ADD COLUMN last_checkpoint_at INTEGER`);
         }
       }
       async saveSessionEmbedding(sessionId, embedding, enrichedText) {
@@ -63056,7 +63087,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.32" : "unknown"
+      version: true ? "0.8.33" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
