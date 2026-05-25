@@ -48,6 +48,16 @@ function getToolColor(toolName) {
   return colors[toolName] || '#9ca3af'; // gray-400
 }
 
+const TAG_COLORS = [
+  '#60a5fa', '#4ade80', '#facc15', '#c084fc', '#f472b6',
+  '#22d3ee', '#fb923c', '#a78bfa', '#2dd4bf', '#f87171',
+];
+
+const PROJ_COLORS = [
+  '#60a5fa', '#4ade80', '#facc15', '#c084fc',
+  '#f472b6', '#22d3ee', '#fb923c', '#a78bfa',
+];
+
 /**
  * TokenAnalytics Component
  */
@@ -57,6 +67,9 @@ export class TokenAnalytics extends Component {
     this.state = {
       stats: null,
       timeline: [],
+      fileTouchData: [],
+      tagTrendData: [],
+      velocityData: [],
       loading: true,
       error: null,
       days: 30,
@@ -64,8 +77,15 @@ export class TokenAnalytics extends Component {
 
     this.timelineChart = null;
     this.toolChart = null;
+    this.fileTouchChart = null;
+    this.tagTrendChart = null;
+    this.velocityChart = null;
+
     this.timelineCanvasRef = null;
     this.toolCanvasRef = null;
+    this.fileTouchCanvasRef = null;
+    this.tagTrendCanvasRef = null;
+    this.velocityCanvasRef = null;
   }
 
   componentDidMount() {
@@ -92,6 +112,9 @@ export class TokenAnalytics extends Component {
     if (this.toolChart) {
       this.toolChart.destroy();
     }
+    if (this.fileTouchChart) this.fileTouchChart.destroy();
+    if (this.tagTrendChart) this.tagTrendChart.destroy();
+    if (this.velocityChart) this.velocityChart.destroy();
   }
 
   setupChartDefaults() {
@@ -112,33 +135,60 @@ export class TokenAnalytics extends Component {
     this.setState({ loading: true, error: null });
 
     try {
-      // Load stats and timeline in parallel
       const statsParams = new URLSearchParams();
       if (project) statsParams.append('project', project);
 
-      const timelineParams = new URLSearchParams({ days });
+      const timelineParams = new URLSearchParams({ days: String(days) });
       if (project) timelineParams.append('project', project);
 
-      const [statsResponse, timelineResponse] = await Promise.all([
-        apiFetch(`/api/stats?${statsParams}`),
-        apiFetch(`/api/stats/timeline?${timelineParams}`),
-      ]);
+      // Tag trend and velocity always use a fixed 12-week window regardless of
+      // the timeframe dropdown (which controls the token timeline and file touch
+      // chart). These two charts need a longer horizon to show meaningful trends.
+      const tagTrendParams = new URLSearchParams({ weeks: '12' });
+      if (project) tagTrendParams.append('project', project);
+      const velocityParams = new URLSearchParams({ weeks: '12' });
+      if (project) velocityParams.append('project', project);
+
+      const fileTouchParams = new URLSearchParams({ days: String(days) });
+      if (project) fileTouchParams.append('project', project);
+
+      const [statsResponse, timelineResponse, fileTouchResponse, tagTrendResponse, velocityResponse] =
+        await Promise.all([
+          apiFetch(`/api/stats?${statsParams}`),
+          apiFetch(`/api/stats/timeline?${timelineParams}`),
+          apiFetch(`/api/stats/file-touch-frequency?${fileTouchParams}`),
+          apiFetch(`/api/stats/tag-trend?${tagTrendParams}`),
+          apiFetch(`/api/stats/project-velocity?${velocityParams}`),
+        ]);
 
       if (!statsResponse.ok) throw new Error('Failed to load stats');
       if (!timelineResponse.ok) throw new Error('Failed to load timeline');
 
       const stats = await statsResponse.json();
       const timelineData = await timelineResponse.json();
+      const fileTouchData = fileTouchResponse.ok
+        ? (await fileTouchResponse.json()).file_touch_frequency
+        : [];
+      const tagTrendData = tagTrendResponse.ok
+        ? (await tagTrendResponse.json()).tag_trend
+        : [];
+      const velocityData = velocityResponse.ok
+        ? (await velocityResponse.json()).project_velocity
+        : [];
 
       this.setState(
         {
           stats,
           timeline: timelineData.timeline || [],
+          fileTouchData,
+          tagTrendData,
+          velocityData,
           loading: false,
         },
         () => {
           // Render charts after state update
           this.renderCharts();
+          this.drawTrendCharts();
         }
       );
     } catch (error) {
@@ -350,6 +400,191 @@ export class TokenAnalytics extends Component {
     });
   }
 
+  drawTrendCharts() {
+    if (!window.Chart) return;
+    this.drawFileTouchChart();
+    this.drawTagTrendChart();
+    this.drawVelocityChart();
+  }
+
+  drawFileTouchChart() {
+    const { fileTouchData } = this.state;
+    if (this.fileTouchChart) { this.fileTouchChart.destroy(); this.fileTouchChart = null; }
+    if (!this.fileTouchCanvasRef || !fileTouchData || fileTouchData.length < 2) return;
+
+    const labels = fileTouchData.map((d) => {
+      const parts = d.file_path.split('/').filter(Boolean);
+      return parts.length > 2 ? '.../' + parts.slice(-2).join('/') : d.file_path;
+    });
+
+    this.fileTouchChart = new Chart(this.fileTouchCanvasRef, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Touch count',
+            data: fileTouchData.map((d) => d.touch_count),
+            backgroundColor: '#60a5fa',
+            borderRadius: 4,
+          },
+        ],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#1f2937',
+            titleColor: '#f3f4f6',
+            bodyColor: '#d1d5db',
+            borderColor: '#374151',
+            borderWidth: 1,
+          },
+        },
+        scales: {
+          x: {
+            beginAtZero: true,
+            ticks: { precision: 0, color: '#9ca3af' },
+            grid: { color: '#374151' },
+          },
+          y: {
+            ticks: { font: { size: 11 }, color: '#9ca3af' },
+            grid: { display: false },
+          },
+        },
+      },
+    });
+  }
+
+  drawTagTrendChart() {
+    const { tagTrendData } = this.state;
+    if (this.tagTrendChart) { this.tagTrendChart.destroy(); this.tagTrendChart = null; }
+    if (!this.tagTrendCanvasRef || !tagTrendData || tagTrendData.length === 0) return;
+
+    const weeks = [...new Set(tagTrendData.map((d) => d.week))].sort();
+    const tags = [...new Set(tagTrendData.map((d) => d.tag))];
+
+    if (weeks.length < 2) return;
+
+    const weekLabels = weeks.map((w) => {
+      const d = new Date(w);
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    });
+
+    const datasets = tags.map((tag, i) => {
+      const countsByWeek = new Map(
+        tagTrendData.filter((d) => d.tag === tag).map((d) => [d.week, d.count])
+      );
+      return {
+        label: tag,
+        data: weeks.map((w) => countsByWeek.get(w) || 0),
+        borderColor: TAG_COLORS[i % TAG_COLORS.length],
+        backgroundColor: TAG_COLORS[i % TAG_COLORS.length] + '33',
+        fill: true,
+        tension: 0.3,
+      };
+    });
+
+    this.tagTrendChart = new Chart(this.tagTrendCanvasRef, {
+      type: 'line',
+      data: { labels: weekLabels, datasets },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { boxWidth: 12, font: { size: 11 }, color: '#9ca3af' },
+          },
+          tooltip: {
+            backgroundColor: '#1f2937',
+            titleColor: '#f3f4f6',
+            bodyColor: '#d1d5db',
+            borderColor: '#374151',
+            borderWidth: 1,
+          },
+        },
+        scales: {
+          x: {
+            ticks: { maxRotation: 45, color: '#9ca3af' },
+            grid: { color: '#374151' },
+          },
+          y: {
+            beginAtZero: true,
+            stacked: true,
+            ticks: { precision: 0, color: '#9ca3af' },
+            grid: { color: '#374151' },
+          },
+        },
+      },
+    });
+  }
+
+  drawVelocityChart() {
+    const { velocityData } = this.state;
+    if (this.velocityChart) { this.velocityChart.destroy(); this.velocityChart = null; }
+    if (!this.velocityCanvasRef || !velocityData || velocityData.length === 0) return;
+
+    const weeks = [...new Set(velocityData.map((d) => d.week))].sort();
+    const projects = [...new Set(velocityData.map((d) => d.project))];
+
+    if (weeks.length < 2) return;
+
+    const weekLabels = weeks.map((w) => {
+      const d = new Date(w);
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    });
+
+    const datasets = projects.map((proj, i) => {
+      const byWeek = new Map(
+        velocityData.filter((d) => d.project === proj).map((d) => [d.week, d.observations])
+      );
+      const parts = proj.split('/').filter(Boolean);
+      const label = parts.length > 2 ? '.../' + parts.slice(-2).join('/') : proj;
+      return {
+        label,
+        data: weeks.map((w) => byWeek.get(w) || 0),
+        backgroundColor: PROJ_COLORS[i % PROJ_COLORS.length] + 'bb',
+        borderRadius: 3,
+      };
+    });
+
+    this.velocityChart = new Chart(this.velocityCanvasRef, {
+      type: 'bar',
+      data: { labels: weekLabels, datasets },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { boxWidth: 12, font: { size: 11 }, color: '#9ca3af' },
+          },
+          tooltip: {
+            backgroundColor: '#1f2937',
+            titleColor: '#f3f4f6',
+            bodyColor: '#d1d5db',
+            borderColor: '#374151',
+            borderWidth: 1,
+          },
+        },
+        scales: {
+          x: {
+            stacked: true,
+            ticks: { color: '#9ca3af' },
+            grid: { color: '#374151' },
+          },
+          y: {
+            stacked: true,
+            beginAtZero: true,
+            ticks: { precision: 0, color: '#9ca3af' },
+            grid: { color: '#374151' },
+          },
+        },
+      },
+    });
+  }
+
   handleDaysChange = (e) => {
     const days = parseInt(e.target.value, 10);
     this.setState({ days }, () => this.loadData());
@@ -457,7 +692,8 @@ export class TokenAnalytics extends Component {
   }
 
   render() {
-    const { loading, error, stats, timeline } = this.state;
+    const { loading, error, stats, timeline, fileTouchData, tagTrendData, velocityData, days } =
+      this.state;
 
     // In network mode, require a project selection before showing anything
     if (this.props.projectRequired && !this.props.project) {
@@ -498,6 +734,9 @@ export class TokenAnalytics extends Component {
       `;
     }
 
+    const tagWeekCount = [...new Set(tagTrendData.map((d) => d.week))].length;
+    const velocityWeekCount = [...new Set(velocityData.map((d) => d.week))].length;
+
     return html`
       <div>
         ${this.renderSummaryCards()}
@@ -533,6 +772,30 @@ export class TokenAnalytics extends Component {
                   `}
             </div>
           </div>
+        </div>
+
+        <!-- File Touch Frequency -->
+        <div class="bg-gray-800 rounded-lg p-4 mt-6">
+          <h3 class="text-sm font-medium text-gray-400 mb-3">Most Touched Files (last ${days} days)</h3>
+          ${fileTouchData.length < 2
+            ? html`<p class="text-gray-500 text-sm text-center py-4">Not enough data yet.</p>`
+            : html`<canvas ref=${(el) => { this.fileTouchCanvasRef = el; }} height="220"></canvas>`}
+        </div>
+
+        <!-- Tag Frequency Trend -->
+        <div class="bg-gray-800 rounded-lg p-4 mt-6">
+          <h3 class="text-sm font-medium text-gray-400 mb-3">Tag Trend (last 12 weeks)</h3>
+          ${tagWeekCount < 2
+            ? html`<p class="text-gray-500 text-sm text-center py-4">Not enough data yet (need 2+ weeks).</p>`
+            : html`<canvas ref=${(el) => { this.tagTrendCanvasRef = el; }} height="200"></canvas>`}
+        </div>
+
+        <!-- Project Velocity -->
+        <div class="bg-gray-800 rounded-lg p-4 mt-6">
+          <h3 class="text-sm font-medium text-gray-400 mb-3">Project Velocity (last 12 weeks)</h3>
+          ${velocityWeekCount < 2
+            ? html`<p class="text-gray-500 text-sm text-center py-4">Not enough data yet (need 2+ weeks).</p>`
+            : html`<canvas ref=${(el) => { this.velocityCanvasRef = el; }} height="200"></canvas>`}
         </div>
       </div>
     `;

@@ -37,6 +37,22 @@ interface TimelineQuerystring {
   days?: number;
 }
 
+interface FileTouchQuerystring {
+  project?: string;
+  days?: number;
+  limit?: number;
+}
+
+interface TagTrendQuerystring {
+  project?: string;
+  weeks?: number;
+}
+
+interface ProjectVelocityQuerystring {
+  project?: string;
+  weeks?: number;
+}
+
 // Minimum project path depth required in network mode (non-localhost).
 // Prevents "project=/" or "project=/Users" from exposing all data.
 // Set CONTEXT_MANAGER_PROJECT_PREFIX to require a specific prefix
@@ -300,6 +316,109 @@ export async function registerApiRoutes(
       } catch (error) {
         fastify.log.error(error);
         reply.status(500).send({ error: 'Failed to retrieve timeline' });
+      }
+    }
+  );
+
+  // GET /api/stats/file-touch-frequency - Top files by access count
+  fastify.get<{ Querystring: FileTouchQuerystring }>(
+    '/api/stats/file-touch-frequency',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
+            days:    { type: 'number', minimum: 1, maximum: 365 },
+            limit:   { type: 'number', minimum: 1, maximum: 50 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { project, days = 30, limit = 10 } = request.query;
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
+      try {
+        const data = await storage.getFileTouchFrequency(project, days, limit);
+        reply.send({ file_touch_frequency: data });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: 'Failed to retrieve file touch frequency' });
+      }
+    }
+  );
+
+  // GET /api/stats/tag-trend - Tag observation counts by week
+  fastify.get<{ Querystring: TagTrendQuerystring }>(
+    '/api/stats/tag-trend',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
+            weeks:   { type: 'number', minimum: 1, maximum: 52 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { project, weeks = 12 } = request.query;
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
+      try {
+        const data = await storage.getTagTrend(project, weeks);
+        reply.send({ tag_trend: data });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: 'Failed to retrieve tag trend' });
+      }
+    }
+  );
+
+  // GET /api/stats/project-velocity - Observations per project per week
+  fastify.get<{ Querystring: ProjectVelocityQuerystring }>(
+    '/api/stats/project-velocity',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
+            weeks:   { type: 'number', minimum: 1, maximum: 52 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { project, weeks = 12 } = request.query;
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
+      try {
+        const data = await storage.getProjectVelocity(project, weeks);
+        reply.send({ project_velocity: data });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: 'Failed to retrieve project velocity' });
       }
     }
   );

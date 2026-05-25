@@ -48949,6 +48949,103 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
       }
     }
   );
+  fastify.get(
+    "/api/stats/file-touch-frequency",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
+            days: { type: "number", minimum: 1, maximum: 365 },
+            limit: { type: "number", minimum: 1, maximum: 50 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { project, days = 30, limit = 10 } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
+      try {
+        const data = await storage.getFileTouchFrequency(project, days, limit);
+        reply.send({ file_touch_frequency: data });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Failed to retrieve file touch frequency" });
+      }
+    }
+  );
+  fastify.get(
+    "/api/stats/tag-trend",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
+            weeks: { type: "number", minimum: 1, maximum: 52 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { project, weeks = 12 } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
+      try {
+        const data = await storage.getTagTrend(project, weeks);
+        reply.send({ tag_trend: data });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Failed to retrieve tag trend" });
+      }
+    }
+  );
+  fastify.get(
+    "/api/stats/project-velocity",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
+            weeks: { type: "number", minimum: 1, maximum: 52 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { project, weeks = 12 } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
+      try {
+        const data = await storage.getProjectVelocity(project, weeks);
+        reply.send({ project_velocity: data });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Failed to retrieve project velocity" });
+      }
+    }
+  );
   fastify.get("/api/projects", async (request, reply) => {
     try {
       let projects = await storage.getProjects();
