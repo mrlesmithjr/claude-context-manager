@@ -63056,7 +63056,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.31" : "unknown"
+      version: true ? "0.8.32" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -63851,22 +63851,27 @@ async function backgroundEmbed(storage2) {
     if (pendingSessions > 0) {
       console.error(`[context-manager-http] Background session embedding: ${pendingSessions} sessions pending`);
       let totalSessionEmbedded = 0;
-      const sessionBatch = await storage2.getUnembeddedSessions(50);
-      for (const session of sessionBatch) {
-        try {
-          const prompts = await storage2.getSessionPrompts(session.id);
-          const observations = await storage2.getSessionObservations(session.id);
-          const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
-          if (enrichedText.length < 20)
-            continue;
-          const sessionEmb = await embeddingService.embed(enrichedText);
-          if (sessionEmb) {
-            await storage2.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
-            totalSessionEmbedded++;
+      while (true) {
+        const sessionBatch = await storage2.getUnembeddedSessions(50);
+        if (sessionBatch.length === 0)
+          break;
+        for (const session of sessionBatch) {
+          try {
+            const prompts = await storage2.getSessionPrompts(session.id);
+            const observations = await storage2.getSessionObservations(session.id);
+            const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+            if (enrichedText.length < 20)
+              continue;
+            const sessionEmb = await embeddingService.embed(enrichedText);
+            if (sessionEmb) {
+              await storage2.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
+              totalSessionEmbedded++;
+            }
+          } catch {
           }
-        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 100));
         }
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
       }
       if (totalSessionEmbedded > 0) {
         console.error(`[context-manager-http] Background session embedding complete: ${totalSessionEmbedded} sessions embedded`);

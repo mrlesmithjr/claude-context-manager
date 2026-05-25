@@ -102,27 +102,34 @@ async function backgroundEmbed(storage: SQLiteStorage): Promise<void> {
       console.error(`[context-manager-http] Background session embedding: ${pendingSessions} sessions pending`);
 
       let totalSessionEmbedded = 0;
-      const sessionBatch = await storage.getUnembeddedSessions(50);
 
-      for (const session of sessionBatch) {
-        try {
-          const prompts = await storage.getSessionPrompts(session.id);
-          const observations = await storage.getSessionObservations(session.id);
+      while (true) {
+        const sessionBatch = await storage.getUnembeddedSessions(50);
+        if (sessionBatch.length === 0) break;
 
-          const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
-          if (enrichedText.length < 20) continue;
+        for (const session of sessionBatch) {
+          try {
+            const prompts = await storage.getSessionPrompts(session.id);
+            const observations = await storage.getSessionObservations(session.id);
 
-          const sessionEmb = await embeddingService.embed(enrichedText);
-          if (sessionEmb) {
-            await storage.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
-            totalSessionEmbedded++;
+            const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+            if (enrichedText.length < 20) continue;
+
+            const sessionEmb = await embeddingService.embed(enrichedText);
+            if (sessionEmb) {
+              await storage.saveSessionEmbedding(session.id, sessionEmb, enrichedText);
+              totalSessionEmbedded++;
+            }
+          } catch {
+            // skip individual failures
           }
-        } catch {
-          // skip individual failures
+
+          // Brief pause between sessions
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
 
-        // Brief pause between sessions
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Pause between batches to stay gentle on resources
+        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
       }
 
       if (totalSessionEmbedded > 0) {
