@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 25, 2026 (v0.8.29)
+**Last Updated**: May 25, 2026 (v0.8.30)
 
 ---
 
@@ -186,10 +186,11 @@ claude-context-manager/
 |   +-- capture/
 |   |   +-- processor.ts       # Process tool outputs
 |   |   +-- remote-client.ts   # HTTP client for hook-to-server calls (remote mode)
+|   +-- mcp/
+|   |   +-- server.ts          # MCP stdio server entry (loads ~/.claude-context/.env at startup)
+|   |   +-- create-server.ts   # MCP server factory (tool definitions, proxy support)
 |   +-- server/
 |   |   +-- http.ts            # HTTP MCP server (serve command, /mcp + /capture/* + /memory)
-|   |   +-- create-server.ts   # MCP server factory
-|   |   +-- server.ts          # MCP stdio server entry
 |   +-- embedding/
 |   |   +-- enrichment.ts      # Session enrichment text builder
 |   |   +-- service.ts         # Vector embedding service (HF transformers)
@@ -418,6 +419,14 @@ When `CONTEXT_MANAGER_URL` is set, hooks operate as thin HTTP clients that POST 
 - All endpoints use constant-time comparison (`crypto.timingSafeEqual`) to prevent timing-oracle attacks on the token.
 
 **E2E coverage:** `test/e2e/05-remote-capture.sh` (9 assertions covering session create/end, observation, prompt, export, and memory endpoints). Total: 5 scenarios, 36 assertions.
+
+**stdio MCP server .env loading (v0.8.30):**
+
+Claude Code does NOT inject `settings.json` `env` vars into stdio MCP server processes. Environment variables defined there reach hook subprocesses but are invisible to the MCP server spawned via `.mcp.json`. This means `CONTEXT_MANAGER_URL` would never be seen by the stdio server, so proxy mode would never activate even if the user configured the URL correctly.
+
+The fix: `src/mcp/server.ts` calls `loadDotEnv()` at startup (before any proxy configuration is read). This reads `~/.claude-context/.env` and populates `process.env` with any keys not already set. When `CONTEXT_MANAGER_URL` is present in the file, proxy mode activates automatically. Existing `process.env` values always take priority — `loadDotEnv()` never overrides.
+
+The `.env` file is already written by `make server-init`, so users who follow the server setup instructions get proxy mode for free on the next MCP server restart. No additional configuration step is required.
 
 ### 17. Native Server on macOS (Docker incompatible)
 
