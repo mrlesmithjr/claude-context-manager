@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 25, 2026 (v0.8.34)
+**Last Updated**: May 25, 2026 (v0.8.35)
 
 ---
 
@@ -176,6 +176,7 @@ claude-context-manager/
 |   |   +-- hooks.json         # Hook definitions
 |   |   +-- context-inject.ts  # SessionStart: inject past context
 |   |   +-- capture-prompt.ts  # UserPromptSubmit: capture prompts
+|   |   +-- file-context.ts    # PreToolUse: inject file history before Read
 |   |   +-- capture-tool.ts    # PostToolUse: capture interactions
 |   |   +-- session-end.ts     # Stop: save summary
 |   +-- scripts/               # Built hooks (gitignored)
@@ -472,6 +473,29 @@ Attempting to mount `~/.claude-context/` as a Docker bind mount on macOS causes:
 
 **Shared utility extraction:** `scoreForNarrative`, `pickBestNarrative`, and `extractTextFromTranscriptLine` were extracted from `session-end.ts` into `src/utils/transcript.ts` so both the Stop hook and the checkpoint can share the same narrative-selection logic.
 
+### 19. PreToolUse File-Context Injection (v0.8.35)
+
+**What it does:** The `PreToolUse` hook (`file-context.ts`) fires before every `Read` tool call. If the file being opened has prior session history, a compact inline annotation is injected so the context is available before the file contents are processed:
+
+```
+[file history: sqlite.ts - 3 prior sessions: Added FTS5 migration (May 20), Fixed WAL concurrency bug (May 18), Added importance scoring (May 15)]
+```
+
+This is targeted injection: it arrives exactly when Claude opens a specific file, rather than the broad session-start dump from `context-inject.ts`. Both approaches complement each other. Session start provides a wide orientation; file-context provides pinpoint history at the moment of use.
+
+**Four guards keep injection precise, not noisy:**
+
+1. First read per file per session only (`hasSessionSeenFile` check). Subsequent reads of the same file in the same session are silent.
+2. Minimum 2 prior observations threshold (`getFileHistory` returns results only when at least 2 observations exist). Files that have only been touched once produce no annotation.
+3. Previous sessions only. The current session is excluded via `excludeSessionId` so in-progress work does not appear in its own file history.
+4. 80-character summary truncation, max 3 results. Total annotation is approximately 80-100 tokens regardless of how much history exists.
+
+**New storage methods:**
+- `getFileHistory(filePath, project, excludeSessionId, limit)` — returns a ranked list of prior-session observations for a specific file.
+- `hasSessionSeenFile(sessionId, likePattern)` — returns true if the current session already has an observation matching the file path pattern.
+
+**Remote mode behavior:** When `CONTEXT_MANAGER_URL` is set, the hook returns an empty response immediately. No local SQLite is opened. The hook never blocks a Read operation regardless of mode or error state.
+
 ---
 
 ## Data Storage
@@ -622,7 +646,8 @@ The plugin uses the Claude Code marketplace plugin system to register hooks.
 | Hook | Purpose | Timeout | Matcher |
 |------|---------|---------|---------|
 | `SessionStart` | Create session, inject status hint | 10s | `startup\|clear\|compact` |
-| `UserPromptSubmit` | Capture user prompts | 5s | - |
+| `UserPromptSubmit` | Capture user prompts, run periodic checkpoint export | 5s | - |
+| `PreToolUse` | Inject compact file history before Read operations | 5s | `Read` |
 | `PostToolUse` | Capture tool interactions | 5s | `*` |
 | `Stop` | Save summary, extract conversation insights, export to auto-memory | 10s | - |
 | `PreCompact` | Save session before /compact | 10s | - |

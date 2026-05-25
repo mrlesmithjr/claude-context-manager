@@ -58,6 +58,7 @@ To enable semantic (vector) search, run `context_embed` once. It auto-installs d
 | Transcript import | Import historical sessions from Claude Code backups |
 | Web dashboard | Browse sessions, search observations, view analytics at `http://localhost:3847` |
 | PreCompact hook | Saves session state before `/compact` so context survives compaction |
+| File-context injection | Before each Read, injects a compact history of prior work on that file (first read per file per session only) |
 | Privacy tags | `<private>` tag excludes content from storage |
 | Local storage | All data stays on your machine; no external APIs required |
 
@@ -249,6 +250,7 @@ flowchart LR
     subgraph hooks["Claude Code Hooks"]
         SI["SessionStart\nstatus hint ~30 tokens"]
         UP["UserPromptSubmit\ncapture prompt"]
+        FC["PreToolUse\nfile history before Read"]
         PT["PostToolUse\nsummarize + score + tag"]
         SE["Stop\nnarrative + insights + export"]
         PC["PreCompact\nsave session before /compact"]
@@ -266,7 +268,7 @@ flowchart LR
         WEB["Web Dashboard\nlocalhost:3847"]
     end
 
-    hooks --> db
+    SI & UP & FC & PT & SE & PC --> db
     SE -->|"score >= 0.65"| MEM
     db --> MCP
     db --> WEB
@@ -289,7 +291,8 @@ Observations are scoped by project path. Parent directories see all child contex
 | Hook | Purpose | Timeout |
 |------|---------|---------|
 | `SessionStart` | Create session, inject status hint | 10s |
-| `UserPromptSubmit` | Capture user prompts | 5s |
+| `UserPromptSubmit` | Capture user prompts, run periodic checkpoint export | 5s |
+| `PreToolUse` | Inject compact file history before Read operations | 5s |
 | `PostToolUse` | Capture tool interactions | 5s |
 | `Stop` | Save summary, extract insights, export to auto-memory | 10s |
 | `PreCompact` | Save session before `/compact` | 10s |
