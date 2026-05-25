@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 25, 2026 (v0.8.30)
+**Last Updated**: May 25, 2026 (v0.8.31)
 
 ---
 
@@ -317,7 +317,7 @@ claude-context-manager/
   - Provides much higher semantic signal than per-observation embeddings
   - `context_semantic_search` defaults to session scope with observation fallback
 - Embeddings generated on-demand via `context_embed` MCP tool (NOT at capture time — avoids hook latency)
-- Background embedding runs automatically on MCP server startup for new observations and sessions
+- Background embedding runs automatically on startup for new observations and sessions: on stdio MCP server startup (when not in proxy mode) and on HTTP server startup
 - First-time setup: run `context_embed` once to auto-install dependencies and bootstrap
 - `@huggingface/transformers` is an optional dependency — all other features work without it
 - Model: `Xenova/all-MiniLM-L6-v2` (~80MB, cached to `~/.cache/huggingface/`)
