@@ -92,7 +92,7 @@ Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server 
 | `context_search` | Search observations and prompts. Auto-routes to FTS5, vector, or hybrid. Supports `tag:X` prefix and `tag:X keyword` for intersection. |
 | `context_semantic_search` | Search sessions by meaning using enriched vector embeddings |
 | `context_embed` | Generate vector embeddings. First run installs dependencies and bootstraps all sessions. |
-| `context_vacuum` | Delete observations older than N days, run compaction, and close stale active sessions. Optional `stale_session_hours` (default: 2) marks sessions with no Stop hook as complete. |
+| `context_vacuum` | Delete observations older than N days and run compaction. Stale session cleanup (sessions with no Stop hook) now runs automatically on every session open — `context_vacuum` is no longer needed for that purpose. Optional `stale_session_hours` (default: 2) is still accepted for on-demand cleanup. |
 | `context_prune` | Targeted pruning by tool name, importance, and/or age. Always use `dry_run=true` first. |
 | `context_export` | Trigger auto-memory export manually |
 | `context_memory_audit` | Scan for orphaned memory directories |
@@ -292,7 +292,7 @@ Observations are scoped by project path. Parent directories see all child contex
 
 | Hook | Purpose | Timeout |
 |------|---------|---------|
-| `SessionStart` | Create session, inject status hint | 10s |
+| `SessionStart` | Create session, inject status hint, run stale session GC (local mode) | 10s |
 | `UserPromptSubmit` | Capture user prompts, run periodic checkpoint export | 5s |
 | `PreToolUse` | Inject compact file history before Read operations | 5s |
 | `PostToolUse` | Capture tool interactions | 5s |
