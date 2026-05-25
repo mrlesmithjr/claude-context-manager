@@ -120,7 +120,9 @@ Run a central server so multiple machines share one database. Hooks become thin 
 make server-quickstart
 ```
 
-This one command generates a bearer token, writes `~/.claude-context/.env`, and installs the server as a launchd agent that starts automatically on login. Then restart Claude Code. Hooks read `.env` automatically, no shell configuration needed.
+This one command generates a bearer token, writes `~/.claude-context/.env`, and installs the MCP capture server as a launchd agent that starts automatically on login. Then restart Claude Code. Hooks read `.env` automatically, no shell configuration needed.
+
+> The web dashboard (port 3847) is not managed by launchd in this mode. Start it manually with `npm run web` when needed. For a persistent web dashboard, use Docker mode instead.
 
 **Linux / Docker**
 

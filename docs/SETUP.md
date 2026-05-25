@@ -9,14 +9,14 @@ This guide walks you through installing and configuring claude-context-manager. 
 | Mode | Best for | Data lives |
 |------|----------|-----------|
 | **Local SQLite** | Single machine, simplest setup | `~/.claude-context/context.db` on your machine |
-| **Native server** (macOS) | Always-on web dashboard, single machine | `~/.claude-context/context.db` on your machine |
+| **Native server** (macOS) | Always-on MCP capture, single machine | `~/.claude-context/context.db` on your machine |
 | **Docker server** | Linux, or macOS with Docker already running | Named Docker volume, shared across restarts |
 
 **Quick decision:**
 
 - Just want to get started with no configuration? Use **Local SQLite**.
-- On macOS and want the web dashboard to always be available? Use **Native server**.
-- On Linux, or already running Docker, or want to share data across machines? Use **Docker server**.
+- On macOS and want reliable MCP capture with automatic restart on login? Use **Native server**.
+- Want the web dashboard always available, or on Linux, or running Docker already? Use **Docker server**.
 
 You can switch between modes later. Your data is never deleted when switching.
 
@@ -99,9 +99,10 @@ Open `http://localhost:3847` in your browser. You should see the web dashboard.
 ### What you get
 
 Everything in Mode 1, plus:
-- Persistent HTTP server on port 4000 (hook capture endpoint)
-- Web dashboard always running at `http://localhost:3847` (sessions, search, analytics)
+- Persistent HTTP capture server on port 4000 (hook capture endpoint)
 - Server restarts automatically on login
+
+> The web dashboard (port 3847) is **not** managed by launchd in this mode. It must be started manually with `npm run web` when you need it, and it does not survive reboots. If you want the web dashboard to always be available, use **Mode 3 (Docker)** instead — Docker Compose manages both services together.
 
 ### Stop and start
 
