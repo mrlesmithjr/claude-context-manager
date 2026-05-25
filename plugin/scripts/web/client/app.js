@@ -23,6 +23,9 @@ window.apiFetch = function apiFetch(path, opts = {}) {
   return fetch(path, { ...opts, headers });
 };
 
+// Server injects the real token in network mode and '' (empty string) in local mode.
+const isNetworkMode = typeof window.__CTX_TOKEN === 'string' && window.__CTX_TOKEN.length > 0;
+
 /**
  * Main application component
  */
@@ -43,8 +46,11 @@ class App extends Component {
     this.updateRouteFromHash();
     window.addEventListener('hashchange', () => this.updateRouteFromHash());
 
-    // Load stats for footer
-    this.loadStats();
+    // Load stats for footer; in network mode, defer until a project is selected
+    // (loadStats will be called from handleProjectChange instead)
+    if (!isNetworkMode) {
+      this.loadStats();
+    }
   }
 
   updateRouteFromHash() {
@@ -54,9 +60,12 @@ class App extends Component {
     this.setState({ currentRoute: route });
   }
 
-  async loadStats() {
+  async loadStats(project) {
     try {
-      const response = await apiFetch('/api/stats');
+      const params = new URLSearchParams();
+      if (project) params.append('project', project);
+      const url = '/api/stats' + (params.toString() ? '?' + params.toString() : '');
+      const response = await apiFetch(url);
       if (!response.ok) throw new Error('Failed to load stats');
       const stats = await response.json();
       this.setState({ stats });
@@ -67,6 +76,9 @@ class App extends Component {
 
   handleProjectChange = (project) => {
     this.setState({ selectedProject: project });
+    if (isNetworkMode) {
+      this.loadStats(project);
+    }
   };
 
   navigateTo = (route) => {
@@ -78,13 +90,13 @@ class App extends Component {
 
     switch (currentRoute) {
       case 'sessions':
-        return html`<${SessionList} project=${selectedProject} />`;
+        return html`<${SessionList} project=${selectedProject} projectRequired=${isNetworkMode} />`;
       case 'search':
-        return html`<${ObservationSearch} project=${selectedProject} />`;
+        return html`<${ObservationSearch} project=${selectedProject} projectRequired=${isNetworkMode} />`;
       case 'analytics':
-        return html`<${TokenAnalytics} project=${selectedProject} />`;
+        return html`<${TokenAnalytics} project=${selectedProject} projectRequired=${isNetworkMode} />`;
       default:
-        return html`<${SessionList} project=${selectedProject} />`;
+        return html`<${SessionList} project=${selectedProject} projectRequired=${isNetworkMode} />`;
     }
   }
 
@@ -135,6 +147,7 @@ class App extends Component {
                 <${ProjectFilter}
                   selectedProject=${selectedProject}
                   onProjectChange=${this.handleProjectChange}
+                  required=${isNetworkMode}
                 />
               </div>
             </div>

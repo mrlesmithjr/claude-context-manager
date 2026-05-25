@@ -97,13 +97,27 @@ export class ObservationSearch extends Component {
   }
 
   componentDidMount() {
+    // In network mode, skip fetching tools (requires /api/stats scoped to a project)
+    // until a project is selected. loadTools will be called from componentDidUpdate
+    // when the first project is selected.
+    if (this.props.projectRequired && !this.props.project) return;
     this.loadTools();
   }
 
   componentDidUpdate(prevProps) {
     // Reload when project filter changes
-    if (prevProps.project !== this.props.project && this.state.hasSearched) {
-      this.performSearch();
+    if (prevProps.project !== this.props.project) {
+      // In network mode, skip re-fetch if no project is selected
+      if (this.props.projectRequired && !this.props.project) return;
+
+      // Load tools list when a project becomes available for the first time
+      if (this.props.projectRequired && !prevProps.project && this.props.project) {
+        this.loadTools();
+      }
+
+      if (this.state.hasSearched) {
+        this.performSearch();
+      }
     }
   }
 
@@ -112,7 +126,10 @@ export class ObservationSearch extends Component {
    */
   async loadTools() {
     try {
-      const response = await apiFetch('/api/stats');
+      const params = new URLSearchParams();
+      if (this.props.project) params.append('project', this.props.project);
+
+      const response = await apiFetch(`/api/stats?${params}`);
       if (!response.ok) throw new Error('Failed to load stats');
 
       const stats = await response.json();
@@ -432,6 +449,13 @@ export class ObservationSearch extends Component {
 
   render() {
     const { observations, total, limit, offset, loading, error } = this.state;
+
+    // In network mode, require a project selection before showing anything
+    if (this.props.projectRequired && !this.props.project) {
+      return html`
+        <div class="text-center py-16 text-gray-500">Select a project above to search observations.</div>
+      `;
+    }
 
     return html`
       <div>

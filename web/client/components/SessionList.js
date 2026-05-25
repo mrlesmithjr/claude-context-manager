@@ -66,17 +66,24 @@ export class SessionList extends Component {
   }
 
   componentDidMount() {
+    // In network mode, skip the initial fetch until a project is selected
+    if (this.props.projectRequired && !this.props.project) return;
     this.loadSessions();
   }
 
   componentDidUpdate(prevProps) {
     // Reload when project filter changes
     if (prevProps.project !== this.props.project) {
+      // In network mode, skip the fetch if no project is selected
+      if (this.props.projectRequired && !this.props.project) return;
       this.setState({ offset: 0 }, () => this.loadSessions());
     }
   }
 
   async loadSessions() {
+    // Guard: do not fetch without a project in network mode
+    if (this.props.projectRequired && !this.props.project) return;
+
     const { limit, offset } = this.state;
     const { project } = this.props;
 
@@ -320,6 +327,13 @@ export class SessionList extends Component {
 
   render() {
     const { sessions, total, limit, offset, loading, error } = this.state;
+
+    // In network mode, require a project selection before showing anything
+    if (this.props.projectRequired && !this.props.project) {
+      return html`
+        <div class="text-center py-16 text-gray-500">Select a project above to view sessions.</div>
+      `;
+    }
 
     if (loading && sessions.length === 0) {
       return html`

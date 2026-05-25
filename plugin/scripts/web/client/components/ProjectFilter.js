@@ -47,6 +47,11 @@ export class ProjectFilter extends Component {
         projects: data.projects,
         loading: false,
       });
+
+      // In network mode, auto-select the first project if none is selected
+      if (this.props.required && !this.props.selectedProject && data.projects.length > 0) {
+        this.props.onProjectChange(data.projects[0].path);
+      }
     } catch (error) {
       console.error('Failed to load projects:', error);
       this.setState({ error: error.message, loading: false });
@@ -55,12 +60,14 @@ export class ProjectFilter extends Component {
 
   handleChange = (e) => {
     const value = e.target.value;
-    const project = value === '' ? null : value;
+    // In required mode, never allow clearing back to null (no empty option is rendered,
+    // but guard defensively in case a future change adds one).
+    const project = (value === '' && !this.props.required) ? null : (value || null);
     this.props.onProjectChange(project);
   };
 
   render() {
-    const { selectedProject } = this.props;
+    const { selectedProject, required } = this.props;
     const { projects, loading, error } = this.state;
 
     if (loading) {
@@ -75,10 +82,17 @@ export class ProjectFilter extends Component {
       `;
     }
 
+    // In network mode with no projects, show a warning instead of an empty dropdown
+    if (required && projects.length === 0) {
+      return html`
+        <div class="text-yellow-400 text-sm">No projects found in database.</div>
+      `;
+    }
+
     return html`
       <div class="relative">
         <label for="project-filter" class="block text-sm font-medium text-gray-400 mb-1">
-          Filter by Project
+          ${required ? 'Project (required)' : 'Filter by Project'}
         </label>
         <select
           id="project-filter"
@@ -87,7 +101,9 @@ export class ProjectFilter extends Component {
           onChange=${this.handleChange}
           value=${selectedProject || ''}
         >
-          <option value="">All Projects (${projects.reduce((sum, p) => sum + p.observation_count, 0).toLocaleString()})</option>
+          ${!required ? html`
+            <option value="">All Projects (${projects.reduce((sum, p) => sum + p.observation_count, 0).toLocaleString()})</option>
+          ` : null}
           ${projects.map(
             (project) => html`
               <option value=${project.path} title=${project.path}>
