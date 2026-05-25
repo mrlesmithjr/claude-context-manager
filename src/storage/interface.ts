@@ -199,13 +199,15 @@ export interface ContextStorage {
   /**
    * Vacuum old observations and orphaned sessions
    * @param olderThanDays - Delete observations older than this many days (optional)
-   * @returns Count of deleted observations and orphaned sessions
+   * @param staleSessionHours - Mark active sessions with no activity older than this many hours as complete (default: 2)
+   * @returns Count of deleted observations, orphaned sessions, and closed stale sessions
    */
-  vacuum(olderThanDays?: number): Promise<{
+  vacuum(olderThanDays?: number, staleSessionHours?: number): Promise<{
     observations: number;
     sessions: number;
     compacted: number;
     compacted_originals: number;
+    closedStaleSessions: number;
   }>;
 
   /**

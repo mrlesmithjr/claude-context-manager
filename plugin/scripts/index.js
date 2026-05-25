@@ -684,8 +684,27 @@ ${storedOutput}`;
           total_tokens: row.total_tokens
         }));
       }
-      async vacuum(olderThanDays) {
+      async vacuum(olderThanDays, staleSessionHours = 2) {
         let deletedObservations = 0;
+        const staleThresholdMs = Date.now() - staleSessionHours * 60 * 60 * 1e3;
+        const staleThresholdISO = new Date(staleThresholdMs).toISOString();
+        const staleResult = this.db.prepare(`
+      UPDATE sessions
+      SET
+        status = 'complete',
+        ended_at = datetime('now'),
+        summary = '[Session ended abnormally - no Stop hook fired]'
+      WHERE status = 'active'
+        AND ended_at IS NULL
+        AND (
+          (last_checkpoint_at IS NOT NULL
+            AND datetime(last_checkpoint_at / 1000, 'unixepoch') < ?)
+          OR
+          (last_checkpoint_at IS NULL
+            AND started_at < ?)
+        )
+    `).run(staleThresholdISO, staleThresholdISO);
+        const closedStaleSessions = staleResult.changes;
         if (olderThanDays) {
           const cutoffDate = /* @__PURE__ */ new Date();
           cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
@@ -737,7 +756,8 @@ ${storedOutput}`;
           observations: deletedObservations,
           sessions: deletedSessions,
           compacted: compactionResult.compacted,
-          compacted_originals: compactionResult.originals
+          compacted_originals: compactionResult.originals,
+          closedStaleSessions
         };
       }
       async prune(options) {
@@ -63143,7 +63163,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.35" : "unknown"
+      version: true ? "0.8.37" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -63464,15 +63484,21 @@ Topic file: ${result.filePath}` : ""}`
     {
       days: external_exports.number().int().min(1).max(3650).optional().describe(
         "Delete observations older than this many days (1-3650). Omit to only clean orphaned sessions and optimize."
+      ),
+      stale_session_hours: external_exports.number().int().min(1).optional().describe(
+        "Mark active sessions with no activity older than this many hours as complete (default: 2). Uses last_checkpoint_at when available, falls back to started_at."
       )
     },
-    async ({ days }) => {
+    async ({ days, stale_session_hours }) => {
       if (isProxy) {
-        return proxyToolCall("context_vacuum", { days }, remoteUrl, remoteToken);
+        return proxyToolCall("context_vacuum", { days, stale_session_hours }, remoteUrl, remoteToken);
       }
       const db = await getDb();
-      const result = await db.vacuum(days);
+      const result = await db.vacuum(days, stale_session_hours);
       const lines = [];
+      if (result.closedStaleSessions > 0) {
+        lines.push(`Closed ${result.closedStaleSessions} stale active session(s) with no Stop hook.`);
+      }
       if (days) {
         lines.push(`Deleted ${result.observations} observations older than ${days} days.`);
       }
@@ -64396,12 +64422,27 @@ async function statsCommand(args) {
 }
 async function vacuumCommand(args) {
   const daysIndex = args.indexOf("--days");
-  const days = daysIndex !== -1 ? parseInt(args[daysIndex + 1], 10) : void 0;
+  const rawDays = daysIndex !== -1 ? parseInt(args[daysIndex + 1] ?? "", 10) : void 0;
+  if (rawDays !== void 0 && (isNaN(rawDays) || rawDays < 1)) {
+    console.error("Error: --days requires a positive integer");
+    process.exit(1);
+  }
+  const days = rawDays;
+  const staleHoursIndex = args.indexOf("--stale-session-hours");
+  const rawStale = staleHoursIndex !== -1 ? parseInt(args[staleHoursIndex + 1] ?? "", 10) : void 0;
+  if (rawStale !== void 0 && (isNaN(rawStale) || rawStale < 1)) {
+    console.error("Error: --stale-session-hours requires a positive integer");
+    process.exit(1);
+  }
+  const staleSessionHours = rawStale;
   if (days) {
     console.log(`Deleting observations older than ${days} days...`);
   }
   console.log("Cleaning up orphaned sessions and optimizing database...");
-  const result = await storage.vacuum(days);
+  const result = await storage.vacuum(days, staleSessionHours);
+  if (result.closedStaleSessions > 0) {
+    console.log(`Closed ${result.closedStaleSessions} stale active session(s) with no Stop hook.`);
+  }
   if (days) {
     console.log(`Deleted ${result.observations} observations.`);
   }
@@ -64488,8 +64529,9 @@ Commands:
   stats [--project PATH]
     Show statistics
 
-  vacuum [--days N]
-    Delete observations older than N days, or reclaim disk space
+  vacuum [--days N] [--stale-session-hours N]
+    Delete observations older than N days, reclaim disk space, and close stale sessions.
+    --stale-session-hours: mark active sessions older than N hours as complete (default: 2).
 
   export [--project PATH] [--dry-run]
     Export high-importance observations to auto-memory topic file

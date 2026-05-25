@@ -626,8 +626,27 @@ ${storedOutput}`;
       total_tokens: row.total_tokens
     }));
   }
-  async vacuum(olderThanDays) {
+  async vacuum(olderThanDays, staleSessionHours = 2) {
     let deletedObservations = 0;
+    const staleThresholdMs = Date.now() - staleSessionHours * 60 * 60 * 1e3;
+    const staleThresholdISO = new Date(staleThresholdMs).toISOString();
+    const staleResult = this.db.prepare(`
+      UPDATE sessions
+      SET
+        status = 'complete',
+        ended_at = datetime('now'),
+        summary = '[Session ended abnormally - no Stop hook fired]'
+      WHERE status = 'active'
+        AND ended_at IS NULL
+        AND (
+          (last_checkpoint_at IS NOT NULL
+            AND datetime(last_checkpoint_at / 1000, 'unixepoch') < ?)
+          OR
+          (last_checkpoint_at IS NULL
+            AND started_at < ?)
+        )
+    `).run(staleThresholdISO, staleThresholdISO);
+    const closedStaleSessions = staleResult.changes;
     if (olderThanDays) {
       const cutoffDate = /* @__PURE__ */ new Date();
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
@@ -679,7 +698,8 @@ ${storedOutput}`;
       observations: deletedObservations,
       sessions: deletedSessions,
       compacted: compactionResult.compacted,
-      compacted_originals: compactionResult.originals
+      compacted_originals: compactionResult.originals,
+      closedStaleSessions
     };
   }
   async prune(options) {
@@ -1783,11 +1803,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.35") {
+    if (installedVersion !== "0.8.37") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.35"}
+   Source:    v${"0.8.37"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1842,7 +1862,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.35"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.37"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats.");
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -1871,7 +1891,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.35"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.37"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

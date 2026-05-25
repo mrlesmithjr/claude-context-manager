@@ -234,15 +234,34 @@ async function statsCommand(args: string[]) {
 
 async function vacuumCommand(args: string[]) {
   const daysIndex = args.indexOf('--days');
-  const days = daysIndex !== -1 ? parseInt(args[daysIndex + 1], 10) : undefined;
+  const rawDays = daysIndex !== -1 ? parseInt(args[daysIndex + 1] ?? '', 10) : undefined;
+
+  if (rawDays !== undefined && (isNaN(rawDays) || rawDays < 1)) {
+    console.error('Error: --days requires a positive integer');
+    process.exit(1);
+  }
+  const days = rawDays;
+
+  const staleHoursIndex = args.indexOf('--stale-session-hours');
+  const rawStale =
+    staleHoursIndex !== -1 ? parseInt(args[staleHoursIndex + 1] ?? '', 10) : undefined;
+
+  if (rawStale !== undefined && (isNaN(rawStale) || rawStale < 1)) {
+    console.error('Error: --stale-session-hours requires a positive integer');
+    process.exit(1);
+  }
+  const staleSessionHours = rawStale;
 
   if (days) {
     console.log(`Deleting observations older than ${days} days...`);
   }
 
   console.log('Cleaning up orphaned sessions and optimizing database...');
-  const result = await storage.vacuum(days);
+  const result = await storage.vacuum(days, staleSessionHours);
 
+  if (result.closedStaleSessions > 0) {
+    console.log(`Closed ${result.closedStaleSessions} stale active session(s) with no Stop hook.`);
+  }
   if (days) {
     console.log(`Deleted ${result.observations} observations.`);
   }
@@ -341,8 +360,9 @@ Commands:
   stats [--project PATH]
     Show statistics
 
-  vacuum [--days N]
-    Delete observations older than N days, or reclaim disk space
+  vacuum [--days N] [--stale-session-hours N]
+    Delete observations older than N days, reclaim disk space, and close stale sessions.
+    --stale-session-hours: mark active sessions older than N hours as complete (default: 2).
 
   export [--project PATH] [--dry-run]
     Export high-importance observations to auto-memory topic file

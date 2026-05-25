@@ -720,16 +720,27 @@ export function createContextManagerServer(
         .describe(
           'Delete observations older than this many days (1-3650). Omit to only clean orphaned sessions and optimize.'
         ),
+      stale_session_hours: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe(
+          'Mark active sessions with no activity older than this many hours as complete (default: 2). Uses last_checkpoint_at when available, falls back to started_at.'
+        ),
     },
-    async ({ days }) => {
+    async ({ days, stale_session_hours }) => {
       if (isProxy) {
-        return proxyToolCall('context_vacuum', { days }, remoteUrl, remoteToken);
+        return proxyToolCall('context_vacuum', { days, stale_session_hours }, remoteUrl, remoteToken);
       }
 
       const db = await getDb();
-      const result = await db.vacuum(days);
+      const result = await db.vacuum(days, stale_session_hours);
 
       const lines: string[] = [];
+      if (result.closedStaleSessions > 0) {
+        lines.push(`Closed ${result.closedStaleSessions} stale active session(s) with no Stop hook.`);
+      }
       if (days) {
         lines.push(`Deleted ${result.observations} observations older than ${days} days.`);
       }
