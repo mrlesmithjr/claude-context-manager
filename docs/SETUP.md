@@ -9,7 +9,7 @@ This guide walks you through installing and configuring claude-context-manager. 
 | Mode | Best for | Data lives |
 |------|----------|-----------|
 | **Local SQLite** | Single machine, simplest setup | `~/.claude-context/context.db` on your machine |
-| **Native server** (macOS) | Always-on MCP capture, single machine | `~/.claude-context/context.db` on your machine |
+| **Native server** (macOS) | Always-on MCP capture and web dashboard, single machine | `~/.claude-context/context.db` on your machine |
 | **Docker server** | Linux, or macOS with Docker already running | Named Docker volume, shared across restarts |
 
 **Quick decision:**
@@ -100,17 +100,19 @@ Open `http://localhost:3847` in your browser. You should see the web dashboard.
 
 Everything in Mode 1, plus:
 - Persistent HTTP capture server on port 4000 (hook capture endpoint)
-- Server restarts automatically on login
-
-> The web dashboard (port 3847) is **not** managed by launchd in this mode. It must be started manually with `npm run web` when you need it, and it does not survive reboots. If you want the web dashboard to always be available, use **Mode 3 (Docker)** instead — Docker Compose manages both services together.
+- Persistent web dashboard at `http://localhost:3847`
+- Both services restart automatically on login
 
 ### Stop and start
 
 ```bash
-make server-launchd-status    # check if running
-make server-stop-native       # stop without removing config (can restart later)
-make server-launchd-install   # restart after stopping
-make server-launchd-uninstall # remove completely
+make server-launchd-status           # check MCP server launchd agent status
+make server-launchd-web-status       # check web dashboard launchd agent status
+make server-stop-native              # stop both services without removing config
+make server-launchd-install          # install/restart MCP server agent
+make server-launchd-uninstall        # remove MCP server agent
+make server-launchd-web-install      # install/restart web dashboard agent
+make server-launchd-web-uninstall    # remove web dashboard agent
 ```
 
 ---

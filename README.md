@@ -120,9 +120,7 @@ Run a central server so multiple machines share one database. Hooks become thin 
 make server-quickstart
 ```
 
-This one command generates a bearer token, writes `~/.claude-context/.env`, and installs the MCP capture server as a launchd agent that starts automatically on login. Then restart Claude Code. Hooks read `.env` automatically, no shell configuration needed.
-
-> The web dashboard (port 3847) is not managed by launchd in this mode. Start it manually with `npm run web` when needed. For a persistent web dashboard, use Docker mode instead.
+This one command generates a bearer token, writes `~/.claude-context/.env`, and installs two launchd agents: the MCP capture server (port 4000) and the web dashboard (port 3847). Both start automatically on login. Then restart Claude Code. Hooks read `.env` automatically, no shell configuration needed.
 
 **Linux / Docker**
 
@@ -149,9 +147,12 @@ make server-native-status   # macOS
 | `make server-native-start` | Start server natively in background |
 | `make server-native-stop` | Stop native background server |
 | `make server-native-status` | Health check for native server |
-| `make server-launchd-install` | Install as launchd agent (macOS persistent startup) |
-| `make server-launchd-uninstall` | Remove launchd agent |
-| `make server-launchd-status` | Check launchd agent status |
+| `make server-launchd-install` | Install MCP capture server as launchd agent (macOS persistent startup) |
+| `make server-launchd-uninstall` | Remove MCP capture server launchd agent |
+| `make server-launchd-status` | Check MCP capture server launchd agent status |
+| `make server-launchd-web-install` | Install web dashboard as launchd agent (macOS persistent startup) |
+| `make server-launchd-web-uninstall` | Remove web dashboard launchd agent |
+| `make server-launchd-web-status` | Check web dashboard launchd agent status |
 | `make server-start` | Start both Docker services: MCP server (port 4000) and web UI (port 3847); pre-flight check exits with an actionable error if ports are occupied by the native launchd service |
 | `make server-stop` | Stop Docker server |
 | `make server-logs` | Tail Docker server logs |
