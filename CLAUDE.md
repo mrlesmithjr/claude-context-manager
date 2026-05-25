@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 25, 2026 (v0.8.39)
+**Last Updated**: May 25, 2026 (v0.8.40)
 
 ---
 
@@ -73,7 +73,7 @@ npm run import -- --source <path> --project <target> [--filter <text>] [--dry-ru
 ```
 
 **MCP Tools:**
-`context_stats`, `context_list`, `context_search`, `context_semantic_search`, `context_embed`,
+`context_add`, `context_stats`, `context_list`, `context_search`, `context_semantic_search`, `context_embed`,
 `context_vacuum`, `context_export`, `context_memory_audit`, `context_memory_consolidate`
 
 ---
@@ -200,6 +200,7 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 18 | Periodic checkpoint | Every 30 min in UserPromptSubmit; 3s wall-clock guard; `CONTEXT_MANAGER_CHECKPOINT_INTERVAL` |
 | 19 | PreToolUse file context | Injects prior session history on first Read per file per session (min 2 prior obs) |
 | 20 | Stale session GC | Auto-runs on SessionStart; marks sessions inactive > 2h as `complete` |
+| 21 | Manual write path | `context_add` MCP tool; daily manual session per project; `source='manual'` in sessions; no tag inference from free text |
 
 ---
 

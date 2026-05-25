@@ -87,6 +87,7 @@ Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server 
 
 | Tool | Description |
 |------|-------------|
+| `context_add` | Write a manual observation from any MCP client (Claude Desktop, etc.). Accepts `text` (required), `project`, `importance` ("high", "medium", "low", or float 0–1), and `tags` (comma-separated). |
 | `context_stats` | Show statistics for the current project |
 | `context_list` | List recent sessions with summaries |
 | `context_search` | Search observations and prompts. Auto-routes to FTS5, vector, or hybrid. Supports `tag:X` prefix and `tag:X keyword` for intersection. |
@@ -158,6 +159,7 @@ make server-native-status   # macOS
 | `POST /capture/session` | Create or end a session |
 | `POST /capture/observation` | Save one observation from a remote hook |
 | `POST /capture/prompt` | Save one user prompt from a remote hook |
+| `POST /capture/add` | Write a manual observation (forwarded from `context_add` in proxy mode) |
 | `POST /capture/export` | Trigger server-side auto-memory export |
 | `GET /memory?project=...` | Return current memory file content |
 | `POST /mcp`, `GET /mcp` | StreamableHTTP MCP transport |
