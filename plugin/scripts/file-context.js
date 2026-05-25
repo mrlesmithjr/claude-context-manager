@@ -1,67 +1,52 @@
-/**
- * SQLite Storage Implementation
- *
- * Direct SQLite storage using better-sqlite3 with P1 security fixes:
- * - Foreign keys enabled
- * - FTS5 with NULL handling via COALESCE
- * - Prepared statements
- * - Transaction support
- */
+#!/usr/bin/env node
+import { createRequire as __ctxCreateRequire } from 'module';
+const __ctxRequire = __ctxCreateRequire(import.meta.url);
+const __betterSqlite3 = __ctxRequire('better-sqlite3');
+const __sqliteVec = __ctxRequire('sqlite-vec');
 
-import Database from 'better-sqlite3';
-import { homedir } from 'os';
-import path from 'path';
-import { mkdirSync } from 'fs';
-import * as sqliteVec from 'sqlite-vec';
-import { sha256, l2DistanceToCosine } from '../utils/hash.js';
-import type {
-  ContextStorage,
-  Observation,
-  ImportanceLevel,
-  RelationshipType,
-  Session,
-  Stats,
-  UserPrompt,
-  TimelineEntry,
-  ProjectEntry,
-} from './interface.js';
+// shim:better-sqlite3
+var better_sqlite3_default = __betterSqlite3;
 
-const DEFAULT_DB_PATH = path.join(homedir(), '.claude-context', 'context.db');
+// src/storage/sqlite.ts
+import { homedir } from "os";
+import path from "path";
+import { mkdirSync } from "fs";
 
-export class SQLiteStorage implements ContextStorage {
-  private db: Database.Database;
-  private vecEnabled: boolean = false;
+// shim:sqlite-vec
+var load = __sqliteVec.load;
+var sqlite_vec_default = __sqliteVec;
 
-  constructor(dbPath: string = DEFAULT_DB_PATH) {
-    // Ensure directory exists
+// src/utils/hash.ts
+import { createHash } from "crypto";
+function sha256(content) {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+function l2DistanceToCosine(l2Distance) {
+  return Math.max(0, Math.min(1, 1 - l2Distance * l2Distance / 2));
+}
+
+// src/storage/sqlite.ts
+var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
+var SQLiteStorage = class {
+  db;
+  vecEnabled = false;
+  constructor(dbPath = DEFAULT_DB_PATH) {
     const dir = path.dirname(dbPath);
     mkdirSync(dir, { recursive: true });
-
-    this.db = new Database(dbPath);
-
-    // Enable WAL mode for concurrent access
-    this.db.pragma('journal_mode = WAL');
-
-    // Performance pragmas
-    this.db.pragma('synchronous = NORMAL');
-    this.db.pragma('temp_store = MEMORY');
-    this.db.pragma('cache_size = -64000');
-
-    // CRITICAL P1 FIX: Enable foreign keys
-    this.db.pragma('foreign_keys = ON');
-
-    // Load sqlite-vec extension for vector similarity search
+    this.db = new better_sqlite3_default(dbPath);
+    this.db.pragma("journal_mode = WAL");
+    this.db.pragma("synchronous = NORMAL");
+    this.db.pragma("temp_store = MEMORY");
+    this.db.pragma("cache_size = -64000");
+    this.db.pragma("foreign_keys = ON");
     try {
-      sqliteVec.load(this.db);
+      load(this.db);
       this.vecEnabled = true;
     } catch {
-      // sqlite-vec not available — graceful degradation
       this.vecEnabled = false;
     }
   }
-
-  async initialize(): Promise<void> {
-    // Create sessions table
+  async initialize() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -72,20 +57,15 @@ export class SQLiteStorage implements ContextStorage {
         status TEXT DEFAULT 'active'
       );
     `);
-
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
     `);
-
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at);
     `);
-
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
     `);
-
-    // Create user_prompts table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS user_prompts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,17 +77,13 @@ export class SQLiteStorage implements ContextStorage {
         FOREIGN KEY (session_id) REFERENCES sessions(id)
       );
     `);
-
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_user_prompts_project_created
       ON user_prompts(project, created_at DESC);
     `);
-
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_id);
     `);
-
-    // Create FTS5 virtual table for user_prompts
     this.db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS user_prompts_fts USING fts5(
         prompt_text,
@@ -115,22 +91,18 @@ export class SQLiteStorage implements ContextStorage {
         content_rowid=id
       );
     `);
-
-    // FTS triggers for user_prompts
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS user_prompts_ai AFTER INSERT ON user_prompts BEGIN
         INSERT INTO user_prompts_fts(rowid, prompt_text)
         VALUES (new.id, COALESCE(new.prompt_text, ''));
       END;
     `);
-
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS user_prompts_ad AFTER DELETE ON user_prompts BEGIN
         INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
         VALUES('delete', old.id, old.prompt_text);
       END;
     `);
-
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS user_prompts_au AFTER UPDATE ON user_prompts BEGIN
         INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
@@ -139,8 +111,6 @@ export class SQLiteStorage implements ContextStorage {
         VALUES (new.id, COALESCE(new.prompt_text, ''));
       END;
     `);
-
-    // Create observations table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS observations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,18 +126,13 @@ export class SQLiteStorage implements ContextStorage {
         FOREIGN KEY (session_id) REFERENCES sessions(id)
       );
     `);
-
-    // CRITICAL P1 FIX: Composite index for common query pattern
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_observations_project_created
       ON observations(project, created_at DESC);
     `);
-
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_observations_session ON observations(session_id);
     `);
-
-    // Create FTS5 virtual table
     this.db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
         summary,
@@ -177,8 +142,6 @@ export class SQLiteStorage implements ContextStorage {
         content_rowid=id
       );
     `);
-
-    // CRITICAL P1 FIX: FTS triggers with COALESCE for NULL handling
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
         INSERT INTO observations_fts(rowid, summary, files_touched, metadata)
@@ -190,14 +153,12 @@ export class SQLiteStorage implements ContextStorage {
         );
       END;
     `);
-
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
         INSERT INTO observations_fts(observations_fts, rowid, summary, files_touched, metadata)
         VALUES('delete', old.id, old.summary, old.files_touched, old.metadata);
       END;
     `);
-
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
         INSERT INTO observations_fts(observations_fts, rowid, summary, files_touched, metadata)
@@ -211,203 +172,142 @@ export class SQLiteStorage implements ContextStorage {
         );
       END;
     `);
-
-    // Migration: add importance scoring columns
     this.migrateAddImportanceColumns();
-
-    // Migration: add exported_at column
     this.migrateAddExportedAtColumn();
-
-    // Migration: add vector search support
     this.migrateAddVectorSearch();
-
-    // Migration: add session-level vector search
     this.migrateAddSessionVectorSearch();
-
-    // Migration: add file encounter counts for surprise scoring
     this.migrateAddFileEncounterCounts();
-
-    // Migration: add observation relationships
     this.migrateAddObservationRelationships();
-
-    // Migration: add domain tags column
     this.migrateAddTagsColumn();
-
-    // Migration: add content_hash column for exact dedup
     this.migrateAddContentHash();
-
-    // Migration: add summary_extended column for multi-beat session narratives
     this.migrateAddSummaryExtended();
-
-    // Migration: add last_checkpoint_at column for periodic checkpoint tracking
     this.migrateAddLastCheckpointAt();
   }
-
   /**
    * Add importance and compaction columns if they don't exist.
    * Uses pragma table_info to check column existence safely.
    */
-  private migrateAddImportanceColumns(): void {
-    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map(c => c.name));
-
-    if (!columnNames.has('importance')) {
+  migrateAddImportanceColumns() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("importance")) {
       this.db.exec(`ALTER TABLE observations ADD COLUMN importance TEXT DEFAULT 'medium'`);
     }
-    if (!columnNames.has('importance_score')) {
+    if (!columnNames.has("importance_score")) {
       this.db.exec(`ALTER TABLE observations ADD COLUMN importance_score REAL DEFAULT 0.5`);
     }
-    if (!columnNames.has('is_compacted')) {
+    if (!columnNames.has("is_compacted")) {
       this.db.exec(`ALTER TABLE observations ADD COLUMN is_compacted INTEGER DEFAULT 0`);
     }
-
-    // Index for relevance-based queries
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_observations_project_score
       ON observations(project, importance_score DESC, created_at DESC)
     `);
   }
-
   /**
    * Add exported_at column if it doesn't exist.
    */
-  private migrateAddExportedAtColumn(): void {
-    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map(c => c.name));
-
-    if (!columnNames.has('exported_at')) {
+  migrateAddExportedAtColumn() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("exported_at")) {
       this.db.exec(`ALTER TABLE observations ADD COLUMN exported_at TEXT`);
     }
   }
-
   /**
    * Normalize summary text for dedup comparison.
    * Groups similar observations that differ only in variable query text.
    */
-  private normalizeSummaryForDedup(summary: string, toolName: string): string {
-    // psql: normalize to connection/command prefix, strip variable query text
-    if (summary.includes('psql')) {
+  normalizeSummaryForDedup(summary, toolName) {
+    if (summary.includes("psql")) {
       const match = summary.match(/^(Bash:\s*docker\s+exec\s+\S+\s+psql\b)/);
-      if (match?.[1]) return match[1];
+      if (match?.[1])
+        return match[1];
       const psqlMatch = summary.match(/^(Bash:\s*psql\b[^|;]*)/);
-      if (psqlMatch?.[1]) return psqlMatch[1].substring(0, 40);
+      if (psqlMatch?.[1])
+        return psqlMatch[1].substring(0, 40);
     }
-
-    // git status/diff/log: first 20 chars (always identical command prefix)
     if (/^Bash:\s*git\s+(status|diff|log)\b/.test(summary)) {
       return summary.substring(0, 20);
     }
-
-    // Default: 60-char prefix
     return summary.substring(0, 60);
   }
-
   /**
    * Map a database row to an Observation object
    */
-  private mapRow(row: Record<string, unknown>): Observation {
+  mapRow(row) {
     return {
-      id: row.id as number,
-      session_id: row.session_id as string,
-      project: row.project as string,
-      package: (row.package as string) || undefined,
-      tool_name: row.tool_name as string,
-      summary: row.summary as string,
-      files_touched: JSON.parse((row.files_touched as string) || '[]'),
-      metadata: JSON.parse((row.metadata as string) || '{}'),
-      token_estimate: row.token_estimate as number,
-      importance: (row.importance as ImportanceLevel) || 'medium',
-      importance_score: (row.importance_score as number) ?? 0.5,
-      is_compacted: (row.is_compacted as number) === 1,
-      exported_at: (row.exported_at as string) || undefined,
-      tags: row.tags ? (row.tags as string).split(',').filter(Boolean) : undefined,
-      content_hash: (row.content_hash as string) || undefined,
-      created_at: row.created_at as string,
+      id: row.id,
+      session_id: row.session_id,
+      project: row.project,
+      package: row.package || void 0,
+      tool_name: row.tool_name,
+      summary: row.summary,
+      files_touched: JSON.parse(row.files_touched || "[]"),
+      metadata: JSON.parse(row.metadata || "{}"),
+      token_estimate: row.token_estimate,
+      importance: row.importance || "medium",
+      importance_score: row.importance_score ?? 0.5,
+      is_compacted: row.is_compacted === 1,
+      exported_at: row.exported_at || void 0,
+      tags: row.tags ? row.tags.split(",").filter(Boolean) : void 0,
+      content_hash: row.content_hash || void 0,
+      created_at: row.created_at
     };
   }
-
-  async save(observation: Omit<Observation, 'id'>): Promise<number | undefined> {
-    // --- Layer 1: Exact SHA256 dedup (same project, no time window) ---
-    // Hash covers summary + files_touched + stored_output so that same-content
-    // tool results are detected even when called at different times.
-    const storedOutput =
-      typeof (observation.metadata as Record<string, unknown>)?.stored_output === 'string'
-        ? ((observation.metadata as Record<string, unknown>).stored_output as string)
-        : '';
-    const hashInput = `${observation.summary}\n${JSON.stringify(observation.files_touched)}\n${storedOutput}`;
+  async save(observation) {
+    const storedOutput = typeof observation.metadata?.stored_output === "string" ? observation.metadata.stored_output : "";
+    const hashInput = `${observation.summary}
+${JSON.stringify(observation.files_touched)}
+${storedOutput}`;
     const contentHash = sha256(hashInput);
-
     const hashCheck = this.db.prepare(`
       SELECT COUNT(*) as count FROM observations
       WHERE project LIKE ? AND content_hash = ?
-    `).get(observation.project + '%', contentHash) as { count: number };
-
+    `).get(observation.project + "%", contentHash);
     if (hashCheck.count > 0) {
-      return undefined;
+      return void 0;
     }
-
-    // --- Layer 0: Time-windowed prefix dedup (existing logic) ---
-    // Deduplication: skip if very similar observation exists recently
-    // CROSS-SESSION deduplication within same project (not just same session)
-    // Window varies by command type based on data analysis:
-    // - psql queries: 99% duplication rate, use 60 minute window + normalized prefix
-    // - ssh commands: often repeated, use 10 minute window
-    // - gh commands: repeated issue/PR lists, use 5 minute window
-    // - Read tool: re-reading files is very common, use 10 minute window
-    // - Grep/Glob: repeated searches, use 5 minute window
-    // - Edit: related edits on same file, use 2 minute window
-    // - default: 5 minutes same-session (catches re-reads of same files)
     const summaryPrefix = this.normalizeSummaryForDedup(observation.summary, observation.tool_name);
-
-    let dedupeWindowMs = 300000; // default 5 minutes (same session)
-    let crossSession = false;     // whether to dedupe across sessions
-
-    if (observation.summary.includes('psql')) {
-      dedupeWindowMs = 3600000; // 60 minutes for psql (cross-session) - 99% dup rate
+    let dedupeWindowMs = 3e5;
+    let crossSession = false;
+    if (observation.summary.includes("psql")) {
+      dedupeWindowMs = 36e5;
       crossSession = true;
-    } else if (observation.summary.startsWith('Bash: ssh ')) {
-      dedupeWindowMs = 600000; // 10 minutes for ssh (cross-session)
+    } else if (observation.summary.startsWith("Bash: ssh ")) {
+      dedupeWindowMs = 6e5;
       crossSession = true;
-    } else if (observation.summary.includes('gh issue') || observation.summary.includes('gh pr')) {
-      dedupeWindowMs = 300000; // 5 minutes for gh commands (cross-session)
+    } else if (observation.summary.includes("gh issue") || observation.summary.includes("gh pr")) {
+      dedupeWindowMs = 3e5;
       crossSession = true;
-    } else if (observation.tool_name === 'Read') {
-      dedupeWindowMs = 600000; // 10 minutes for Read (re-reading files is very common)
+    } else if (observation.tool_name === "Read") {
+      dedupeWindowMs = 6e5;
       crossSession = false;
-    } else if (observation.tool_name === 'Grep' || observation.tool_name === 'Glob') {
-      dedupeWindowMs = 300000; // 5 minutes for search tools
+    } else if (observation.tool_name === "Grep" || observation.tool_name === "Glob") {
+      dedupeWindowMs = 3e5;
       crossSession = false;
-    } else if (observation.tool_name === 'Edit') {
-      dedupeWindowMs = 120000; // 2 minutes for Edit deduplication
+    } else if (observation.tool_name === "Edit") {
+      dedupeWindowMs = 12e4;
       crossSession = false;
     }
-
     const windowStart = new Date(Date.now() - dedupeWindowMs).toISOString();
     const prefixLen = summaryPrefix.length;
-
-    // Cross-session: check by project, same-session: check by session_id
-    const duplicateCheck = crossSession
-      ? this.db.prepare(`
+    const duplicateCheck = crossSession ? this.db.prepare(`
           SELECT COUNT(*) as count FROM observations
           WHERE project = ?
             AND substr(summary, 1, ?) = ?
             AND created_at > ?
-        `)
-      : this.db.prepare(`
+        `) : this.db.prepare(`
           SELECT COUNT(*) as count FROM observations
           WHERE session_id = ?
             AND substr(summary, 1, ?) = ?
             AND created_at > ?
         `);
-
     const checkKey = crossSession ? observation.project : observation.session_id;
-    const result = duplicateCheck.get(checkKey, prefixLen, summaryPrefix, windowStart) as { count: number };
-
+    const result = duplicateCheck.get(checkKey, prefixLen, summaryPrefix, windowStart);
     if (result.count > 0) {
-      // Skip duplicate - already have a similar observation recently
-      return undefined;
+      return void 0;
     }
-
     const stmt = this.db.prepare(`
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
@@ -415,11 +315,7 @@ export class SQLiteStorage implements ContextStorage {
         importance, importance_score, tags, content_hash, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-
-    const tagsValue = observation.tags && observation.tags.length > 0
-      ? observation.tags.join(',')
-      : null;
-
+    const tagsValue = observation.tags && observation.tags.length > 0 ? observation.tags.join(",") : null;
     const info = stmt.run(
       observation.session_id,
       observation.project,
@@ -429,85 +325,52 @@ export class SQLiteStorage implements ContextStorage {
       JSON.stringify(observation.files_touched),
       JSON.stringify(observation.metadata),
       observation.token_estimate,
-      observation.importance || 'medium',
+      observation.importance || "medium",
       observation.importance_score ?? 0.5,
       tagsValue,
       contentHash,
       observation.created_at
     );
-
     const insertedId = Number(info.lastInsertRowid);
-
-    // Infer relationships for the newly inserted observation
     this.inferRelationships(insertedId, observation);
-
     return insertedId;
   }
-
-  async getRecent(project: string, limit: number): Promise<Observation[]> {
-    // Use LIKE for prefix matching (parent directory sees children)
+  async getRecent(project, limit) {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
       ORDER BY created_at DESC
       LIMIT ?
     `);
-
-    const rows = stmt.all(project + '%', limit) as Array<Record<string, unknown>>;
-    return rows.map(row => this.mapRow(row));
+    const rows = stmt.all(project + "%", limit);
+    return rows.map((row) => this.mapRow(row));
   }
-
-  async getWithinBudget(
-    project: string,
-    tokenBudget: number
-  ): Promise<Observation[]> {
-    // Apply 80% safety margin
+  async getWithinBudget(project, tokenBudget) {
     const effectiveBudget = Math.floor(tokenBudget * 0.8);
-
-    // Use LIKE for prefix matching (parent directory sees children).
-    // LIMIT 500 caps memory usage on mature databases — the budget accumulator
-    // stops well before this ceiling, so no relevant observations are lost.
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
       ORDER BY importance_score DESC, created_at DESC
       LIMIT 500
     `);
-
-    const rows = stmt.all(project + '%') as Array<Record<string, unknown>>;
-
-    // Accumulate observations until budget exceeded
-    const results: Observation[] = [];
+    const rows = stmt.all(project + "%");
+    const results = [];
     let totalTokens = 0;
-
     for (const row of rows) {
-      const tokenEstimate = row.token_estimate as number;
+      const tokenEstimate = row.token_estimate;
       if (totalTokens + tokenEstimate > effectiveBudget) {
         break;
       }
-
       results.push(this.mapRow(row));
       totalTokens += tokenEstimate;
     }
-
     return results;
   }
-
-  async search(query: string, project?: string): Promise<Observation[]> {
-    let sql: string;
-    let params: unknown[];
-
-    // Escape FTS5 special characters by wrapping each token in double quotes.
-    // This prevents dots, hyphens, and other chars from being parsed as FTS5 operators.
-    const ftsQuery = query.replace(/"/g, '""')  // escape existing double quotes
-      .split(/\s+/)
-      .filter(t => t.length > 0)
-      .map(t => `"${t}"`)
-      .join(' ');
-
+  async search(query, project) {
+    let sql;
+    let params;
+    const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     if (project) {
-      // Use LIKE for prefix matching (parent directory sees children)
-      // FTS5 requires full table name in MATCH clause (aliases don't work)
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
@@ -515,7 +378,7 @@ export class SQLiteStorage implements ContextStorage {
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
-      params = [ftsQuery, project + '%'];
+      params = [ftsQuery, project + "%"];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -526,21 +389,14 @@ export class SQLiteStorage implements ContextStorage {
       `;
       params = [ftsQuery];
     }
-
     const stmt = this.db.prepare(sql);
-    const rows = stmt.all(...params) as Array<Record<string, unknown>>;
-    return rows.map(row => this.mapRow(row));
+    const rows = stmt.all(...params);
+    return rows.map((row) => this.mapRow(row));
   }
-
-  async searchByTag(tag: string, project?: string, limit: number = 50): Promise<Observation[]> {
-    // Use delimiter-anchored matching to avoid substring collisions (e.g. "auth"
-    // matching a future "authentication" tag) and to make the intent explicit.
-    // Tags are stored as "auth,api,config"; wrapping with commas in SQL lets us
-    // match exact tag values: WHERE ',' || tags || ',' LIKE '%,auth,%'
+  async searchByTag(tag, project, limit = 50) {
     const likePattern = `%,${tag},%`;
-    let sql: string;
-    let params: unknown[];
-
+    let sql;
+    let params;
     if (project) {
       sql = `
         SELECT * FROM observations
@@ -548,7 +404,7 @@ export class SQLiteStorage implements ContextStorage {
         ORDER BY created_at DESC
         LIMIT ?
       `;
-      params = [likePattern, project + '%', limit];
+      params = [likePattern, project + "%", limit];
     } else {
       sql = `
         SELECT * FROM observations
@@ -558,18 +414,13 @@ export class SQLiteStorage implements ContextStorage {
       `;
       params = [likePattern, limit];
     }
-
-    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-    return rows.map(row => this.mapRow(row));
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
   }
-
-  async getStats(project?: string): Promise<Stats> {
-    const parsed = parseInt(process.env.CONTEXT_MANAGER_TOKEN_BUDGET || '4000', 10);
-    const TOKEN_BUDGET = Number.isFinite(parsed) && parsed > 0 && parsed <= 100000 ? parsed : 4000;
-
-    // Base observation stats
-    const baseSql = project
-      ? `
+  async getStats(project) {
+    const parsed = parseInt(process.env.CONTEXT_MANAGER_TOKEN_BUDGET || "4000", 10);
+    const TOKEN_BUDGET = Number.isFinite(parsed) && parsed > 0 && parsed <= 1e5 ? parsed : 4e3;
+    const baseSql = project ? `
         SELECT
           COUNT(*) as total_observations,
           MIN(created_at) as oldest_observation,
@@ -578,8 +429,7 @@ export class SQLiteStorage implements ContextStorage {
           AVG(token_estimate) as avg_tokens
         FROM observations
         WHERE project LIKE ? || '%'
-      `
-      : `
+      ` : `
         SELECT
           COUNT(*) as total_observations,
           MIN(created_at) as oldest_observation,
@@ -588,135 +438,90 @@ export class SQLiteStorage implements ContextStorage {
           AVG(token_estimate) as avg_tokens
         FROM observations
       `;
-
     const baseRow = this.db.prepare(baseSql).get(
-      ...(project ? [project] : [])
-    ) as {
-      total_observations: number;
-      oldest_observation: string | null;
-      newest_observation: string | null;
-      total_tokens: number | null;
-      avg_tokens: number | null;
-    };
-
-    // Session count
-    const sessionSql = project
-      ? 'SELECT COUNT(*) as count FROM sessions WHERE project LIKE ? || \'%\''
-      : 'SELECT COUNT(*) as count FROM sessions';
-
+      ...project ? [project] : []
+    );
+    const sessionSql = project ? "SELECT COUNT(*) as count FROM sessions WHERE project LIKE ? || '%'" : "SELECT COUNT(*) as count FROM sessions";
     const sessionRow = this.db.prepare(sessionSql).get(
-      ...(project ? [project] : [])
-    ) as { count: number };
-
-    // Tokens by tool type
-    const toolSql = project
-      ? `
+      ...project ? [project] : []
+    );
+    const toolSql = project ? `
         SELECT tool_name, SUM(token_estimate) as tokens
         FROM observations
         WHERE project LIKE ? || '%'
         GROUP BY tool_name
         ORDER BY tokens DESC
-      `
-      : `
+      ` : `
         SELECT tool_name, SUM(token_estimate) as tokens
         FROM observations
         GROUP BY tool_name
         ORDER BY tokens DESC
       `;
-
     const toolRows = this.db.prepare(toolSql).all(
-      ...(project ? [project] : [])
-    ) as Array<{ tool_name: string; tokens: number }>;
-
-    const tokensByTool: Record<string, number> = {};
+      ...project ? [project] : []
+    );
+    const tokensByTool = {};
     for (const row of toolRows) {
       tokensByTool[row.tool_name] = row.tokens;
     }
-
-    // Average tokens per session (sum tokens / session count)
-    const avgTokensPerSession =
-      sessionRow.count > 0 ? Math.round((baseRow.total_tokens || 0) / sessionRow.count) : 0;
-
-    // Typical injection: get median of recent injection sizes
-    // Approximated by looking at what would be injected for recent sessions
-    const recentSql = project
-      ? `
+    const avgTokensPerSession = sessionRow.count > 0 ? Math.round((baseRow.total_tokens || 0) / sessionRow.count) : 0;
+    const recentSql = project ? `
         SELECT SUM(token_estimate) as session_tokens
         FROM observations
         WHERE project LIKE ? || '%'
         GROUP BY session_id
         ORDER BY MAX(created_at) DESC
         LIMIT 10
-      `
-      : `
+      ` : `
         SELECT SUM(token_estimate) as session_tokens
         FROM observations
         GROUP BY session_id
         ORDER BY MAX(created_at) DESC
         LIMIT 10
       `;
-
     const recentRows = this.db.prepare(recentSql).all(
-      ...(project ? [project] : [])
-    ) as Array<{ session_tokens: number }>;
-
-    // Typical injection is roughly min(avg recent session tokens, budget)
-    const avgRecentTokens =
-      recentRows.length > 0
-        ? Math.round(
-            recentRows.reduce((sum, r) => sum + r.session_tokens, 0) /
-              recentRows.length
-          )
-        : 0;
+      ...project ? [project] : []
+    );
+    const avgRecentTokens = recentRows.length > 0 ? Math.round(
+      recentRows.reduce((sum, r) => sum + r.session_tokens, 0) / recentRows.length
+    ) : 0;
     const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET);
-
-    // Importance distribution
-    const importanceSql = project
-      ? `
+    const importanceSql = project ? `
         SELECT importance, COUNT(*) as cnt
         FROM observations
         WHERE project LIKE ? || '%'
         GROUP BY importance
-      `
-      : `
+      ` : `
         SELECT importance, COUNT(*) as cnt
         FROM observations
         GROUP BY importance
       `;
-
     const importanceRows = this.db.prepare(importanceSql).all(
-      ...(project ? [project] : [])
-    ) as Array<{ importance: string | null; cnt: number }>;
-
+      ...project ? [project] : []
+    );
     const importanceCounts = { high: 0, medium: 0, low: 0 };
     for (const row of importanceRows) {
-      const level = (row.importance || 'medium') as keyof typeof importanceCounts;
+      const level = row.importance || "medium";
       if (level in importanceCounts) {
         importanceCounts[level] = row.cnt;
       }
     }
-
-    // Compaction stats
-    const compactedSql = project
-      ? `
+    const compactedSql = project ? `
         SELECT
           COUNT(*) as compacted_count,
           COALESCE(SUM(json_extract(metadata, '$.compacted_from')), 0) as original_count
         FROM observations
         WHERE project LIKE ? || '%' AND is_compacted = 1
-      `
-      : `
+      ` : `
         SELECT
           COUNT(*) as compacted_count,
           COALESCE(SUM(json_extract(metadata, '$.compacted_from')), 0) as original_count
         FROM observations
         WHERE is_compacted = 1
       `;
-
     const compactedRow = this.db.prepare(compactedSql).get(
-      ...(project ? [project] : [])
-    ) as { compacted_count: number; original_count: number } | undefined;
-
+      ...project ? [project] : []
+    );
     return {
       total_observations: baseRow.total_observations,
       total_sessions: sessionRow.count,
@@ -730,60 +535,43 @@ export class SQLiteStorage implements ContextStorage {
       typical_injection_tokens: typicalInjection,
       importance_counts: importanceCounts,
       compacted_count: compactedRow?.compacted_count || 0,
-      compacted_original_count: compactedRow?.original_count || 0,
+      compacted_original_count: compactedRow?.original_count || 0
     };
   }
-
-  async createSession(sessionId: string, project: string): Promise<void> {
-    // Use INSERT OR IGNORE to handle case where session already exists
-    // (e.g., Claude Code reconnect/restart with same session ID)
+  async createSession(sessionId, project) {
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO sessions (id, project, started_at, status)
       VALUES (?, ?, ?, 'active')
     `);
-
-    stmt.run(sessionId, project, new Date().toISOString());
+    stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
   }
-
-  async endSession(sessionId: string, summary?: string, summaryExtended?: string): Promise<void> {
+  async endSession(sessionId, summary, summaryExtended) {
     const stmt = this.db.prepare(`
       UPDATE sessions
       SET ended_at = ?, summary = ?, summary_extended = ?, status = 'complete'
       WHERE id = ?
     `);
-
-    stmt.run(new Date().toISOString(), summary || null, summaryExtended || null, sessionId);
+    stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, summaryExtended || null, sessionId);
   }
-
-  async updateSessionDraftSummary(sessionId: string, summary: string): Promise<void> {
-    if (!summary) return;
-    // Only update summary. Leave status, ended_at, and all other fields intact.
-    // The Stop hook will overwrite summary with the final version on clean exit.
+  async updateSessionDraftSummary(sessionId, summary) {
+    if (!summary)
+      return;
     this.db.prepare(`
       UPDATE sessions SET summary = ? WHERE id = ?
     `).run(summary, sessionId);
   }
-
-  async updateSessionCheckpoint(sessionId: string, timestamp: number): Promise<void> {
+  async updateSessionCheckpoint(sessionId, timestamp) {
     this.db.prepare(`
       UPDATE sessions SET last_checkpoint_at = ? WHERE id = ?
     `).run(timestamp, sessionId);
   }
-
-  async getSessionTimestamps(
-    sessionId: string
-  ): Promise<{ started_at: string; last_checkpoint_at: number | null } | null> {
+  async getSessionTimestamps(sessionId) {
     const row = this.db.prepare(`
       SELECT started_at, last_checkpoint_at FROM sessions WHERE id = ?
-    `).get(sessionId) as { started_at: string; last_checkpoint_at: number | null } | undefined;
-
+    `).get(sessionId);
     return row ?? null;
   }
-
-  async getRecentSessions(project: string, limit: number): Promise<Session[]> {
-    // Prioritize complete sessions with substantive summaries
-    // Skip: empty summaries, agent sessions, generic messages, meta-discussions about context
-    // Uses prefix matching: '/' matches all, '/Users/foo/Projects' matches that subtree
+  async getRecentSessions(project, limit) {
     const stmt = this.db.prepare(`
       SELECT * FROM sessions
       WHERE project LIKE ? || '%'
@@ -797,37 +585,19 @@ export class SQLiteStorage implements ContextStorage {
       ORDER BY CASE WHEN status = 'complete' THEN 0 ELSE 1 END, started_at DESC
       LIMIT ?
     `);
-
-    const rows = stmt.all(project, limit) as Array<{
-      id: string;
-      project: string;
-      started_at: string;
-      ended_at: string | null;
-      summary: string | null;
-      summary_extended: string | null;
-      status: 'active' | 'complete';
-    }>;
-
+    const rows = stmt.all(project, limit);
     return rows.map((row) => ({
       id: row.id,
       project: row.project,
       started_at: row.started_at,
-      ended_at: row.ended_at || undefined,
-      summary: row.summary || undefined,
-      summary_extended: row.summary_extended || undefined,
-      status: row.status,
+      ended_at: row.ended_at || void 0,
+      summary: row.summary || void 0,
+      summary_extended: row.summary_extended || void 0,
+      status: row.status
     }));
   }
-
-  async getRecentSessionsWithCounts(
-    project: string,
-    limit: number,
-    offset: number,
-    status?: string
-  ): Promise<Array<Session & { observation_count: number; total_tokens: number }>> {
-    // Single query that joins sessions with aggregated observation stats.
-    // Eliminates the N+1 pattern of loading each session's observations separately.
-    const statusClause = status ? 'AND s.status = ?' : '';
+  async getRecentSessionsWithCounts(project, limit, offset, status) {
+    const statusClause = status ? "AND s.status = ?" : "";
     const sql = `
       SELECT
         s.id, s.project, s.started_at, s.ended_at,
@@ -842,72 +612,38 @@ export class SQLiteStorage implements ContextStorage {
       ORDER BY s.started_at DESC
       LIMIT ? OFFSET ?
     `;
-
-    const params: unknown[] = status
-      ? [project, status, limit, offset]
-      : [project, limit, offset];
-
-    const rows = this.db.prepare(sql).all(...params) as Array<{
-      id: string;
-      project: string;
-      started_at: string;
-      ended_at: string | null;
-      summary: string | null;
-      summary_extended: string | null;
-      status: 'active' | 'complete';
-      observation_count: number;
-      total_tokens: number;
-    }>;
-
+    const params = status ? [project, status, limit, offset] : [project, limit, offset];
+    const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => ({
       id: row.id,
       project: row.project,
       started_at: row.started_at,
-      ended_at: row.ended_at || undefined,
-      summary: row.summary || undefined,
-      summary_extended: row.summary_extended || undefined,
+      ended_at: row.ended_at || void 0,
+      summary: row.summary || void 0,
+      summary_extended: row.summary_extended || void 0,
       status: row.status,
       observation_count: row.observation_count,
-      total_tokens: row.total_tokens,
+      total_tokens: row.total_tokens
     }));
   }
-
-  async vacuum(olderThanDays?: number): Promise<{
-    observations: number;
-    sessions: number;
-    compacted: number;
-    compacted_originals: number;
-  }> {
+  async vacuum(olderThanDays) {
     let deletedObservations = 0;
-
     if (olderThanDays) {
-      const cutoffDate = new Date();
+      const cutoffDate = /* @__PURE__ */ new Date();
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
       const cutoffISO = cutoffDate.toISOString();
-
       const stmt = this.db.prepare(`
         DELETE FROM observations
         WHERE created_at < ?
       `);
-
       const result = stmt.run(cutoffISO);
       deletedObservations = result.changes;
     }
-
-    // Clean up orphaned observations BEFORE compaction (referencing non-existent sessions)
-    // Compaction groups by session_id and inserts new rows — if orphaned observations
-    // reference deleted sessions, the INSERT will violate the FK constraint.
     this.db.prepare(`
       DELETE FROM observations
       WHERE session_id NOT IN (SELECT id FROM sessions)
     `).run();
-
-    // Run compaction on observations older than 7 days
     const compactionResult = await this.compactObservations(7);
-
-    // Clean up ghost sessions: never closed, 0 observations, older than 24h.
-    // These accumulate when a conversation starts but Claude Code is closed before
-    // any tool calls are made (Stop hook never fires, session stays open forever).
     this.db.prepare(`
       DELETE FROM user_prompts
       WHERE session_id IN (
@@ -924,14 +660,10 @@ export class SQLiteStorage implements ContextStorage {
         AND id NOT IN (SELECT DISTINCT session_id FROM observations)
     `).run();
     const deletedGhostSessions = ghostResult.changes;
-
-    // Clean up orphaned user_prompts (sessions with no remaining observations)
     this.db.prepare(`
       DELETE FROM user_prompts
       WHERE session_id NOT IN (SELECT DISTINCT session_id FROM observations)
     `).run();
-
-    // Clean up orphaned sessions (no observations AND no prompts)
     const orphanStmt = this.db.prepare(`
       DELETE FROM sessions
       WHERE id NOT IN (SELECT DISTINCT session_id FROM observations)
@@ -939,101 +671,66 @@ export class SQLiteStorage implements ContextStorage {
     `);
     const orphanResult = orphanStmt.run();
     const deletedSessions = orphanResult.changes + deletedGhostSessions;
-
-    // Update query planner statistics and reclaim space
-    // Temporarily disable FK checks for VACUUM (pre-existing violations may remain)
-    this.db.pragma('foreign_keys = OFF');
-    this.db.exec('ANALYZE');
-    this.db.exec('VACUUM');
-    this.db.pragma('foreign_keys = ON');
-
+    this.db.pragma("foreign_keys = OFF");
+    this.db.exec("ANALYZE");
+    this.db.exec("VACUUM");
+    this.db.pragma("foreign_keys = ON");
     return {
       observations: deletedObservations,
       sessions: deletedSessions,
       compacted: compactionResult.compacted,
-      compacted_originals: compactionResult.originals,
+      compacted_originals: compactionResult.originals
     };
   }
-
-  async prune(options: {
-    toolName?: string;
-    importance?: ImportanceLevel;
-    olderThanDays?: number;
-    dryRun?: boolean;
-  }): Promise<{ deleted: number; preview?: string[] }> {
+  async prune(options) {
     const { toolName, importance, olderThanDays, dryRun = false } = options;
-
-    const conditions: string[] = [];
-    const params: unknown[] = [];
-
-    if (olderThanDays !== undefined) {
-      const cutoff = new Date();
+    const conditions = [];
+    const params = [];
+    if (olderThanDays !== void 0) {
+      const cutoff = /* @__PURE__ */ new Date();
       cutoff.setDate(cutoff.getDate() - olderThanDays);
-      conditions.push('created_at < ?');
+      conditions.push("created_at < ?");
       params.push(cutoff.toISOString());
     }
     if (toolName) {
-      conditions.push('tool_name = ?');
+      conditions.push("tool_name = ?");
       params.push(toolName);
     }
     if (importance) {
-      conditions.push('importance = ?');
+      conditions.push("importance = ?");
       params.push(importance);
     }
-
-    // Require at least one filter — prevent accidental full wipe
     if (conditions.length === 0) {
       return { deleted: 0 };
     }
-
-    const where = `WHERE ${conditions.join(' AND ')}`;
-
+    const where = `WHERE ${conditions.join(" AND ")}`;
     if (dryRun) {
-      const total = (
-        this.db.prepare(`SELECT COUNT(*) as cnt FROM observations ${where}`).get(...params) as {
-          cnt: number;
-        }
-      ).cnt;
-      const rows = this.db
-        .prepare(
-          `SELECT tool_name, importance, summary FROM observations ${where} ORDER BY created_at DESC LIMIT 5`
-        )
-        .all(...params) as Array<{ tool_name: string; importance: string; summary: string }>;
-      const preview = rows.map(r => `[${r.importance}] ${r.tool_name}: ${r.summary.slice(0, 80)}`);
+      const total = this.db.prepare(`SELECT COUNT(*) as cnt FROM observations ${where}`).get(...params).cnt;
+      const rows = this.db.prepare(
+        `SELECT tool_name, importance, summary FROM observations ${where} ORDER BY created_at DESC LIMIT 5`
+      ).all(...params);
+      const preview = rows.map((r) => `[${r.importance}] ${r.tool_name}: ${r.summary.slice(0, 80)}`);
       return { deleted: total, preview };
     }
-
-    // Collect IDs first so we can clean up vec_observations (vec0 does not cascade)
-    const ids = (
-      this.db
-        .prepare(`SELECT id FROM observations ${where}`)
-        .all(...params) as Array<{ id: number }>
-    ).map(r => r.id);
-
+    const ids = this.db.prepare(`SELECT id FROM observations ${where}`).all(...params).map((r) => r.id);
     if (ids.length === 0) {
       return { deleted: 0 };
     }
-
     if (this.vecEnabled) {
       const idJson = JSON.stringify(ids);
-      this.db
-        .prepare(
-          `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
-        )
-        .run(idJson);
+      this.db.prepare(
+        `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
+      ).run(idJson);
     }
-
     const result = this.db.prepare(`DELETE FROM observations ${where}`).run(...params);
     return { deleted: result.changes };
   }
-
-  async saveUserPrompt(prompt: Omit<UserPrompt, 'id'>): Promise<void> {
+  async saveUserPrompt(prompt) {
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts (
         session_id, project, prompt_number, prompt_text, created_at
       ) VALUES (?, ?, ?, ?, ?)
     `);
-
     stmt.run(
       prompt.session_id,
       prompt.project,
@@ -1042,47 +739,28 @@ export class SQLiteStorage implements ContextStorage {
       prompt.created_at
     );
   }
-
-  async getRecentPrompts(project: string, limit: number): Promise<UserPrompt[]> {
+  async getRecentPrompts(project, limit) {
     const stmt = this.db.prepare(`
       SELECT * FROM user_prompts
       WHERE project = ?
       ORDER BY created_at DESC
       LIMIT ?
     `);
-
-    const rows = stmt.all(project, limit) as Array<{
-      id: number;
-      session_id: string;
-      project: string;
-      prompt_number: number;
-      prompt_text: string;
-      created_at: string;
-    }>;
-
+    const rows = stmt.all(project, limit);
     return rows.map((row) => ({
       id: row.id,
       session_id: row.session_id,
       project: row.project,
       prompt_number: row.prompt_number,
       prompt_text: row.prompt_text,
-      created_at: row.created_at,
+      created_at: row.created_at
     }));
   }
-
-  async searchPrompts(query: string, project?: string): Promise<UserPrompt[]> {
-    let sql: string;
-    let params: unknown[];
-
-    // Escape FTS5 special characters (same as search())
-    const ftsQuery = query.replace(/"/g, '""')
-      .split(/\s+/)
-      .filter(t => t.length > 0)
-      .map(t => `"${t}"`)
-      .join(' ');
-
+  async searchPrompts(query, project) {
+    let sql;
+    let params;
+    const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     if (project) {
-      // FTS5 requires full table name in MATCH clause (aliases don't work)
       sql = `
         SELECT p.* FROM user_prompts p
         INNER JOIN user_prompts_fts ON p.id = user_prompts_fts.rowid
@@ -1090,7 +768,7 @@ export class SQLiteStorage implements ContextStorage {
         ORDER BY p.created_at DESC
         LIMIT 50
       `;
-      params = [ftsQuery, project + '%'];
+      params = [ftsQuery, project + "%"];
     } else {
       sql = `
         SELECT p.* FROM user_prompts p
@@ -1101,35 +779,23 @@ export class SQLiteStorage implements ContextStorage {
       `;
       params = [ftsQuery];
     }
-
     const stmt = this.db.prepare(sql);
-    const rows = stmt.all(...params) as Array<{
-      id: number;
-      session_id: string;
-      project: string;
-      prompt_number: number;
-      prompt_text: string;
-      created_at: string;
-    }>;
-
+    const rows = stmt.all(...params);
     return rows.map((row) => ({
       id: row.id,
       session_id: row.session_id,
       project: row.project,
       prompt_number: row.prompt_number,
       prompt_text: row.prompt_text,
-      created_at: row.created_at,
+      created_at: row.created_at
     }));
   }
-
-  async getTimeline(project?: string, days: number = 30): Promise<TimelineEntry[]> {
-    const cutoffDate = new Date();
+  async getTimeline(project, days = 30) {
+    const cutoffDate = /* @__PURE__ */ new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
     const cutoffISO = cutoffDate.toISOString();
-
-    let sql: string;
-    let params: unknown[];
-
+    let sql;
+    let params;
     if (project) {
       sql = `
         SELECT
@@ -1142,7 +808,7 @@ export class SQLiteStorage implements ContextStorage {
         GROUP BY DATE(created_at)
         ORDER BY date ASC
       `;
-      params = [project + '%', cutoffISO];
+      params = [project + "%", cutoffISO];
     } else {
       sql = `
         SELECT
@@ -1157,19 +823,11 @@ export class SQLiteStorage implements ContextStorage {
       `;
       params = [cutoffISO];
     }
-
     const stmt = this.db.prepare(sql);
-    const rows = stmt.all(...params) as Array<{
-      date: string;
-      tokens: number;
-      observations: number;
-      sessions: number;
-    }>;
-
+    const rows = stmt.all(...params);
     return rows;
   }
-
-  async getProjects(): Promise<ProjectEntry[]> {
+  async getProjects() {
     const sql = `
       SELECT
         project as path,
@@ -1179,118 +837,87 @@ export class SQLiteStorage implements ContextStorage {
       GROUP BY project
       ORDER BY last_activity DESC
     `;
-
     const stmt = this.db.prepare(sql);
-    const rows = stmt.all() as Array<{
-      path: string;
-      observation_count: number;
-      last_activity: string;
-    }>;
-
+    const rows = stmt.all();
     return rows;
   }
-
-  async getSessionObservations(sessionId: string): Promise<Observation[]> {
+  async getSessionObservations(sessionId) {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE session_id = ?
       ORDER BY created_at ASC
     `);
-
-    const rows = stmt.all(sessionId) as Array<Record<string, unknown>>;
-    return rows.map(row => this.mapRow(row));
+    const rows = stmt.all(sessionId);
+    return rows.map((row) => this.mapRow(row));
   }
-
-  async getSessionPrompts(sessionId: string): Promise<UserPrompt[]> {
+  async getSessionPrompts(sessionId) {
     const stmt = this.db.prepare(`
       SELECT * FROM user_prompts
       WHERE session_id = ?
       ORDER BY prompt_number ASC
     `);
-
-    const rows = stmt.all(sessionId) as Array<{
-      id: number;
-      session_id: string;
-      project: string;
-      prompt_number: number;
-      prompt_text: string;
-      created_at: string;
-    }>;
-
+    const rows = stmt.all(sessionId);
     return rows.map((row) => ({
       id: row.id,
       session_id: row.session_id,
       project: row.project,
       prompt_number: row.prompt_number,
       prompt_text: row.prompt_text,
-      created_at: row.created_at,
+      created_at: row.created_at
     }));
   }
-
-  async countObservations(project?: string, tool?: string): Promise<number> {
-    let sql: string;
-    const params: unknown[] = [];
-
+  async countObservations(project, tool) {
+    let sql;
+    const params = [];
     if (project && tool) {
-      sql = 'SELECT COUNT(*) as count FROM observations WHERE project LIKE ? AND tool_name = ?';
-      params.push(project + '%', tool);
+      sql = "SELECT COUNT(*) as count FROM observations WHERE project LIKE ? AND tool_name = ?";
+      params.push(project + "%", tool);
     } else if (project) {
-      sql = 'SELECT COUNT(*) as count FROM observations WHERE project LIKE ?';
-      params.push(project + '%');
+      sql = "SELECT COUNT(*) as count FROM observations WHERE project LIKE ?";
+      params.push(project + "%");
     } else if (tool) {
-      sql = 'SELECT COUNT(*) as count FROM observations WHERE tool_name = ?';
+      sql = "SELECT COUNT(*) as count FROM observations WHERE tool_name = ?";
       params.push(tool);
     } else {
-      sql = 'SELECT COUNT(*) as count FROM observations';
+      sql = "SELECT COUNT(*) as count FROM observations";
     }
-
     const stmt = this.db.prepare(sql);
-    const result = stmt.get(...params) as { count: number };
+    const result = stmt.get(...params);
     return result.count;
   }
-
-  async countSessions(project?: string, status?: string): Promise<number> {
-    let sql: string;
-    const params: unknown[] = [];
-
+  async countSessions(project, status) {
+    let sql;
+    const params = [];
     if (project && status) {
-      sql = 'SELECT COUNT(*) as count FROM sessions WHERE project LIKE ? AND status = ?';
-      params.push(project + '%', status);
+      sql = "SELECT COUNT(*) as count FROM sessions WHERE project LIKE ? AND status = ?";
+      params.push(project + "%", status);
     } else if (project) {
-      sql = 'SELECT COUNT(*) as count FROM sessions WHERE project LIKE ?';
-      params.push(project + '%');
+      sql = "SELECT COUNT(*) as count FROM sessions WHERE project LIKE ?";
+      params.push(project + "%");
     } else if (status) {
-      sql = 'SELECT COUNT(*) as count FROM sessions WHERE status = ?';
+      sql = "SELECT COUNT(*) as count FROM sessions WHERE status = ?";
       params.push(status);
     } else {
-      sql = 'SELECT COUNT(*) as count FROM sessions';
+      sql = "SELECT COUNT(*) as count FROM sessions";
     }
-
     const stmt = this.db.prepare(sql);
-    const result = stmt.get(...params) as { count: number };
+    const result = stmt.get(...params);
     return result.count;
   }
-
-  async getRelevantCandidates(project: string, limit: number = 200): Promise<Observation[]> {
-    // Pre-filter low-importance at SQL level, fetch larger candidate pool
+  async getRelevantCandidates(project, limit = 200) {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ? AND importance != 'low'
       ORDER BY importance_score DESC, created_at DESC
       LIMIT ?
     `);
-
-    const rows = stmt.all(project + '%', limit) as Array<Record<string, unknown>>;
-    return rows.map(row => this.mapRow(row));
+    const rows = stmt.all(project + "%", limit);
+    return rows.map((row) => this.mapRow(row));
   }
-
-  async compactObservations(olderThanDays: number = 7): Promise<{ compacted: number; originals: number }> {
-    const cutoffDate = new Date();
+  async compactObservations(olderThanDays = 7) {
+    const cutoffDate = /* @__PURE__ */ new Date();
     cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
     const cutoffISO = cutoffDate.toISOString();
-
-    // Find groups of 3+ observations with same session + tool, older than cutoff
-    // Never compact high-importance or already-compacted observations
     const groups = this.db.prepare(`
       SELECT session_id, tool_name, COUNT(*) as cnt,
              GROUP_CONCAT(id) as ids,
@@ -1305,21 +932,9 @@ export class SQLiteStorage implements ContextStorage {
         AND is_compacted = 0
       GROUP BY session_id, tool_name
       HAVING COUNT(*) >= 3
-    `).all(cutoffISO) as Array<{
-      session_id: string;
-      tool_name: string;
-      cnt: number;
-      ids: string;
-      all_files: string;
-      earliest: string;
-      latest: string;
-      total_tokens: number;
-      project: string;
-    }>;
-
+    `).all(cutoffISO);
     let compactedCount = 0;
     let originalsRemoved = 0;
-
     const insertCompacted = this.db.prepare(`
       INSERT INTO observations (
         session_id, project, tool_name, summary,
@@ -1327,38 +942,24 @@ export class SQLiteStorage implements ContextStorage {
         importance, importance_score, is_compacted, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'medium', 0.5, 1, ?)
     `);
-
     const deleteOriginals = this.db.prepare(`
       DELETE FROM observations WHERE id IN (SELECT value FROM json_each(?))
     `);
-
-    // vec_observations is a vec0 virtual table with no FK cascade — must be
-    // cleaned up manually, just like the prune() method does.
-    const deleteVec = this.vecEnabled
-      ? this.db.prepare(
-          `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
-        )
-      : null;
-
+    const deleteVec = this.vecEnabled ? this.db.prepare(
+      `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
+    ) : null;
     const compact = this.db.transaction(() => {
       for (const group of groups) {
-        // Parse all files from the group
-        const fileEntries = group.all_files
-          .split('|')
-          .flatMap(f => {
-            try { return JSON.parse(f); }
-            catch { return []; }
-          })
-          .filter((f: string) => f && f.length > 0);
-        const uniqueFiles = [...new Set(fileEntries)].slice(0, 10); // Cap at 10
-
-        // Build compact summary
-        const summary = `${group.tool_name} x${group.cnt}: ${uniqueFiles.join(', ') || 'various'}`;
-
-        // Token estimate: ~15 tokens for the compact summary
+        const fileEntries = group.all_files.split("|").flatMap((f) => {
+          try {
+            return JSON.parse(f);
+          } catch {
+            return [];
+          }
+        }).filter((f) => f && f.length > 0);
+        const uniqueFiles = [...new Set(fileEntries)].slice(0, 10);
+        const summary = `${group.tool_name} x${group.cnt}: ${uniqueFiles.join(", ") || "various"}`;
         const tokenEstimate = Math.max(15, Math.ceil(summary.length / 4));
-
-        // Insert compacted observation
         insertCompacted.run(
           group.session_id,
           group.project,
@@ -1369,32 +970,21 @@ export class SQLiteStorage implements ContextStorage {
           tokenEstimate,
           group.earliest
         );
-
-        // Delete originals and their vector rows (compacted replacement inserted above)
-        const idList = group.ids.split(',').map(Number);
+        const idList = group.ids.split(",").map(Number);
         if (deleteVec) {
           deleteVec.run(JSON.stringify(idList));
         }
         deleteOriginals.run(JSON.stringify(idList));
-
         compactedCount++;
         originalsRemoved += group.cnt;
       }
     });
-
     compact();
-
     return { compacted: compactedCount, originals: originalsRemoved };
   }
-
-  async getUnexportedHighImportance(
-    project: string,
-    sessionId?: string,
-    minScore: number = 0.65
-  ): Promise<Observation[]> {
-    let sql: string;
-    let params: unknown[];
-
+  async getUnexportedHighImportance(project, sessionId, minScore = 0.65) {
+    let sql;
+    let params;
     if (sessionId) {
       sql = `
         SELECT * FROM observations
@@ -1402,7 +992,7 @@ export class SQLiteStorage implements ContextStorage {
           AND importance_score >= ? AND exported_at IS NULL
         ORDER BY created_at ASC
       `;
-      params = [project + '%', sessionId, minScore];
+      params = [project + "%", sessionId, minScore];
     } else {
       sql = `
         SELECT * FROM observations
@@ -1410,39 +1000,32 @@ export class SQLiteStorage implements ContextStorage {
           AND importance_score >= ? AND exported_at IS NULL
         ORDER BY created_at ASC
       `;
-      params = [project + '%', minScore];
+      params = [project + "%", minScore];
     }
-
-    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-    return rows.map(row => this.mapRow(row));
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
   }
-
-  async markExported(ids: number[]): Promise<void> {
-    if (ids.length === 0) return;
-    const now = new Date().toISOString();
+  async markExported(ids) {
+    if (ids.length === 0)
+      return;
+    const now = (/* @__PURE__ */ new Date()).toISOString();
     const stmt = this.db.prepare(
       `UPDATE observations SET exported_at = ? WHERE id IN (SELECT value FROM json_each(?))`
     );
     stmt.run(now, JSON.stringify(ids));
   }
-
   /**
    * Migration: add embedding column and vec0 virtual table for vector search.
    * Only creates the vec0 table if sqlite-vec loaded successfully.
    */
-  private migrateAddVectorSearch(): void {
-    // Add embedding BLOB column if it doesn't exist
-    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map(c => c.name));
-
-    if (!columnNames.has('embedding')) {
+  migrateAddVectorSearch() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("embedding")) {
       this.db.exec(`ALTER TABLE observations ADD COLUMN embedding BLOB`);
     }
-
-    if (!this.vecEnabled) return;
-
-    // Create vec0 virtual table for 384-dimensional float vectors
-    // vec0 tables use CREATE VIRTUAL TABLE which is idempotent-safe
+    if (!this.vecEnabled)
+      return;
     try {
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS vec_observations USING vec0(
@@ -1451,15 +1034,12 @@ export class SQLiteStorage implements ContextStorage {
         )
       `);
     } catch {
-      // vec0 table creation failed — disable vector search
       this.vecEnabled = false;
     }
   }
-
-  isVectorSearchEnabled(): Promise<boolean> {
+  isVectorSearchEnabled() {
     return Promise.resolve(this.vecEnabled);
   }
-
   /**
    * Layer 2 semantic dedup: cosine similarity check against already-embedded corpus.
    * Only runs when sqlite-vec is enabled. Returns true if a near-duplicate exists.
@@ -1468,21 +1048,10 @@ export class SQLiteStorage implements ContextStorage {
    * When a near-duplicate is detected, the caller demotes importance rather than deleting,
    * preserving relational integrity (observation_relationships may reference this row).
    */
-  private checkSemanticDuplicate(
-    embedding: Float32Array,
-    project: string,
-    id: number,
-    threshold: number = 0.85
-  ): boolean {
-    if (!this.vecEnabled) return false;
-
+  checkSemanticDuplicate(embedding, project, id, threshold = 0.85) {
+    if (!this.vecEnabled)
+      return false;
     const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
-
-    // Fetch the nearest neighbor from vec_observations, scoped to same project,
-    // excluding the observation itself (it may already have an old embedding).
-    // k=10 gives a pool large enough to cover same-project results after the
-    // JOIN + exclusion filter. k=1 would only return the global nearest neighbor,
-    // which may be from a different project and get filtered out entirely.
     const row = this.db.prepare(`
       SELECT v.distance
       FROM vec_observations v
@@ -1492,58 +1061,41 @@ export class SQLiteStorage implements ContextStorage {
         AND v.observation_id != CAST(? AS INTEGER)
       ORDER BY v.distance ASC
       LIMIT 1
-    `).get(embeddingBuf, 10, project + '%', id) as { distance: number } | undefined;
-
-    if (!row) return false;
+    `).get(embeddingBuf, 10, project + "%", id);
+    if (!row)
+      return false;
     return l2DistanceToCosine(row.distance) >= threshold;
   }
-
-  async saveEmbedding(id: number, embedding: Float32Array): Promise<void> {
+  async saveEmbedding(id, embedding) {
     if (!this.vecEnabled) {
-      throw new Error('Vector search is not enabled (sqlite-vec not loaded)');
+      throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
     }
-
-    // Layer 2: semantic dedup — demote near-duplicates before indexing.
-    // Runs here rather than in save() because the embedding model isn't loaded
-    // in the hook process (would add >100ms latency per capture).
     const obs = this.db.prepare(
       `SELECT project FROM observations WHERE id = ?`
-    ).get(id) as { project: string } | undefined;
-
+    ).get(id);
     if (obs && this.checkSemanticDuplicate(embedding, obs.project, id)) {
       this.db.prepare(
         `UPDATE observations SET importance = 'low', importance_score = 0.05 WHERE id = ?`
       ).run(id);
     }
-
     const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
-
     const saveTransaction = this.db.transaction(() => {
-      // Save embedding blob on the observations row
       this.db.prepare(
         `UPDATE observations SET embedding = ? WHERE id = ?`
       ).run(embeddingBuf, id);
-
-      // Upsert into vec0 index — CAST required because vec0 only accepts
-      // SQL INTEGER types for primary keys, not JS numbers via parameters
       this.db.prepare(
         `INSERT OR REPLACE INTO vec_observations (observation_id, embedding) VALUES (CAST(? AS INTEGER), ?)`
       ).run(id, embeddingBuf);
     });
-
     saveTransaction();
   }
-
-  async vectorSearch(embedding: Float32Array, project?: string, topK: number = 10): Promise<Observation[]> {
+  async vectorSearch(embedding, project, topK = 10) {
     if (!this.vecEnabled) {
-      throw new Error('Vector search is not enabled (sqlite-vec not loaded)');
+      throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
     }
-
     const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
-
-    let sql: string;
-    let params: unknown[];
-
+    let sql;
+    let params;
     if (project) {
       sql = `
         SELECT o.*, v.distance
@@ -1553,7 +1105,7 @@ export class SQLiteStorage implements ContextStorage {
           AND o.project LIKE ?
         ORDER BY v.distance ASC
       `;
-      params = [embeddingBuf, topK, project + '%'];
+      params = [embeddingBuf, topK, project + "%"];
     } else {
       sql = `
         SELECT o.*, v.distance
@@ -1564,50 +1116,39 @@ export class SQLiteStorage implements ContextStorage {
       `;
       params = [embeddingBuf, topK];
     }
-
-    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-    return rows.map(row => {
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => {
       const obs = this.mapRow(row);
-      const distance = row.distance as number | undefined;
+      const distance = row.distance;
       if (distance != null) {
         obs.similarity_score = l2DistanceToCosine(distance);
       }
       return obs;
     });
   }
-
   /**
    * Count observations missing embeddings (efficient SQL COUNT)
    */
-  countUnembedded(project?: string): number {
-    const sql = project
-      ? `SELECT COUNT(*) as count FROM observations WHERE embedding IS NULL AND project LIKE ?`
-      : `SELECT COUNT(*) as count FROM observations WHERE embedding IS NULL`;
-
-    const row = project
-      ? this.db.prepare(sql).get(project + '%') as { count: number }
-      : this.db.prepare(sql).get() as { count: number };
-
+  countUnembedded(project) {
+    const sql = project ? `SELECT COUNT(*) as count FROM observations WHERE embedding IS NULL AND project LIKE ?` : `SELECT COUNT(*) as count FROM observations WHERE embedding IS NULL`;
+    const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
     return row.count;
   }
-
   /**
    * Migration: add embedding column and vec0 virtual table for session-level vector search.
    * Sessions get enriched text embeddings (user prompts + actions + summary).
    */
-  private migrateAddSessionVectorSearch(): void {
-    const columns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map(c => c.name));
-
-    if (!columnNames.has('embedding')) {
+  migrateAddSessionVectorSearch() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("embedding")) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN embedding BLOB`);
     }
-    if (!columnNames.has('enriched_text')) {
+    if (!columnNames.has("enriched_text")) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN enriched_text TEXT`);
     }
-
-    if (!this.vecEnabled) return;
-
+    if (!this.vecEnabled)
+      return;
     try {
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS vec_sessions USING vec0(
@@ -1616,7 +1157,6 @@ export class SQLiteStorage implements ContextStorage {
         )
       `);
     } catch {
-      // vec0 may not support TEXT primary keys — fall back to integer mapping
       try {
         this.db.exec(`
           CREATE VIRTUAL TABLE IF NOT EXISTS vec_sessions USING vec0(
@@ -1624,7 +1164,6 @@ export class SQLiteStorage implements ContextStorage {
             embedding float[384]
           )
         `);
-        // Create a mapping table for text session IDs to integer rowids
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS vec_sessions_map (
             rowid INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1632,16 +1171,13 @@ export class SQLiteStorage implements ContextStorage {
           )
         `);
       } catch {
-        // If both fail, session vector search just won't be available
-        // Observation-level vector search still works
       }
     }
   }
-
   /**
    * Migration: add file_encounter_counts table for surprise scoring.
    */
-  private migrateAddFileEncounterCounts(): void {
+  migrateAddFileEncounterCounts() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS file_encounter_counts (
         file_path TEXT NOT NULL,
@@ -1653,11 +1189,10 @@ export class SQLiteStorage implements ContextStorage {
       )
     `);
   }
-
   /**
    * Migration: add observation_relationships table for linking related observations.
    */
-  private migrateAddObservationRelationships(): void {
+  migrateAddObservationRelationships() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS observation_relationships (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1676,91 +1211,74 @@ export class SQLiteStorage implements ContextStorage {
       ON observation_relationships(source_id, target_id, relationship)
     `);
   }
-
   /**
    * Migration: add tags column to observations for domain classification.
    */
-  private migrateAddTagsColumn(): void {
-    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map(c => c.name));
-
-    if (!columnNames.has('tags')) {
+  migrateAddTagsColumn() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("tags")) {
       this.db.exec(`ALTER TABLE observations ADD COLUMN tags TEXT`);
     }
-
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_observations_tags
       ON observations(tags) WHERE tags IS NOT NULL
     `);
   }
-
   /**
    * Migration: add content_hash column for SHA256-based exact deduplication.
    * Partial index scoped by project keeps hash lookups fast without scanning NULLs.
    */
-  private migrateAddContentHash(): void {
-    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map(c => c.name));
-
-    if (!columnNames.has('content_hash')) {
+  migrateAddContentHash() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("content_hash")) {
       this.db.exec(`ALTER TABLE observations ADD COLUMN content_hash TEXT`);
     }
-
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_observations_project_hash
       ON observations(project, content_hash) WHERE content_hash IS NOT NULL
     `);
   }
-
-  private migrateAddSummaryExtended(): void {
-    const columns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map(c => c.name));
-
-    if (!columnNames.has('summary_extended')) {
+  migrateAddSummaryExtended() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("summary_extended")) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN summary_extended TEXT`);
     }
   }
-
   /**
    * Migration: add last_checkpoint_at column for periodic checkpoint tracking.
    * Stores the Unix epoch millisecond timestamp of the last checkpoint run.
    * NULL means no checkpoint has run for this session (use started_at as baseline).
    */
-  private migrateAddLastCheckpointAt(): void {
-    const columns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map(c => c.name));
-
-    if (!columnNames.has('last_checkpoint_at')) {
+  migrateAddLastCheckpointAt() {
+    const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("last_checkpoint_at")) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN last_checkpoint_at INTEGER`);
     }
   }
-
-  async saveSessionEmbedding(sessionId: string, embedding: Float32Array, enrichedText: string): Promise<void> {
+  async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
-      throw new Error('Vector search is not enabled (sqlite-vec not loaded)');
+      throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
     }
-
     const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
-
     const saveTransaction = this.db.transaction(() => {
-      // Save embedding + enriched text on the sessions row
       this.db.prepare(
         `UPDATE sessions SET embedding = ?, enriched_text = ? WHERE id = ?`
       ).run(embeddingBuf, enrichedText, sessionId);
-
-      // Try text PK first (vec_sessions with TEXT PRIMARY KEY)
       try {
         this.db.prepare(
           `INSERT OR REPLACE INTO vec_sessions (session_id, embedding) VALUES (?, ?)`
         ).run(sessionId, embeddingBuf);
       } catch {
-        // Fall back to integer mapping approach
         this.db.prepare(
           `INSERT OR IGNORE INTO vec_sessions_map (session_id) VALUES (?)`
         ).run(sessionId);
         const mapRow = this.db.prepare(
           `SELECT rowid FROM vec_sessions_map WHERE session_id = ?`
-        ).get(sessionId) as { rowid: number } | undefined;
+        ).get(sessionId);
         if (mapRow) {
           this.db.prepare(
             `INSERT OR REPLACE INTO vec_sessions (session_rowid, embedding) VALUES (CAST(? AS INTEGER), ?)`
@@ -1768,23 +1286,17 @@ export class SQLiteStorage implements ContextStorage {
         }
       }
     });
-
     saveTransaction();
   }
-
-  async vectorSearchSessions(embedding: Float32Array, project?: string, topK: number = 10): Promise<Session[]> {
+  async vectorSearchSessions(embedding, project, topK = 10) {
     if (!this.vecEnabled) {
-      throw new Error('Vector search is not enabled (sqlite-vec not loaded)');
+      throw new Error("Vector search is not enabled (sqlite-vec not loaded)");
     }
-
     const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
-
-    // Try text PK approach first
-    let rows: Array<Record<string, unknown>>;
+    let rows;
     try {
-      let sql: string;
-      let params: unknown[];
-
+      let sql;
+      let params;
       if (project) {
         sql = `
           SELECT s.*, v.distance
@@ -1794,7 +1306,7 @@ export class SQLiteStorage implements ContextStorage {
             AND s.project LIKE ?
           ORDER BY v.distance ASC
         `;
-        params = [embeddingBuf, topK, project + '%'];
+        params = [embeddingBuf, topK, project + "%"];
       } else {
         sql = `
           SELECT s.*, v.distance
@@ -1805,13 +1317,10 @@ export class SQLiteStorage implements ContextStorage {
         `;
         params = [embeddingBuf, topK];
       }
-
-      rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+      rows = this.db.prepare(sql).all(...params);
     } catch {
-      // Fall back to integer mapping approach
-      let sql: string;
-      let params: unknown[];
-
+      let sql;
+      let params;
       if (project) {
         sql = `
           SELECT s.*, v.distance
@@ -1822,7 +1331,7 @@ export class SQLiteStorage implements ContextStorage {
             AND s.project LIKE ?
           ORDER BY v.distance ASC
         `;
-        params = [embeddingBuf, topK, project + '%'];
+        params = [embeddingBuf, topK, project + "%"];
       } else {
         sql = `
           SELECT s.*, v.distance
@@ -1834,40 +1343,29 @@ export class SQLiteStorage implements ContextStorage {
         `;
         params = [embeddingBuf, topK];
       }
-
-      rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+      rows = this.db.prepare(sql).all(...params);
     }
-
-    return rows.map(row => {
-      const distance = row.distance as number | undefined;
+    return rows.map((row) => {
+      const distance = row.distance;
       return {
-        id: row.id as string,
-        project: row.project as string,
-        started_at: row.started_at as string,
-        ended_at: (row.ended_at as string) || undefined,
-        summary: (row.summary as string) || undefined,
-        status: row.status as 'active' | 'complete',
-        similarity_score: distance != null ? l2DistanceToCosine(distance) : undefined,
+        id: row.id,
+        project: row.project,
+        started_at: row.started_at,
+        ended_at: row.ended_at || void 0,
+        summary: row.summary || void 0,
+        status: row.status,
+        similarity_score: distance != null ? l2DistanceToCosine(distance) : void 0
       };
     });
   }
-
-  countUnembeddedSessions(project?: string): Promise<number> {
-    const sql = project
-      ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?`
-      : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete'`;
-
-    const row = project
-      ? this.db.prepare(sql).get(project + '%') as { count: number }
-      : this.db.prepare(sql).get() as { count: number };
-
+  countUnembeddedSessions(project) {
+    const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete'`;
+    const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
     return Promise.resolve(row.count);
   }
-
-  async getUnembeddedSessions(limit: number = 50, project?: string): Promise<Session[]> {
-    let sql: string;
-    let params: unknown[];
-
+  async getUnembeddedSessions(limit = 50, project) {
+    let sql;
+    let params;
     if (project) {
       sql = `
         SELECT * FROM sessions
@@ -1875,7 +1373,7 @@ export class SQLiteStorage implements ContextStorage {
         ORDER BY started_at DESC
         LIMIT ?
       `;
-      params = [project + '%', limit];
+      params = [project + "%", limit];
     } else {
       sql = `
         SELECT * FROM sessions
@@ -1885,30 +1383,19 @@ export class SQLiteStorage implements ContextStorage {
       `;
       params = [limit];
     }
-
-    const rows = this.db.prepare(sql).all(...params) as Array<{
-      id: string;
-      project: string;
-      started_at: string;
-      ended_at: string | null;
-      summary: string | null;
-      status: 'active' | 'complete';
-    }>;
-
-    return rows.map(row => ({
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => ({
       id: row.id,
       project: row.project,
       started_at: row.started_at,
-      ended_at: row.ended_at || undefined,
-      summary: row.summary || undefined,
-      status: row.status,
+      ended_at: row.ended_at || void 0,
+      summary: row.summary || void 0,
+      status: row.status
     }));
   }
-
-  async getUnembeddedObservations(limit: number = 100, project?: string): Promise<Observation[]> {
-    let sql: string;
-    let params: unknown[];
-
+  async getUnembeddedObservations(limit = 100, project) {
+    let sql;
+    let params;
     if (project) {
       sql = `
         SELECT * FROM observations
@@ -1916,7 +1403,7 @@ export class SQLiteStorage implements ContextStorage {
         ORDER BY created_at DESC
         LIMIT ?
       `;
-      params = [project + '%', limit];
+      params = [project + "%", limit];
     } else {
       sql = `
         SELECT * FROM observations
@@ -1926,86 +1413,62 @@ export class SQLiteStorage implements ContextStorage {
       `;
       params = [limit];
     }
-
-    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-    return rows.map(row => this.mapRow(row));
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
   }
-
   /**
    * Get recent sessions with their observations, grouped for display.
    */
-  async getRecentSessionsWithObservations(
-    project: string,
-    sessionLimit: number = 10
-  ): Promise<Array<{ session: Session; observations: Observation[] }>> {
+  async getRecentSessionsWithObservations(project, sessionLimit = 10) {
     const sessions = await this.getRecentSessions(project, sessionLimit);
-    const result: Array<{ session: Session; observations: Observation[] }> = [];
-
+    const result = [];
     for (const session of sessions) {
       const observations = await this.getSessionObservations(session.id);
       result.push({ session, observations });
     }
-
     return result;
   }
-
   /**
    * Increment file encounter count and return the new count.
    * Uses upsert for atomic increment — sub-millisecond on primary key lookup.
    */
-  incrementFileEncounter(filePath: string, project: string, toolName: string): Promise<number> {
-    const now = new Date().toISOString();
-
-    // Upsert + RETURNING in one statement (SQLite 3.35+)
+  incrementFileEncounter(filePath, project, toolName) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
     const row = this.db.prepare(`
       INSERT INTO file_encounter_counts (file_path, project, tool_name, encounter_count, last_seen)
       VALUES (?, ?, ?, 1, ?)
       ON CONFLICT(file_path, project, tool_name)
       DO UPDATE SET encounter_count = encounter_count + 1, last_seen = ?
       RETURNING encounter_count
-    `).get(filePath, project, toolName, now, now) as { encounter_count: number } | undefined;
-
-    // For surprise scoring, use the 7-day windowed count rather than the lifetime total.
-    // This way files you haven't touched in a while feel novel again.
+    `).get(filePath, project, toolName, now, now);
     const recent = this.db.prepare(`
       SELECT COUNT(*) as cnt FROM observations
       WHERE project = ? AND files_touched LIKE ? ESCAPE '\\' AND created_at > datetime('now', '-7 days')
-    `).get(project, `%${filePath.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')}%`) as { cnt: number };
-
-    // Return the higher-signal windowed count for scoring, but the lifetime
-    // counter is still maintained in file_encounter_counts for analytics
+    `).get(project, `%${filePath.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
     return Promise.resolve(recent.cnt);
   }
-
   /**
    * Infer and store relationships for a newly inserted observation.
    * Called from save() after INSERT — keeps relationship inference passive.
    */
-  private inferRelationships(observationId: number, observation: Omit<Observation, 'id'>): void {
-    const now = new Date().toISOString();
-
-    // 1. followed_by: link to the immediately preceding observation in this session
+  inferRelationships(observationId, observation) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
     const previous = this.db.prepare(`
       SELECT id FROM observations
       WHERE session_id = ? AND id != ?
       ORDER BY created_at DESC
       LIMIT 1
-    `).get(observation.session_id, observationId) as { id: number } | undefined;
-
+    `).get(observation.session_id, observationId);
     if (previous) {
       this.db.prepare(`
         INSERT OR IGNORE INTO observation_relationships (source_id, target_id, relationship, created_at)
         VALUES (?, ?, 'followed_by', ?)
       `).run(previous.id, observationId, now);
     }
-
-    // 2. same_file: link to recent observations that touch the same files
     if (observation.files_touched.length > 0) {
-      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1e3).toISOString();
       for (const file of observation.files_touched) {
-        // Escape the file path for LIKE pattern (the file is stored in a JSON array)
-        const likePattern = `%${file.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
+        const likePattern = `%${file.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
         const matches = this.db.prepare(`
           SELECT id FROM observations
           WHERE project = ? AND id != ?
@@ -2013,8 +1476,7 @@ export class SQLiteStorage implements ContextStorage {
             AND created_at > ?
           ORDER BY created_at DESC
           LIMIT 5
-        `).all(observation.project, observationId, likePattern, cutoff) as Array<{ id: number }>;
-
+        `).all(observation.project, observationId, likePattern, cutoff);
         for (const match of matches) {
           this.db.prepare(`
             INSERT OR IGNORE INTO observation_relationships (source_id, target_id, relationship, created_at)
@@ -2024,16 +1486,14 @@ export class SQLiteStorage implements ContextStorage {
       }
     }
   }
-
   /**
    * Get observations related to a given observation via inferred relationships.
    */
-  getRelatedObservations(observationId: number, types?: RelationshipType[], limit: number = 10): Promise<Observation[]> {
-    let sql: string;
-    let params: unknown[];
-
+  getRelatedObservations(observationId, types, limit = 10) {
+    let sql;
+    let params;
     if (types && types.length > 0) {
-      const placeholders = types.map(() => '?').join(', ');
+      const placeholders = types.map(() => "?").join(", ");
       sql = `
         SELECT DISTINCT o.* FROM observations o
         INNER JOIN observation_relationships r
@@ -2055,11 +1515,9 @@ export class SQLiteStorage implements ContextStorage {
       `;
       params = [observationId, observationId, limit];
     }
-
-    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-    return Promise.resolve(rows.map(row => this.mapRow(row)));
+    const rows = this.db.prepare(sql).all(...params);
+    return Promise.resolve(rows.map((row) => this.mapRow(row)));
   }
-
   /**
    * Get prior observations about a specific file from previous sessions.
    *
@@ -2067,19 +1525,9 @@ export class SQLiteStorage implements ContextStorage {
    * filtered to file-operation tools (Read, Edit, Write) from sessions other
    * than the current one. Results ordered by recency.
    */
-  getFileHistory(
-    filePath: string,
-    projectPrefix: string,
-    excludeSessionId: string,
-    limit: number
-  ): Promise<Observation[]> {
-    // Escape file path for LIKE pattern matching
-    const escapedPath = filePath
-      .replace(/\\/g, '\\\\')
-      .replace(/%/g, '\\%')
-      .replace(/_/g, '\\_');
+  getFileHistory(filePath, projectPrefix, excludeSessionId, limit) {
+    const escapedPath = filePath.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
     const likePattern = `%${escapedPath}%`;
-
     const sql = `
       SELECT * FROM observations
       WHERE project LIKE ?
@@ -2089,17 +1537,14 @@ export class SQLiteStorage implements ContextStorage {
       ORDER BY created_at DESC
       LIMIT ?
     `;
-
     const rows = this.db.prepare(sql).all(
-      projectPrefix + '%',
+      projectPrefix + "%",
       excludeSessionId,
       likePattern,
       limit
-    ) as Array<Record<string, unknown>>;
-
-    return Promise.resolve(rows.map(row => this.mapRow(row)));
+    );
+    return Promise.resolve(rows.map((row) => this.mapRow(row)));
   }
-
   /**
    * Check whether the current session already has an observation touching the
    * given file. Uses a single indexed SQL query instead of fetching all session
@@ -2108,18 +1553,196 @@ export class SQLiteStorage implements ContextStorage {
    * @param sessionId - Session ID to check
    * @param likePattern - LIKE-escaped pattern for the file path (e.g. "%file.ts%")
    */
-  async hasSessionSeenFile(sessionId: string, likePattern: string): Promise<boolean> {
+  async hasSessionSeenFile(sessionId, likePattern) {
     const row = this.db.prepare(`
       SELECT 1 FROM observations
       WHERE session_id = ?
         AND files_touched LIKE ? ESCAPE '\\'
       LIMIT 1
-    `).get(sessionId, likePattern) as Record<string, unknown> | undefined;
-    return row !== undefined;
+    `).get(sessionId, likePattern);
+    return row !== void 0;
   }
-
-  close(): Promise<void> {
+  close() {
     this.db.close();
     return Promise.resolve();
   }
+};
+
+// src/utils/env.ts
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir as homedir2 } from "node:os";
+function loadDotEnv() {
+  const envPath = join(homedir2(), ".claude-context", ".env");
+  try {
+    const content = readFileSync(envPath, "utf8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#"))
+        continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx < 1)
+        continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      let value = trimmed.slice(eqIdx + 1).trim();
+      if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+        value = value.slice(1, -1);
+      }
+      if (key && !(key in process.env)) {
+        process.env[key] = value;
+      }
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.error("[context-manager] Warning: could not read ~/.claude-context/.env:", err instanceof Error ? err.message : String(err));
+    }
+  }
 }
+
+// src/utils/logger.ts
+import { appendFileSync, mkdirSync as mkdirSync2, statSync, readFileSync as readFileSync2, writeFileSync } from "fs";
+import { join as join2 } from "path";
+import { homedir as homedir3 } from "os";
+var LOG_DIR = join2(homedir3(), ".claude-context", "logs");
+var MAX_LOG_SIZE = 1 * 1024 * 1024;
+var KEEP_SIZE = 500 * 1024;
+function isDebugEnabled() {
+  return process.env.CONTEXT_MANAGER_DEBUG === "1";
+}
+function rotateIfNeeded(logFile) {
+  try {
+    const stats = statSync(logFile);
+    if (stats.size > MAX_LOG_SIZE) {
+      const content = readFileSync2(logFile, "utf8");
+      const trimmed = content.slice(content.length - KEEP_SIZE);
+      const firstNewline = trimmed.indexOf("\n");
+      writeFileSync(logFile, firstNewline >= 0 ? trimmed.slice(firstNewline + 1) : trimmed);
+    }
+  } catch {
+  }
+}
+function createDebugLogger(logFileName) {
+  const logFile = join2(LOG_DIR, logFileName);
+  return (label, data) => {
+    if (!isDebugEnabled())
+      return;
+    try {
+      mkdirSync2(LOG_DIR, { recursive: true });
+      rotateIfNeeded(logFile);
+      const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+      const entry = data !== void 0 ? `[${timestamp}] ${label}: ${typeof data === "string" ? data : JSON.stringify(data, null, 2)}
+` : `[${timestamp}] ${label}
+`;
+      appendFileSync(logFile, entry);
+    } catch {
+    }
+  };
+}
+
+// plugin/hooks/file-context.ts
+import path2 from "path";
+var debugLog = createDebugLogger("file-context-hook-debug.log");
+async function readStdin() {
+  return new Promise((resolve) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => data += chunk);
+    process.stdin.on("end", () => resolve(data));
+  });
+}
+function writeResponse(data) {
+  return new Promise((resolve, reject) => {
+    const ok = process.stdout.write(JSON.stringify(data) + "\n");
+    if (ok) {
+      resolve();
+    } else {
+      process.stdout.once("drain", resolve);
+      process.stdout.once("error", reject);
+    }
+  });
+}
+function formatDate(isoString) {
+  try {
+    const d = new Date(isoString);
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+async function main() {
+  loadDotEnv();
+  const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
+  if (remoteUrl) {
+    debugLog("REMOTE_MODE_SKIP", { reason: "file-context injection skipped in remote mode" });
+    await writeResponse({});
+    return;
+  }
+  let storage = null;
+  try {
+    const inputStr = await readStdin();
+    let rawInput;
+    try {
+      rawInput = JSON.parse(inputStr);
+    } catch {
+      debugLog("PARSE_ERROR", "invalid JSON input");
+      await writeResponse({});
+      return;
+    }
+    const obj = typeof rawInput === "object" && rawInput !== null ? rawInput : {};
+    const sessionId = typeof obj.session_id === "string" ? obj.session_id.slice(0, 256) : "";
+    const cwd = typeof obj.cwd === "string" ? obj.cwd.slice(0, 1024) : "";
+    const toolName = typeof obj.tool_name === "string" ? obj.tool_name : "";
+    if (toolName !== "Read") {
+      await writeResponse({});
+      return;
+    }
+    const toolInput = typeof obj.tool_input === "object" && obj.tool_input !== null ? obj.tool_input : {};
+    const filePath = typeof toolInput.file_path === "string" ? toolInput.file_path : "";
+    if (!sessionId || !cwd || !filePath) {
+      await writeResponse({});
+      return;
+    }
+    debugLog("FILE_CONTEXT_REQUEST", { sessionId, cwd, filePath });
+    storage = new SQLiteStorage();
+    await storage.initialize();
+    const escapedPath = filePath.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+    const likePattern = `%${escapedPath}%`;
+    const alreadySeen = await storage.hasSessionSeenFile(sessionId, likePattern);
+    if (alreadySeen) {
+      debugLog("FILE_CONTEXT_SKIP_ALREADY_SEEN", { filePath, sessionId });
+      await writeResponse({});
+      return;
+    }
+    const history = await storage.getFileHistory(filePath, cwd, sessionId, 3);
+    if (history.length < 2) {
+      debugLog("FILE_CONTEXT_SKIP_INSUFFICIENT", { sessionId, filePath, count: history.length });
+      await writeResponse({});
+      return;
+    }
+    const fileName = path2.basename(filePath);
+    const entries = history.map((obs) => {
+      const dateLabel = formatDate(obs.created_at);
+      const raw = obs.summary.replace(/\n+/g, " ").trim();
+      const snippet = raw.length > 80 ? raw.substring(0, 80) + "..." : raw;
+      return dateLabel ? `${snippet} (${dateLabel})` : snippet;
+    });
+    const count = history.length;
+    const sessionWord = count === 1 ? "session" : "sessions";
+    const context = `[file history: ${fileName} - ${count} prior ${sessionWord}: ${entries.join(", ")}]`;
+    debugLog("FILE_CONTEXT_INJECT", { sessionId, filePath, count });
+    await writeResponse({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        additionalContext: context
+      }
+    });
+  } catch (error) {
+    debugLog("FILE_CONTEXT_ERROR", String(error));
+    console.error("[context-manager] file-context hook error:", error);
+    await writeResponse({});
+  } finally {
+    if (storage)
+      await storage.close();
+  }
+}
+main();

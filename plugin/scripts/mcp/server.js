@@ -23693,6 +23693,50 @@ ${storedOutput}`;
     const rows = this.db.prepare(sql).all(...params);
     return Promise.resolve(rows.map((row) => this.mapRow(row)));
   }
+  /**
+   * Get prior observations about a specific file from previous sessions.
+   *
+   * Searches files_touched (JSON array stored as text) for the file path,
+   * filtered to file-operation tools (Read, Edit, Write) from sessions other
+   * than the current one. Results ordered by recency.
+   */
+  getFileHistory(filePath, projectPrefix, excludeSessionId, limit) {
+    const escapedPath = filePath.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+    const likePattern = `%${escapedPath}%`;
+    const sql = `
+      SELECT * FROM observations
+      WHERE project LIKE ?
+        AND session_id != ?
+        AND files_touched LIKE ? ESCAPE '\\'
+        AND tool_name IN ('Read', 'Edit', 'Write')
+      ORDER BY created_at DESC
+      LIMIT ?
+    `;
+    const rows = this.db.prepare(sql).all(
+      projectPrefix + "%",
+      excludeSessionId,
+      likePattern,
+      limit
+    );
+    return Promise.resolve(rows.map((row) => this.mapRow(row)));
+  }
+  /**
+   * Check whether the current session already has an observation touching the
+   * given file. Uses a single indexed SQL query instead of fetching all session
+   * observations into application memory.
+   *
+   * @param sessionId - Session ID to check
+   * @param likePattern - LIKE-escaped pattern for the file path (e.g. "%file.ts%")
+   */
+  async hasSessionSeenFile(sessionId, likePattern) {
+    const row = this.db.prepare(`
+      SELECT 1 FROM observations
+      WHERE session_id = ?
+        AND files_touched LIKE ? ESCAPE '\\'
+      LIMIT 1
+    `).get(sessionId, likePattern);
+    return row !== void 0;
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -32955,7 +32999,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.33" : "unknown"
+      version: true ? "0.8.34" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."

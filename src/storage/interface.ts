@@ -394,6 +394,38 @@ export interface ContextStorage {
   getRelatedObservations(observationId: number, types?: RelationshipType[], limit?: number): Promise<Observation[]>;
 
   /**
+   * Get prior observations about a specific file from previous sessions.
+   *
+   * Used by the PreToolUse file-context hook to inject compact history when
+   * Claude opens a file it has worked on before. Only returns observations
+   * from sessions other than the current one, ordered by recency.
+   *
+   * Searches files_touched (JSON array stored as text) — not summary — for
+   * the file path.
+   *
+   * @param filePath - Absolute file path to look up
+   * @param projectPrefix - Project path prefix for scoped search
+   * @param excludeSessionId - Session ID to exclude (current session)
+   * @param limit - Maximum results (default: 3)
+   */
+  getFileHistory(
+    filePath: string,
+    projectPrefix: string,
+    excludeSessionId: string,
+    limit: number
+  ): Promise<Observation[]>;
+
+  /**
+   * Check whether the current session already has an observation touching the
+   * given file. Uses a single indexed SQL query instead of loading all session
+   * observations into memory. Used by the file-context hook Guard 1.
+   *
+   * @param sessionId - Session ID to check
+   * @param likePattern - LIKE-escaped pattern for the file path (e.g. "%file.ts%")
+   */
+  hasSessionSeenFile(sessionId: string, likePattern: string): Promise<boolean>;
+
+  /**
    * Close storage connection
    */
   close(): Promise<void>;

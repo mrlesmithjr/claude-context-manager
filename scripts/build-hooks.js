@@ -137,7 +137,8 @@ await build({
     'plugin/hooks/context-inject.ts',
     'plugin/hooks/capture-prompt.ts',
     'plugin/hooks/capture-tool.ts',
-    'plugin/hooks/session-end.ts'
+    'plugin/hooks/session-end.ts',
+    'plugin/hooks/file-context.ts'
   ],
 });
 console.log('[build-hooks] Hooks built');

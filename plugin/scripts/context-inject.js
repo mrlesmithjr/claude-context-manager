@@ -1518,6 +1518,50 @@ ${storedOutput}`;
     const rows = this.db.prepare(sql).all(...params);
     return Promise.resolve(rows.map((row) => this.mapRow(row)));
   }
+  /**
+   * Get prior observations about a specific file from previous sessions.
+   *
+   * Searches files_touched (JSON array stored as text) for the file path,
+   * filtered to file-operation tools (Read, Edit, Write) from sessions other
+   * than the current one. Results ordered by recency.
+   */
+  getFileHistory(filePath, projectPrefix, excludeSessionId, limit) {
+    const escapedPath = filePath.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+    const likePattern = `%${escapedPath}%`;
+    const sql = `
+      SELECT * FROM observations
+      WHERE project LIKE ?
+        AND session_id != ?
+        AND files_touched LIKE ? ESCAPE '\\'
+        AND tool_name IN ('Read', 'Edit', 'Write')
+      ORDER BY created_at DESC
+      LIMIT ?
+    `;
+    const rows = this.db.prepare(sql).all(
+      projectPrefix + "%",
+      excludeSessionId,
+      likePattern,
+      limit
+    );
+    return Promise.resolve(rows.map((row) => this.mapRow(row)));
+  }
+  /**
+   * Check whether the current session already has an observation touching the
+   * given file. Uses a single indexed SQL query instead of fetching all session
+   * observations into application memory.
+   *
+   * @param sessionId - Session ID to check
+   * @param likePattern - LIKE-escaped pattern for the file path (e.g. "%file.ts%")
+   */
+  async hasSessionSeenFile(sessionId, likePattern) {
+    const row = this.db.prepare(`
+      SELECT 1 FROM observations
+      WHERE session_id = ?
+        AND files_touched LIKE ? ESCAPE '\\'
+      LIMIT 1
+    `).get(sessionId, likePattern);
+    return row !== void 0;
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -1727,11 +1771,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.33") {
+    if (installedVersion !== "0.8.34") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.33"}
+   Source:    v${"0.8.34"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -1786,7 +1830,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.33"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.34"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats.");
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -1815,7 +1859,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.33"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.34"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
