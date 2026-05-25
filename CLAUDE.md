@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 25, 2026 (v0.8.40)
+**Last Updated**: May 25, 2026 (v0.8.41)
 
 ---
 
@@ -201,6 +201,8 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 19 | PreToolUse file context | Injects prior session history on first Read per file per session (min 2 prior obs) |
 | 20 | Stale session GC | Auto-runs on SessionStart; marks sessions inactive > 2h as `complete` |
 | 21 | Manual write path | `context_add` MCP tool; daily manual session per project; `source='manual'` in sessions; no tag inference from free text |
+| 22 | Bash skip threshold | Bash observations scoring < 0.15 are dropped before DB write; gate runs after all scoring adjustments so error-signal commands (score boosted +0.25) are preserved |
+| 23 | MCP summary cap | MCP tool summaries truncated to ~40 tokens (160 chars) when importance < 0.3; observation still stored for relationship tracking and dedup |
 
 ---
 
