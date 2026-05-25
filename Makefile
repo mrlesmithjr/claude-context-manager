@@ -17,9 +17,14 @@ E2E_IMAGE        := context-manager-e2e:latest
 
 SERVER_ENV       := $(HOME)/.claude-context/.env
 SERVER_COMPOSE   := docker compose -f docker-compose.server.yml
+LAUNCHD_LABEL    := com.mrlesmithjr.context-manager
+LAUNCHD_PLIST    := $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL).plist
+NODE_BIN         := $(shell which node)
 
 .PHONY: build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
-        server-init server-start server-stop server-logs server-status server-env
+        server-init server-start server-stop server-logs server-status server-env \
+        server-native-start server-native-stop server-native-status \
+        server-launchd-install server-launchd-uninstall server-launchd-status
 
 # --- Build ---
 
@@ -128,3 +133,87 @@ server-status:
 	@curl -sf http://localhost:4000/health \
 		&& echo "  context-manager server is healthy at http://localhost:4000" \
 		|| echo "  context-manager server is not responding on http://localhost:4000"
+
+# --- Native server (macOS recommended) ---
+#
+# On macOS, Docker Desktop uses a Linux VM with VirtioFS for bind mounts.
+# SQLite WAL mode requires POSIX advisory locks that do not work correctly
+# across this virtualization layer, causing "database disk image is malformed"
+# errors. Running the server natively avoids this entirely.
+#
+# Use 'make server-launchd-install' for persistent startup across reboots.
+# Use 'make server-native-start' for a one-shot foreground-safe start.
+
+# Start the native server in the background (one-shot, no persistence).
+server-native-start: server-init build
+	@if lsof -i :4000 >/dev/null 2>&1; then \
+		echo "[native] Port 4000 already in use -- server may already be running."; \
+		echo "  Check: make server-native-status"; \
+	else \
+		source "$(SERVER_ENV)" && \
+		CONTEXT_MANAGER_DB="$(HOME)/.claude-context/context.db" \
+		CONTEXT_MANAGER_TOKEN="$$CONTEXT_MANAGER_TOKEN" \
+		CONTEXT_MANAGER_PORT=4000 \
+		CONTEXT_MANAGER_HOST=127.0.0.1 \
+		LOG_LEVEL=warn \
+		nohup "$(NODE_BIN)" "$(CURDIR)/test/e2e/start-server.mjs" \
+			>> "$(HOME)/.claude-context/server.log" 2>&1 & \
+		echo "$$!" > "$(HOME)/.claude-context/server.pid"; \
+		sleep 1; \
+		make server-native-status; \
+	fi
+
+# Stop the native background server.
+server-native-stop:
+	@if [ -f "$(HOME)/.claude-context/server.pid" ]; then \
+		PID=$$(cat "$(HOME)/.claude-context/server.pid"); \
+		if kill -0 "$$PID" 2>/dev/null; then \
+			kill "$$PID" && echo "[native] Stopped context-manager server (PID $$PID)"; \
+		else \
+			echo "[native] Server PID $$PID is not running."; \
+		fi; \
+		rm -f "$(HOME)/.claude-context/server.pid"; \
+	else \
+		echo "[native] No server.pid found -- trying lsof fallback."; \
+		lsof -i :4000 -t | xargs kill 2>/dev/null && echo "[native] Killed process on :4000" || true; \
+	fi
+
+# Check native server health.
+server-native-status:
+	@curl -sf http://localhost:4000/health \
+		&& echo "  context-manager server is healthy at http://localhost:4000 (native)" \
+		|| echo "  context-manager server is not responding on http://localhost:4000"
+
+# Install launchd agent for automatic startup on macOS login.
+# Reads token from ~/.claude-context/.env. Must run 'make server-init' first.
+server-launchd-install: server-init build
+	@if [ ! -f "$(SERVER_ENV)" ]; then \
+		echo "ERROR: $(SERVER_ENV) not found. Run 'make server-init' first."; exit 1; \
+	fi
+	@source "$(SERVER_ENV)" && TOKEN="$$CONTEXT_MANAGER_TOKEN" && \
+	sed \
+		-e "s|{{NODE_PATH}}|$(NODE_BIN)|g" \
+		-e "s|{{PROJECT_ROOT}}|$(CURDIR)|g" \
+		-e "s|{{HOME}}|$(HOME)|g" \
+		-e "s|{{TOKEN}}|$$TOKEN|g" \
+		scripts/com.mrlesmithjr.context-manager.plist.template \
+		> "$(LAUNCHD_PLIST)" && \
+	launchctl load "$(LAUNCHD_PLIST)" && \
+	echo "[launchd] context-manager agent installed and started." && \
+	echo "  Plist: $(LAUNCHD_PLIST)" && \
+	echo "  Logs:  $(HOME)/.claude-context/server.log" && \
+	sleep 2 && make server-native-status
+
+# Remove launchd agent.
+server-launchd-uninstall:
+	@if [ -f "$(LAUNCHD_PLIST)" ]; then \
+		launchctl unload "$(LAUNCHD_PLIST)" 2>/dev/null || true; \
+		rm -f "$(LAUNCHD_PLIST)"; \
+		echo "[launchd] context-manager agent removed."; \
+	else \
+		echo "[launchd] No plist found at $(LAUNCHD_PLIST)."; \
+	fi
+
+# Show launchd agent status.
+server-launchd-status:
+	@launchctl list | grep "$(LAUNCHD_LABEL)" || echo "[launchd] context-manager agent is not loaded."
