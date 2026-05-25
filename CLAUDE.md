@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 24, 2026 (v0.8.27)
+**Last Updated**: May 25, 2026 (v0.8.29)
 
 ---
 
@@ -419,6 +419,19 @@ When `CONTEXT_MANAGER_URL` is set, hooks operate as thin HTTP clients that POST 
 
 **E2E coverage:** `test/e2e/05-remote-capture.sh` (9 assertions covering session create/end, observation, prompt, export, and memory endpoints). Total: 5 scenarios, 36 assertions.
 
+### 17. Native Server on macOS (Docker incompatible)
+
+The `docker-compose.server.yml` Docker approach for local server deployment does NOT work on macOS. Docker Desktop uses a Linux VM with VirtioFS for bind mount filesystem sharing. SQLite WAL mode requires POSIX advisory file locks and shared memory (`-shm` files) that do not work correctly across this virtualization layer.
+
+Attempting to mount `~/.claude-context/` as a Docker bind mount on macOS causes:
+- `database disk image is malformed (11)` errors
+- WAL files left in inconsistent state
+- Potential corruption of page 1 (SQLite header page)
+
+**For macOS:** Use `make server-launchd-install` to run the server natively as a Node.js process. The `scripts/com.mrlesmithjr.context-manager.plist.template` is filled with `NODE_PATH`, `PROJECT_ROOT`, `HOME`, and `TOKEN` placeholders by the Makefile target, then installed to `~/Library/LaunchAgents/`.
+
+**For Linux:** Docker bind mounts use a direct filesystem passthrough without a VM layer, so SQLite WAL locking works correctly. The existing `make server-start` (docker-compose.server.yml) is the correct approach on Linux.
+
 ---
 
 ## Data Storage
@@ -504,6 +517,24 @@ make test-e2e-up   # Start E2E services only (for manual exploration)
 make test-e2e-down # Stop and remove E2E containers and ephemeral volume
 make e2e-build     # Build E2E Docker image only
 make e2e-clean     # Stop containers and remove the Docker image
+
+# Local HTTP server — Docker (Linux only; see Design Decision #17 for macOS)
+make server-init   # Generate token, write ~/.claude-context/.env (idempotent)
+make server-env    # Print env var setup instructions for Claude Code hooks
+make server-start  # Build image (if needed) and start server in background
+make server-stop   # Stop the Docker server
+make server-logs   # Tail Docker server logs
+make server-status # Health check for Docker server
+
+# Local HTTP server — native process (macOS recommended)
+make server-native-start  # Start server natively in background (reads ~/.claude-context/.env)
+make server-native-stop   # Stop native background server (uses server.pid or lsof fallback)
+make server-native-status # Health check for native server
+
+# Local HTTP server — launchd (macOS persistent startup across reboots)
+make server-launchd-install    # Fill plist template and install to ~/Library/LaunchAgents/
+make server-launchd-uninstall  # Unload and remove launchd plist
+make server-launchd-status     # Check launchd agent status via launchctl list
 ```
 
 ---

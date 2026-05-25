@@ -1,3 +1,9 @@
+# NOTE: This docker-compose file is intended for Linux deployments only.
+# On macOS, Docker Desktop uses a Linux VM with VirtioFS for bind mounts.
+# SQLite WAL mode requires POSIX advisory locks that do not work correctly
+# across this virtualization layer, causing database corruption.
+# macOS users: use 'make server-launchd-install' instead.
+#
 # context-manager HTTP MCP server — persistent local instance.
 #
 # Runs the HTTP MCP server using your existing ~/.claude-context/ data directory
