@@ -47,6 +47,10 @@ var SQLiteStorage = class {
       this.vecEnabled = false;
     }
   }
+  /** Exposed only for admin/migration tooling. Do not use in normal storage paths. */
+  get rawDb() {
+    return this.db;
+  }
   async initialize() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (

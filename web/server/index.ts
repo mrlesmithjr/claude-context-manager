@@ -16,6 +16,7 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyCors from '@fastify/cors';
 import fastifyRateLimit from '@fastify/rate-limit';
+import fastifyMultipart from '@fastify/multipart';
 import { timingSafeEqual } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -144,6 +145,11 @@ async function main() {
       .header('Content-Type', 'text/html; charset=utf-8')
       .header('Cache-Control', 'no-store')
       .send(injected);
+  });
+
+  // Multipart plugin: required for POST /api/import file upload
+  await fastify.register(fastifyMultipart, {
+    limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB cap
   });
 
   // Register API routes (pass network mode flag for scope validation)

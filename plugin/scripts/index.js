@@ -105,6 +105,10 @@ var init_sqlite = __esm({
           this.vecEnabled = false;
         }
       }
+      /** Exposed only for admin/migration tooling. Do not use in normal storage paths. */
+      get rawDb() {
+        return this.db;
+      }
       async initialize() {
         this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -63382,7 +63386,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.48" : "unknown"
+      version: true ? "0.8.49" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."

@@ -61,6 +61,11 @@ export class SQLiteStorage implements ContextStorage {
     }
   }
 
+  /** Exposed only for admin/migration tooling. Do not use in normal storage paths. */
+  get rawDb(): Database.Database {
+    return this.db;
+  }
+
   async initialize(): Promise<void> {
     // Create sessions table
     this.db.exec(`

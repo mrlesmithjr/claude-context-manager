@@ -2,8 +2,10 @@
  * API Routes for Context Manager Web Dashboard
  */
 
+import fs from 'fs';
 import type { FastifyInstance } from 'fastify';
 import type { ContextStorage } from '../../../src/storage/interface.js';
+import type { SQLiteStorage } from '../../../src/storage/sqlite.js';
 
 // Maximum lengths for string query parameters.
 // These prevent unbounded FTS5 queries and oversized project paths.
@@ -315,6 +317,129 @@ export async function registerApiRoutes(
     } catch (error) {
       fastify.log.error(error);
       reply.status(500).send({ error: 'Failed to retrieve projects' });
+    }
+  });
+
+  // POST /api/import — import a context.db file into the active database.
+  // Network mode: protected by the global Bearer auth hook in index.ts.
+  // Local mode: no auth; access is limited to processes on the local machine.
+  fastify.post('/api/import', async (request, reply) => {
+    let data: Awaited<ReturnType<typeof request.file>>;
+    try {
+      data = await request.file();
+    } catch (err: unknown) {
+      const e = err as { statusCode?: number; code?: string };
+      if (e?.statusCode === 406 || e?.code === 'FST_INVALID_MULTIPART_CONTENT_TYPE') {
+        reply.status(400).send({ error: 'Request must be multipart/form-data' });
+        return;
+      }
+      throw err;
+    }
+    if (!data) {
+      reply.status(400).send({ error: 'No file uploaded' });
+      return;
+    }
+
+    // Path uses only [0-9a-z.-] — safe for direct SQL interpolation.
+    // Do NOT add user-supplied input to this path.
+    const tmpPath = `/tmp/ctx-import-${Date.now()}-${Math.random().toString(36).slice(2)}.db`;
+
+    try {
+      // Buffer the upload so we can inspect the magic bytes before writing to disk.
+      const buf = await data.toBuffer();
+
+      // Validate SQLite magic bytes: first 16 bytes must be "SQLite format 3\0"
+      const magic = Buffer.from('SQLite format 3\x00');
+      if (buf.length < 16 || !buf.subarray(0, 16).equals(magic)) {
+        reply.status(400).send({ error: 'Uploaded file is not a valid SQLite database' });
+        return;
+      }
+
+      fs.writeFileSync(tmpPath, buf);
+
+      const db = (storage as SQLiteStorage).rawDb;
+
+      db.exec(`ATTACH DATABASE '${tmpPath}' AS src`);
+      try {
+        // Verify the source DB has the migration-added columns we SELECT from.
+        const srcCols = (db.prepare('PRAGMA src.table_info(observations)').all() as Array<{ name: string }>)
+          .map((c: { name: string }) => c.name);
+        const requiredCols = ['importance', 'importance_score', 'tags', 'content_hash'];
+        const missingCols = requiredCols.filter(c => !srcCols.includes(c));
+        if (missingCols.length > 0) {
+          reply.status(400).send({
+            error: `Source database schema is too old. Missing columns: ${missingCols.join(', ')}. ` +
+                   `Start the context manager on the source machine once to apply migrations, then re-export.`,
+          });
+          return;
+        }
+
+        // observation_relationships: skipped — integer IDs from src don't map to main IDs
+        // vec_observations / vec_sessions: skipped — virtual tables, not ATTACH-copyable
+        const results = db.transaction(() => {
+          // sessions: dedup via TEXT PRIMARY KEY (id)
+          const sessionsResult = db.prepare(`
+            INSERT OR IGNORE INTO main.sessions
+            SELECT * FROM src.sessions
+          `).run();
+
+          // observations: exclude AUTOINCREMENT id; dedup via unique partial index
+          // on (project, content_hash). Only rows with a content_hash can be safely deduped.
+          const obsResult = db.prepare(`
+            INSERT OR IGNORE INTO main.observations
+              (session_id, project, package, tool_name, summary, files_touched,
+               metadata, token_estimate, created_at, importance, importance_score,
+               tags, content_hash)
+            SELECT
+              session_id, project, package, tool_name, summary, files_touched,
+              metadata, token_estimate, created_at, importance, importance_score,
+              tags, content_hash
+            FROM src.observations
+            WHERE content_hash IS NOT NULL
+          `).run();
+
+          // user_prompts: exclude AUTOINCREMENT id; dedup by (session_id, prompt_number)
+          const promptsResult = db.prepare(`
+            INSERT OR IGNORE INTO main.user_prompts
+              (session_id, project, prompt_number, prompt_text, created_at)
+            SELECT
+              session_id, project, prompt_number, prompt_text, created_at
+            FROM src.user_prompts
+            WHERE NOT EXISTS (
+              SELECT 1 FROM main.user_prompts up2
+              WHERE up2.session_id = src.user_prompts.session_id
+                AND up2.prompt_number = src.user_prompts.prompt_number
+            )
+          `).run();
+
+          // file_encounter_counts: dedup via composite PRIMARY KEY (file_path, project, tool_name)
+          const fileCountsResult = db.prepare(`
+            INSERT OR IGNORE INTO main.file_encounter_counts
+            SELECT * FROM src.file_encounter_counts
+          `).run();
+
+          return { sessionsResult, obsResult, promptsResult, fileCountsResult };
+        })();
+
+        reply.send({
+          imported: {
+            observations: results.obsResult.changes,
+            sessions: results.sessionsResult.changes,
+            prompts: results.promptsResult.changes,
+            file_counts: results.fileCountsResult.changes,
+          },
+          skipped: ['observation_relationships', 'vec_observations', 'vec_sessions'],
+          note: 'Run context_embed in any Claude Code session to regenerate vector embeddings',
+        });
+      } finally {
+        try { db.exec('DETACH DATABASE src'); } catch { /* ignore if attach failed */ }
+      }
+    } catch (error) {
+      fastify.log.error(error);
+      reply.status(500).send({ error: 'Import failed' });
+    } finally {
+      // Always clean up the temp file regardless of success or failure
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore if file was never written */ }
     }
   });
 }
