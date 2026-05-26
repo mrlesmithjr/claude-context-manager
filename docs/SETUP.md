@@ -8,30 +8,168 @@ This guide walks you through installing and configuring claude-context-manager. 
 
 | Mode | Best for | Data lives |
 |------|----------|-----------|
-| **Local SQLite** | Single machine, simplest setup | `~/.claude-context/context.db` on your machine |
-| **Native server** (macOS) | Always-on MCP capture and web dashboard, single machine | `~/.claude-context/context.db` on your machine |
+| **Native server** (macOS, recommended) | Always-on MCP capture and web dashboard, automatic restart on login | `~/.claude-context/context.db` on your machine |
 | **Docker server** | Linux, or macOS with Docker already running | Named Docker volume, shared across restarts |
+| **Local SQLite** (advanced) | Contributors, offline/embedded operation — requires cloning the repo | `~/.claude-context/context.db` on your machine |
+
+> **Marketplace installs require a server.** Native SQLite binaries (`better-sqlite3`, `sqlite-vec`) are not bundled with the marketplace plugin. If you install via `/plugin install context-manager` without a running server, hooks will fail at startup with a message telling you to configure one. Set up Mode 1 or Mode 2 first, then install the plugin.
 
 **Quick decision:**
 
-- Just want to get started with no configuration? Use **Local SQLite**.
-- On macOS and want reliable MCP capture with automatic restart on login? Use **Native server**.
-- Want the web dashboard always available, or on Linux, or running Docker already? Use **Docker server**.
+- On macOS? Use **Native server** (Mode 1) — one command and you are done.
+- On Linux, or already running Docker? Use **Docker server** (Mode 2).
+- Contributing to the plugin or need fully offline/embedded operation? Use **Local SQLite** (Mode 3, advanced).
 
 You can switch between modes later. Your data is never deleted when switching.
 
 ---
 
-## Mode 1: Local SQLite
+## Mode 1: Native server (macOS, recommended)
 
-This is the original mode. Hooks write directly to a local file. No server, no ports, no configuration required.
+Runs the HTTP capture server as a persistent launchd agent. The server starts automatically at login and survives Claude Code restarts. The web dashboard is always available at `http://localhost:3847`.
+
+### Prerequisites
+
+- The repo cloned locally (for `make` commands): `git clone https://github.com/mrlesmithjr/claude-context-manager`
+- Node.js 18+
+- Xcode Command Line Tools (macOS): `xcode-select --install` (required to build native modules `better-sqlite3` and `sqlite-vec` during `npm install`)
+- `npm install && npm run build` run once from the repo root
 
 ### Install
 
-In Claude Code:
+```bash
+cd ~/Projects/Personal/claude-context-manager   # or wherever you cloned it
+make server-quickstart
+```
+
+This single command:
+1. Generates a random bearer token
+2. Writes `~/.claude-context/.env` with the token and server URL
+3. Builds the server
+4. Installs and starts a launchd agent (`com.mrlesmithjr.context-manager`)
+
+Then install the plugin in Claude Code:
 
 ```
 /plugin marketplace add https://github.com/mrlesmithjr/claude-context-manager
+/plugin install context-manager
+```
+
+Restart Claude Code. Hooks read `~/.claude-context/.env` automatically at startup. No shell configuration, `.zshrc` exports, or environment variables needed.
+
+### Verify
+
+```bash
+make server-native-status
+# Expected: context-manager server is healthy at http://localhost:4000 (native)
+```
+
+Open `http://localhost:3847` in your browser. You should see the web dashboard.
+
+### What you get
+
+- Automatic session capture and scoring in the background
+- `context_stats`, `context_list`, `context_search` MCP tools
+- Auto-memory export to `memory/context-manager-activity.md` at session end
+- Persistent HTTP capture server on port 4000 (hook capture endpoint)
+- Persistent web dashboard at `http://localhost:3847`
+- Both services restart automatically on login
+
+### Stop and start
+
+```bash
+make server-restart                  # restart (auto-detects mode, preferred over mode-specific commands)
+make server-apply-env                # apply .env changes to the running server
+make server-launchd-status           # check MCP server launchd agent status
+make server-launchd-web-status       # check web dashboard launchd agent status
+make server-stop-native              # stop both services without removing config
+make server-launchd-install          # install/restart MCP server agent
+make server-launchd-uninstall        # remove MCP server agent
+make server-launchd-web-install      # install/restart web dashboard agent
+make server-launchd-web-uninstall    # remove web dashboard agent
+```
+
+---
+
+## Mode 2: Docker server
+
+Runs both the capture server and web dashboard in Docker containers. Data lives in a named Docker volume. This is the recommended mode on Linux, and works on macOS if you prefer Docker over launchd.
+
+### Prerequisites
+
+- The repo cloned locally
+- Node.js 18+
+- Xcode Command Line Tools (macOS): `xcode-select --install` (required to build native modules during `npm install`)
+- `npm install && npm run build` run once from the repo root
+- Docker and Docker Compose v2 installed and running
+
+### Install
+
+```bash
+cd ~/Projects/Personal/claude-context-manager
+make server-init     # generate token, write ~/.claude-context/.env
+make server-start    # build image and start both services
+```
+
+Then install the plugin in Claude Code:
+
+```
+/plugin marketplace add https://github.com/mrlesmithjr/claude-context-manager
+/plugin install context-manager
+```
+
+Restart Claude Code. Hooks read `~/.claude-context/.env` automatically.
+
+### Verify
+
+```bash
+make server-status
+# Expected:
+#   [OK]  MCP server   http://localhost:4000
+#   [OK]  Web UI       http://localhost:3847
+#   [mode] docker
+```
+
+Open `http://localhost:3847` in your browser.
+
+### What you get
+
+- Automatic session capture and scoring in the background
+- `context_stats`, `context_list`, `context_search` MCP tools
+- Auto-memory export to `memory/context-manager-activity.md` at session end
+- MCP capture server on port 4000
+- Web dashboard at `http://localhost:3847` with sessions, search, and analytics
+- Data persists in a Docker named volume across restarts and image rebuilds
+
+### Stop and start
+
+```bash
+make server-restart        # restart (auto-detects mode)
+make server-apply-env      # apply .env changes to the running containers
+make server-stop           # stop containers (data preserved in named volume)
+make server-start          # restart
+make server-logs           # tail logs
+```
+
+---
+
+## Mode 3: Local SQLite (advanced)
+
+This mode requires cloning the repository and building from source. It is intended for contributors or users who need fully offline/embedded operation. Native SQLite binaries are not bundled with the marketplace plugin, so this mode is not available to marketplace installs — hooks will fail at startup with an error directing you to configure a server instead.
+
+### Prerequisites
+
+- The repo cloned locally: `git clone https://github.com/mrlesmithjr/claude-context-manager`
+- Node.js 18+
+- Xcode Command Line Tools (macOS): `xcode-select --install` (required to build `better-sqlite3` and `sqlite-vec`)
+- `npm install` run from the repo root to build the native modules
+
+### Install
+
+From the repo root, add the plugin pointing at your local build:
+
+```
+/plugin marketplace add /path/to/claude-context-manager
 /plugin install context-manager
 ```
 
@@ -61,122 +199,9 @@ You should see a summary of captured observations for the current project.
 
 ---
 
-## Mode 2: Native server (macOS)
-
-Runs the HTTP capture server as a persistent launchd agent. The server starts automatically at login and survives Claude Code restarts. The web dashboard is always available at `http://localhost:3847`.
-
-### Prerequisites
-
-- Plugin already installed (Mode 1 steps above)
-- The repo cloned locally (for `make` commands): `git clone https://github.com/mrlesmithjr/claude-context-manager`
-- Node.js 18+
-- Xcode Command Line Tools (macOS): `xcode-select --install` (required to build native modules `better-sqlite3` and `sqlite-vec` during `npm install`)
-- `npm install && npm run build` run once from the repo root
-
-### Install
-
-```bash
-cd ~/Projects/Personal/claude-context-manager   # or wherever you cloned it
-make server-quickstart
-```
-
-This single command:
-1. Generates a random bearer token
-2. Writes `~/.claude-context/.env` with the token and server URL
-3. Builds the server
-4. Installs and starts a launchd agent (`com.mrlesmithjr.context-manager`)
-
-Then restart Claude Code. Hooks read `~/.claude-context/.env` automatically at startup. No shell configuration, `.zshrc` exports, or environment variables needed.
-
-### Verify
-
-```bash
-make server-native-status
-# Expected: context-manager server is healthy at http://localhost:4000 (native)
-```
-
-Open `http://localhost:3847` in your browser. You should see the web dashboard.
-
-### What you get
-
-Everything in Mode 1, plus:
-- Persistent HTTP capture server on port 4000 (hook capture endpoint)
-- Persistent web dashboard at `http://localhost:3847`
-- Both services restart automatically on login
-
-### Stop and start
-
-```bash
-make server-restart                  # restart (auto-detects mode, preferred over mode-specific commands)
-make server-apply-env                # apply .env changes to the running server
-make server-launchd-status           # check MCP server launchd agent status
-make server-launchd-web-status       # check web dashboard launchd agent status
-make server-stop-native              # stop both services without removing config
-make server-launchd-install          # install/restart MCP server agent
-make server-launchd-uninstall        # remove MCP server agent
-make server-launchd-web-install      # install/restart web dashboard agent
-make server-launchd-web-uninstall    # remove web dashboard agent
-```
-
----
-
-## Mode 3: Docker server
-
-Runs both the capture server and web dashboard in Docker containers. Data lives in a named Docker volume. This is the recommended mode on Linux, and works on macOS if you prefer Docker over launchd.
-
-### Prerequisites
-
-- Plugin already installed (Mode 1 steps above)
-- The repo cloned locally
-- Node.js 18+
-- Xcode Command Line Tools (macOS): `xcode-select --install` (required to build native modules during `npm install`)
-- `npm install && npm run build` run once from the repo root
-- Docker and Docker Compose v2 installed and running
-
-### Install
-
-```bash
-cd ~/Projects/Personal/claude-context-manager
-make server-init     # generate token, write ~/.claude-context/.env
-make server-start    # build image and start both services
-```
-
-Then restart Claude Code. Hooks read `~/.claude-context/.env` automatically.
-
-### Verify
-
-```bash
-make server-status
-# Expected:
-#   [OK]  MCP server   http://localhost:4000
-#   [OK]  Web UI       http://localhost:3847
-#   [mode] docker
-```
-
-Open `http://localhost:3847` in your browser.
-
-### What you get
-
-Everything in Mode 1, plus:
-- MCP capture server on port 4000
-- Web dashboard at `http://localhost:3847` with sessions, search, and analytics
-- Data persists in a Docker named volume across restarts and image rebuilds
-
-### Stop and start
-
-```bash
-make server-restart        # restart (auto-detects mode)
-make server-apply-env      # apply .env changes to the running containers
-make server-stop           # stop containers (data preserved in named volume)
-make server-start          # restart
-make server-logs           # tail logs
-```
-
----
-
 ## Switching between modes
 
-If you installed the native server (Mode 2) and want to move to Docker (Mode 3), or vice versa, use the migration commands. They stop the active mode, wait for ports to clear, and start the new mode automatically.
+If you installed the native server (Mode 1) and want to move to Docker (Mode 2), or vice versa, use the migration commands. They stop the active mode, wait for ports to clear, and start the new mode automatically.
 
 ```bash
 make switch-to-docker    # native -> Docker
@@ -199,7 +224,7 @@ The web dashboard includes an **Import** tab. Use it to load a `context.db` file
 
 2. Copy that file to the target machine (USB, scp, AirDrop, etc.).
 
-3. On the target machine, open `http://localhost:3847` (requires Mode 2 or Mode 3).
+3. On the target machine, open `http://localhost:3847` (requires Mode 1 or Mode 2).
 
 4. Click the **Import** tab.
 
@@ -207,7 +232,7 @@ The web dashboard includes an **Import** tab. Use it to load a `context.db` file
 
 6. After import completes, run `context_embed` in a Claude Code session to regenerate vector embeddings for semantic search.
 
-> The Import tab is only available when the web server is running (Mode 2 or Mode 3). It is not available in local SQLite mode.
+> The Import tab is only available when the web server is running (Mode 1 or Mode 2). It is not available in local SQLite mode.
 
 ---
 
@@ -303,6 +328,10 @@ Check the plugin is installed:
 ```
 
 If not listed, reinstall: `/plugin install context-manager`, then restart.
+
+**Hooks fail at startup with a message about missing native modules**
+
+This happens when the plugin was installed from the marketplace without a server configured. Native SQLite binaries are not bundled with marketplace installs. Set up Mode 1 (native server) or Mode 2 (Docker) and configure `~/.claude-context/.env` with `CONTEXT_MANAGER_URL` and `CONTEXT_MANAGER_TOKEN` before restarting Claude Code.
 
 **`context_stats` shows nothing**
 

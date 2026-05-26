@@ -6,10 +6,38 @@ A Claude Code plugin that automatically captures every tool interaction in SQLit
 
 ## Install
 
-**In Claude Code:**
+**Marketplace install (recommended — requires a server):**
+
+Native SQLite binaries are not bundled with the marketplace plugin. Before installing, start a server on your machine. On macOS:
+
+```bash
+git clone https://github.com/mrlesmithjr/claude-context-manager
+cd claude-context-manager
+npm install && npm run build
+make server-quickstart
+```
+
+Then in Claude Code:
 
 ```
 /plugin marketplace add https://github.com/mrlesmithjr/claude-context-manager
+/plugin install context-manager
+```
+
+Restart Claude Code to activate. See the [Setup Guide](docs/SETUP.md) for Docker (Linux) and advanced local-only options.
+
+**Local install (advanced — for contributors and offline use):**
+
+```bash
+git clone https://github.com/mrlesmithjr/claude-context-manager
+cd claude-context-manager
+npm install
+```
+
+Then in Claude Code:
+
+```
+/plugin marketplace add /path/to/claude-context-manager
 /plugin install context-manager
 ```
 
@@ -106,11 +134,7 @@ Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server 
 
 > New to context-manager or setting up on a new machine? See the [Setup Guide](docs/SETUP.md) for a step-by-step walkthrough of all three deployment modes.
 
-### Default: local SQLite (single machine)
-
-No server setup required. Hooks write directly to `~/.claude-context/context.db`. This is the default after plugin install.
-
-### HTTP server + proxy mode (multi-machine)
+### Recommended: HTTP server + proxy mode
 
 Run a central server so multiple machines share one database. Hooks become thin HTTP clients when `CONTEXT_MANAGER_URL` is set.
 
@@ -179,6 +203,20 @@ Start the server directly:
 ```bash
 CONTEXT_MANAGER_TOKEN=<secret> node dist/cli.js serve --port 4666
 ```
+
+### Advanced: local SQLite (no server)
+
+Hooks write directly to `~/.claude-context/context.db` without any server. This requires cloning the repo and building from source — native SQLite binaries are not bundled with the marketplace plugin and hooks will fail at startup with an error if they are missing.
+
+```bash
+git clone https://github.com/mrlesmithjr/claude-context-manager
+cd claude-context-manager
+npm install
+/plugin marketplace add /path/to/claude-context-manager   # in Claude Code
+/plugin install context-manager
+```
+
+This mode is intended for contributors and users who need fully offline/embedded operation. See the [Setup Guide](docs/SETUP.md) for full details.
 
 ---
 

@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 26, 2026 (v0.8.64)
+**Last Updated**: May 27, 2026 (v0.8.67)
 
 ---
 
