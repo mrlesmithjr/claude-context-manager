@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: April 13, 2026
+**Last Updated**: May 26, 2026 (v0.8.95)
 
 ---
 
@@ -62,9 +62,22 @@ Claude Code plugins can register hooks for lifecycle events. We use three:
   }
   ```
 
+#### UserPromptSubmit Hook (`capture-prompt.ts`)
+- **Trigger**: Every time the user submits a prompt (5s timeout)
+- **Purpose**: Capture user prompts for FTS5 search and session enrichment; run periodic checkpoint exports
+- **Checkpoint**: Every 30 minutes (wall-clock), triggers auto-memory export so high-importance observations are available even in long-running sessions. Interval is configurable via `CONTEXT_MANAGER_CHECKPOINT_INTERVAL`.
+- **Response Format**: `ok` (empty — does not inject context)
+
+#### PreToolUse Hook (`file-context.ts`)
+- **Trigger**: Before any `Read` tool call (5s timeout)
+- **Matcher**: `Read`
+- **Purpose**: Inject a compact history of prior work on the file being read, so Claude has file-level context before seeing the current contents
+- **Scope**: Only fires on the first Read per file per session, and only when at least 2 prior observations exist for that file
+- **Response Format**: Returns prior observations as `additionalContext` injected before the Read output
+
 #### PostToolUse Hook (`capture-tool.ts`)
-- **Trigger**: After every tool execution (Read, Write, Bash, etc.)
-- **Purpose**: Capture tool interactions for future reference
+- **Trigger**: After every tool execution (Read, Write, Bash, etc.) — 5s timeout
+- **Purpose**: Core capture pipeline: sanitize, summarize, score, tag, store
 - **Response Format**:
   ```json
   {
@@ -88,7 +101,18 @@ Claude Code plugins can register hooks for lifecycle events. We use three:
   - Structured content (headers, bullet lists with data)
   - Each qualifying block is scored (0.0-1.0), compressed to ~150 tokens, and saved as a `Conversation` observation
   - Top 10 blocks per session (by score) to bound token budget
+- **Decisions** (v0.8.x): `extractDecisions()` scans assistant messages for architectural and technical decisions. Each decision is written to the `decisions` table with a globally sequential number (remote mode uses `GET /api/decisions/next-number` to ensure uniqueness across sessions).
 - **Export**: Writes to `~/.claude/projects/<path>/memory/context-manager-activity.md`
+- **Response Format**:
+  ```json
+  {
+    "status": "complete" | "error"
+  }
+  ```
+
+#### PreCompact Hook (`session-end.ts`)
+- **Trigger**: When the user runs `/compact` (10s timeout)
+- **Purpose**: Saves the current session state and triggers a checkpoint export before context compaction wipes the assistant's working memory. Without this hook, a `/compact` mid-session would lose the session summary and any unexported high-importance observations.
 - **Response Format**:
   ```json
   {
@@ -103,38 +127,54 @@ sequenceDiagram
     participant CC as Claude Code
     participant SI as SessionStart<br/>(context-inject.ts)
     participant UP as UserPromptSubmit<br/>(capture-prompt.ts)
+    participant FC as PreToolUse<br/>(file-context.ts)
     participant PT as PostToolUse<br/>(capture-tool.ts)
     participant SE as Stop<br/>(session-end.ts)
+    participant PC as PreCompact<br/>(session-end.ts)
     participant DB as SQLite
 
     CC->>SI: session starts (10s timeout)
-    SI->>DB: createSession()
+    SI->>DB: createSession() · stale session GC
     SI-->>CC: status hint (~30 tokens)
 
     loop each user message
         CC->>UP: prompt submitted (5s timeout)
         UP->>DB: saveUserPrompt()
+        UP->>UP: periodic checkpoint (every 30 min)
         UP-->>CC: ok
 
         loop each tool call
+            opt tool is Read (first per file per session)
+                CC->>FC: pre-tool intercept (5s timeout)
+                FC->>DB: getObservations(file, project)
+                FC-->>CC: inject file history (~compact lines)
+            end
+
             CC->>PT: tool result (5s timeout)
             PT->>PT: filter low-value tools
-            PT->>PT: summarize + score + inferTags()
+            PT->>PT: summarize · score · inferTags() · branch
             PT->>DB: save() — dedup check + INSERT
-            DB->>DB: FTS5 trigger + inferRelationships()
+            DB->>DB: FTS5 trigger · inferRelationships() · addTokens()
             PT-->>CC: captured / skipped
         end
     end
 
-    CC->>SE: session ends (10s timeout)
-    SE->>SE: scoreForNarrative() → best summary
-    SE->>SE: extractConversationInsights() → top 10
-    SE->>DB: endSession() + save insights
-    SE->>DB: getUnexportedHighImportance()
-    DB-->>SE: observations (score ≥ 0.65)
-    SE->>SE: append to auto-memory file
-    SE->>DB: markExported()
-    SE-->>CC: complete
+    alt session ends normally
+        CC->>SE: Stop (10s timeout)
+        SE->>SE: scoreForNarrative() → best summary
+        SE->>SE: extractConversationInsights() → top 10
+        SE->>SE: extractDecisions() → decisions table
+        SE->>DB: endSession() · save insights · save decisions
+        SE->>DB: getUnexportedHighImportance()
+        DB-->>SE: observations (score ≥ 0.65)
+        SE->>SE: append to auto-memory file
+        SE->>DB: markExported()
+        SE-->>CC: complete
+    else /compact triggered
+        CC->>PC: PreCompact (10s timeout)
+        PC->>DB: endSession() · checkpoint export
+        PC-->>CC: complete
+    end
 ```
 
 ### 2. Storage Layer (`src/storage/`)
@@ -245,18 +285,23 @@ erDiagram
     sessions {
         TEXT id PK
         TEXT project
+        TEXT branch
+        TEXT source
         TEXT started_at
         TEXT ended_at
         TEXT summary
-        TEXT status
-        BLOB embedding
+        TEXT summary_extended
         TEXT enriched_text
+        BLOB embedding
+        TEXT status
+        INTEGER last_checkpoint_at
     }
     observations {
         INTEGER id PK
         TEXT session_id FK
         TEXT project
         TEXT package
+        TEXT branch
         TEXT tool_name
         TEXT summary
         TEXT files_touched
@@ -264,11 +309,25 @@ erDiagram
         INTEGER token_estimate
         TEXT importance
         REAL importance_score
+        TEXT lesson_type
+        INTEGER pinned
+        INTEGER access_count
+        INTEGER superseded_by FK
         INTEGER is_compacted
         TEXT exported_at
         TEXT tags
         TEXT content_hash
         BLOB embedding
+        TEXT created_at
+    }
+    decisions {
+        INTEGER id PK
+        TEXT session_id FK
+        TEXT project
+        INTEGER decision_number
+        TEXT title
+        TEXT body
+        TEXT status
         TEXT created_at
     }
     user_prompts {
@@ -293,14 +352,22 @@ erDiagram
         TEXT relationship
         TEXT created_at
     }
+    token_index {
+        TEXT token PK
+        TEXT project PK
+        INTEGER frequency
+        TEXT last_seen
+    }
 
     sessions ||--o{ observations : "has"
     sessions ||--o{ user_prompts : "has"
+    sessions ||--o{ decisions : "has"
     observations ||--o{ observation_relationships : "source"
     observations ||--o{ observation_relationships : "target"
+    observations }o--o| observations : "superseded_by"
 ```
 
-Virtual tables (not shown above): `observations_fts` (FTS5), `user_prompts_fts` (FTS5), `vec_observations` (sqlite-vec), `vec_sessions` (sqlite-vec).
+Virtual tables (not shown above): `observations_fts` (FTS5), `user_prompts_fts` (FTS5), `decisions_fts` (FTS5), `vec_observations` (sqlite-vec), `vec_sessions` (sqlite-vec).
 
 ### DDL
 
@@ -309,12 +376,16 @@ Virtual tables (not shown above): `observations_fts` (FTS5), `user_prompts_fts` 
 CREATE TABLE sessions (
   id TEXT PRIMARY KEY,
   project TEXT NOT NULL,
+  branch TEXT,                 -- Git branch at session start (v0.8.x)
+  source TEXT DEFAULT 'hook',  -- 'hook' | 'manual' (manual = context_add session)
   started_at TEXT NOT NULL,
   ended_at TEXT,
   summary TEXT,
+  summary_extended TEXT,       -- Longer narrative preserved for enrichment
+  enriched_text TEXT,          -- Assembled text for session vector embedding
+  embedding BLOB,              -- 384-dim float32 session vector (v0.6.0)
   status TEXT DEFAULT 'active',
-  embedding BLOB,              -- 384-dim float32, session vector (v0.6.0)
-  enriched_text TEXT           -- Assembled enrichment text for embedding
+  last_checkpoint_at INTEGER   -- Unix ms timestamp of last checkpoint export
 );
 
 CREATE INDEX idx_sessions_project ON sessions(project);
@@ -327,18 +398,23 @@ CREATE TABLE observations (
   session_id TEXT NOT NULL,
   project TEXT NOT NULL,
   package TEXT,
+  branch TEXT,                        -- Git branch at capture time (v0.8.x)
   tool_name TEXT NOT NULL,
   summary TEXT NOT NULL,
-  files_touched TEXT,               -- JSON array of absolute paths
-  metadata TEXT,                    -- JSON object (tool_input, stored_output, stats)
+  files_touched TEXT,                 -- JSON array of absolute paths
+  metadata TEXT,                      -- JSON object (tool_input, stored_output, stats)
   token_estimate INTEGER DEFAULT 0,
-  importance TEXT DEFAULT 'medium', -- 'high' | 'medium' | 'low'
-  importance_score REAL DEFAULT 0.5,-- 0.0 to 1.0
-  is_compacted INTEGER DEFAULT 0,   -- 1 if compacted summary
-  exported_at TEXT,                 -- ISO 8601, set after auto-memory export
-  tags TEXT,                        -- Comma-separated domain tags (v0.8.6)
-  content_hash TEXT,                -- SHA256 of summary+files_touched+stored_output, for exact dedup
-  embedding BLOB,                   -- 384-dim float32 observation vector (v0.5.5)
+  importance TEXT DEFAULT 'medium',   -- 'high' | 'medium' | 'low'
+  importance_score REAL DEFAULT 0.5,  -- 0.0 to 1.0
+  lesson_type TEXT,                   -- Error lesson category (v0.8.x)
+  pinned INTEGER DEFAULT 0,           -- 1 = exempt from decay and compaction
+  access_count INTEGER DEFAULT 0,     -- Incremented on context_get fetches
+  superseded_by INTEGER REFERENCES observations(id) ON DELETE SET NULL, -- Fact supersession
+  is_compacted INTEGER DEFAULT 0,     -- 1 if compacted summary
+  exported_at TEXT,                   -- ISO 8601, set after auto-memory export
+  tags TEXT,                          -- Comma-separated domain tags (v0.8.6)
+  content_hash TEXT,                  -- SHA256 for exact dedup
+  embedding BLOB,                     -- 384-dim float32 observation vector (v0.5.5)
   created_at TEXT NOT NULL,
   FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
@@ -413,12 +489,40 @@ CREATE INDEX idx_obs_rel_target ON observation_relationships(target_id);
 CREATE UNIQUE INDEX idx_obs_rel_unique
   ON observation_relationships(source_id, target_id, relationship);
 
+-- Decisions table (v0.8.x)
+CREATE TABLE decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  project TEXT NOT NULL,
+  decision_number INTEGER NOT NULL,  -- Globally sequential per project (remote: server-assigned)
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  status TEXT DEFAULT 'active',      -- 'active' | 'superseded' | 'reverted'
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+
+CREATE INDEX idx_decisions_project ON decisions(project);
+CREATE VIRTUAL TABLE decisions_fts USING fts5(
+  title, body,
+  content=decisions, content_rowid=id
+);
+
+-- Token index for fuzzy search (v0.8.x)
+CREATE TABLE token_index (
+  token TEXT NOT NULL,
+  project TEXT NOT NULL,
+  frequency INTEGER DEFAULT 1,  -- Total occurrence count
+  last_seen TEXT NOT NULL,
+  PRIMARY KEY (token, project)
+);
+
 -- FTS sync triggers (INSERT / UPDATE / DELETE keep virtual tables current)
 CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
   INSERT INTO observations_fts(rowid, summary, files_touched, metadata)
   VALUES (new.id, COALESCE(new.summary,''), COALESCE(new.files_touched,''), COALESCE(new.metadata,''));
 END;
--- (Similar triggers for UPDATE and DELETE)
+-- (Similar triggers for UPDATE and DELETE, and equivalent triggers on decisions)
 ```
 
 ---
@@ -606,23 +710,6 @@ flowchart TD
     LO -->|yes| RL([low])
 ```
 
-### Relevance-Based Injection (Deprecated in v0.4.0)
-
-> **Note**: Since v0.4.0, SessionStart no longer injects observation lists. Context is now exported to auto-memory topic files at session end. The relevance scoring code is retained for the web dashboard and potential future use.
-
-Context injection uses multi-factor scoring instead of pure recency. Implemented in `src/inject/builder.ts` via `selectRelevantWithinBudget()`.
-
-**Scoring formula:**
-```
-final_score = (importance_score * 0.70) + (recency_multiplier * 0.30) + file_overlap_boost
-```
-
-- **Recency decay**: 48-hour half-life (`Math.pow(0.5, ageHours / 48)`)
-- **File overlap boost**: +0.20 if observation touches files seen in recent sessions
-- **Compacted summary bonus**: +0.10 (token-efficient, represents multiple actions)
-- **Diversity cap**: No single tool type can consume >60% of budget
-
-The SQL pre-filter excludes `importance='low'` observations and fetches 200 candidates for scoring. Low-importance observations remain searchable via `context_search` and the web dashboard.
 
 ### Rule-Based Compaction
 
@@ -710,6 +797,84 @@ flowchart TD
 
 **Enrichment**: Top 3 primary results are enriched with related observations via `getRelatedObservations()`, deduplicated against the primary set.
 
+### Temporal Query Routing
+
+Before search routing, `classifyTemporalIntent()` in `src/utils/temporal.ts` classifies queries as `current`, `historical`, or `neutral`.
+
+- **current**: words like "current", "latest", "now", "today", "recent" — results sorted recency-first; memory decay applied
+- **historical**: words like "history", "previously", "before", "timeline", "past" — results sorted chronologically
+- **neutral**: no temporal signal — uses relevance/score ordering with decay applied
+
+Temporal classification runs before all search paths including `tag:` prefix handling.
+
+### Fuzzy Search Pre-pass
+
+`correctTokens()` in `src/utils/correct-tokens.ts` applies Levenshtein DP correction (edit distance <= 2) to query tokens before they reach FTS5. The `token_index` table is updated on every observation save via `addTokens()`, storing tokens >= 4 characters with frequency counts. Tokens with frequency >= 3 are considered valid corrections.
+
+Behavior:
+- Operator-prefixed tokens (`tag:X`, `decision:X`, `lesson:X`) are skipped
+- The first viable match sorted by frequency is used
+- When a correction is applied, the response header includes a "Corrected: X → Y" notice
+- Controlled via `fuzzy` parameter on `context_search` (default: `true`)
+
+### Progressive Disclosure
+
+Search uses a 3-layer pattern to balance token efficiency with access to full detail:
+
+| Layer | Tool | Returns | Use when |
+|---|---|---|---|
+| 1 | `context_search` | Compact one-line summaries with IDs | Scanning many results |
+| 2 | `context_get` | Full observation detail (up to 20 IDs) | Examining specific results |
+| 3 | `context_timeline` | Observations + session neighbors (up to 10 IDs) | Understanding context around a result |
+
+### Branch-Aware Capture
+
+`getCurrentBranch()` in `src/utils/git.ts` calls `git rev-parse --abbrev-ref HEAD` via `spawnSync` at capture time. The branch name is stored on both the `observations` and `sessions` tables.
+
+In search, results from the current branch receive a soft-rank boost. The `branch` parameter on `context_search` allows explicit filtering to a specific branch.
+
+### Fact Supersession
+
+`FACT_CATEGORIES` in `src/utils/facts.ts` defines categories of facts that have exactly one current value (e.g., "current Node.js version", "chosen framework"). `detectFactType()` classifies new observations; `findConflictingFact()` identifies any earlier same-category observation.
+
+When a conflict is found, the earlier observation's `superseded_by` is set to the new observation's ID. Superseded observations are excluded from search by default; pass `include_superseded: true` to opt in. Relational integrity is preserved — observations are updated, not deleted.
+
+### Memory Decay
+
+`applyDecay()` adjusts the effective importance score for search ranking in the neutral temporal path:
+
+```
+effective_score = (base_importance * 0.60) + (recency * 0.25) + (log_frequency * 0.15)
+```
+
+- **Recency**: 23-day half-life (`Math.pow(0.5, ageDays / 23)`)
+- **Frequency**: `Math.log(access_count + 1)` normalized
+- **Exempt**: observations with `pinned=1`, `lesson_type IS NOT NULL`, or stored in the `decisions` table
+
+Decay is applied only during search scoring, not stored back to the DB. The stored `importance_score` reflects capture-time value.
+
+### Decisions Entity
+
+The Stop hook calls `extractDecisions()` to scan assistant messages for architectural and technical decisions. Each qualifying decision is stored in the `decisions` table with:
+- A globally sequential `decision_number` per project (in remote mode, the server assigns the number via `GET /api/decisions/next-number` to prevent gaps across concurrent sessions)
+- FTS5 indexing via `decisions_fts`
+
+`context_decisions` queries the decisions table with optional free-text search. The `decision:` prefix in `context_search` also routes to decisions.
+
+### Error Lessons
+
+`detectLessonType()` in `src/capture/processor.ts` classifies error-related observations (restricted to Write, Edit, NotebookEdit, MultiEdit, and Bash with non-zero exit codes) into lesson categories. The `lesson_type` is stored on the observation.
+
+`context_lessons` returns observations where `lesson_type IS NOT NULL`, filterable by `lesson_type`, `query`, and `days`. The `lesson:` prefix in `context_search` also routes to lessons. Lesson observations are exempt from memory decay.
+
+### Reflection
+
+`context_reflect` calls `buildReflection()` and `formatReflection()` in `src/utils/reflect.ts`. The reflection:
+- Groups recent high-importance observations and lessons by their first domain tag
+- Only produces output for groups of 3+ observations (noise gate)
+- Lesson groups are prefixed with "Avoid:" to highlight patterns to watch out for
+- The Stop hook appends a reminder to call `context_reflect` when a session is >= 7 days old or has >= 10 high-importance observations
+
 ---
 
 ## Privacy Implementation
@@ -764,28 +929,19 @@ function stripPrivateTags(content: string): string {
 
 ### Environment Variables
 
+All variables are read from `~/.claude-context/.env` at hook and MCP server startup. No shell exports or `.zshrc` configuration needed.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONTEXT_MANAGER_DB` | `~/.claude-context/context.db` | Database path |
-| `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens to inject |
-| `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic/hybrid search results; FTS5 results are not filtered |
-
-### Allowed Project Roots
-
-For security, only projects under these paths are captured:
-
-```typescript
-const ALLOWED_PROJECT_ROOTS = [
-  '~/Projects',
-  '~/projects',
-  '~/Dev',
-  '~/dev',
-  '~/Code',
-  '~/code',
-  '~/Workspace',
-  '~/workspace'
-];
-```
+| `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens injected at session start |
+| `CONTEXT_MANAGER_PORT` | `3847` | Web dashboard port |
+| `CONTEXT_MANAGER_HOST` | `localhost` | Web dashboard bind address |
+| `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic/hybrid results; FTS5 results are never filtered |
+| `CONTEXT_MANAGER_URL` | _(unset)_ | When set, hooks POST to this URL instead of writing to local SQLite (proxy/remote mode) |
+| `CONTEXT_MANAGER_TOKEN` | _(unset)_ | Bearer token; required when `CONTEXT_MANAGER_URL` is set |
+| `CONTEXT_MANAGER_CHECKPOINT_INTERVAL` | `30` | Minutes between periodic checkpoint exports during a live session |
+| `CONTEXT_MANAGER_EMBED_INTERVAL` | `10` | Minutes between background embedding passes in HTTP server mode |
 
 ---
 
@@ -868,22 +1024,22 @@ The uninstall script (`scripts/uninstall.js`):
 
 ---
 
-## Web UI Dashboard (IMPLEMENTED)
+## Web UI Dashboard
 
-Local web interface for browsing context observations and analytics.
-
-**Status**: ✅ Implemented (v0.3.0)
+Local web interface for browsing context observations and analytics. Implemented in v0.3.0, extended through v0.8.x.
 
 ### Features
-- **Sessions View**: Browse all Claude Code sessions with summaries
+- **Sessions View**: Browse all Claude Code sessions with summaries and observation counts
 - **Search**: Full-text search across observations and prompts
 - **Analytics**: Token usage timeline, activity charts, tool distribution
 - **Project Stats**: Per-project observation counts and activity
+- **Import**: Upload a `context.db` file from another machine to merge history (Docker/native server modes only)
 
 ### Architecture
 - **Server**: Fastify (port 3847)
 - **Storage**: Direct SQLite access via shared storage layer
 - **Client**: Single-page HTML with vanilla JavaScript
+- **Auth**: Bearer token required in remote/network mode; `window.__CTX_TOKEN` injected into `index.html` at serve time (`Cache-Control: no-store`); `GET /` is excluded from auth
 
 ### Usage
 ```bash
@@ -895,65 +1051,4 @@ See `web/server/index.ts` for server implementation and `web/client/index.html` 
 
 ---
 
-## Future Extensions (Backlog)
-
-Potential enhancements for future consideration. Prioritized by estimated value.
-
-### High Value
-
-| Feature | Description | Inspiration | Priority |
-|---------|-------------|-------------|----------|
-| **Pinned Context** | Manual notes that ALWAYS inject (e.g., "Using repository pattern") | claude-mem | |
-| ~~**Summary Compression**~~ | ~~Abbreviate verbose summaries~~ **IMPLEMENTED** as rule-based compaction: `"Read x4: file1.ts, file2.ts, ..."` | SuperClaude | |
-| ~~**Progressive Disclosure**~~ | ~~Inject less by default~~ **PARTIALLY IMPLEMENTED** via importance filtering: low-importance observations excluded from injection but still searchable | SuperClaude | |
-| **AI-Powered Summarization** | Use Claude to generate better observation summaries | claude-mem | |
-
-### Medium Value
-
-| Feature | Description | Inspiration |
-|---------|-------------|-------------|
-| ~~**Confidence Scoring**~~ | ~~Track pattern usefulness (0.0→1.0)~~ **IMPLEMENTED** as importance scoring (0.0-1.0 scale with high/medium/low levels) | ELF |
-| **Outcome Tracking** | Store success/failure of actions to learn what approaches work | ELF |
-| ~~**Pheromone Trails / Hotspots**~~ | ~~Track file activity to identify problem clusters~~ **IMPLEMENTED** as surprise scoring via `file_encounter_counts` — tracks per-file encounter frequency and adjusts importance (v0.7.0) | ELF |
-| ~~**Semantic/Vector Search**~~ | ~~Embeddings for conceptually similar observations~~ **IMPLEMENTED** as session-level vector embeddings with retrieval routing (keyword/semantic/hybrid with RRF) | claude-mem (ChromaDB), Daem0n-MCP |
-| ~~**Export**~~ | ~~Export observations as markdown/JSON~~ **IMPLEMENTED** as auto-memory export to topic files (v0.4.0) | - |
-
-### Lower Priority
-
-| Feature | Description | Notes |
-|---------|-------------|-------|
-| **Cross-Project Context** | Optional global context across all projects | Privacy concerns |
-| **Endless Mode** | Aggressive compression for very long sessions | claude-mem beta |
-| ~~**MCP Integration**~~ | ~~Expose context via MCP server~~ **IMPLEMENTED** as `context_search`, `context_list`, `context_stats`, `context_embed`, `context_vacuum`, `context_prune`, `context_export`, `context_memory_audit`, `context_memory_consolidate` | |
-| **Smart Install** | Auto-rebuild native modules on Node.js upgrade | Convenience |
-
-### Token Reduction Techniques to Explore
-
-Based on [SuperClaude Issue #286](https://github.com/SuperClaude-Org/SuperClaude_Framework/issues/286):
-
-1. **Template Compression** - Abbreviated formats: `ID:architect|PRI:maintainability>perf`
-2. **Reference Consolidation** - Avoid repeating same context patterns
-3. **YAML Simplification** - Strip metadata, keep only essential fields
-4. **Symbol System** - `→, ⇒, ∴` instead of verbose connectors (mixed results)
-5. **Truncate Session Summaries** - First 200 chars instead of full text
-
-Based on [artemgetmann's gist](https://gist.github.com/artemgetmann/74f28d2958b53baf50597b669d4bce43):
-
-1. **Modular Loading** - `@filename` on-demand vs inline injection
-2. ~~**Periodic Compaction**~~ - **IMPLEMENTED** as rule-based compaction during vacuum
-3. **Precise Prompting** - Guide users to specific queries
-
-### Complementary Tools
-
-These tools solve different problems and could work alongside context-manager:
-
-| Tool | Focus | Overlap |
-|------|-------|---------|
-| [SuperClaude](https://github.com/SuperClaude-Org/SuperClaude_Framework) | Personas + commands (how Claude thinks) | Token reduction techniques |
-| [Superpowers](https://github.com/obra/superpowers) | Structured workflow (TDD, planning) | None |
-| [claude-mem](https://github.com/thedotmack/claude-mem) | Full-featured memory (vector search, UI) | Direct competitor |
-| [ELF](https://github.com/Spacehunterz/Emergent-Learning-Framework_ELF) | Outcome-based learning, confidence scoring | Learning patterns (potential) |
-
----
-
-**Last Updated**: April 6, 2026
+**Last Updated**: May 26, 2026 (v0.8.95)
