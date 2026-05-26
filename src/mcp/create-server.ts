@@ -311,7 +311,7 @@ async function proxyToolCall(
  * @param options - optional proxy and path normalization config
  */
 export function createContextManagerServer(
-  storage: SQLiteStorage,
+  storage: SQLiteStorage | null,
   options: ServerOptions = {}
 ): McpServer {
   const { remoteUrl = '', remoteToken = '', pathMap = [] } = options;
@@ -330,8 +330,8 @@ export function createContextManagerServer(
     },
   );
 
-  // Helper: resolve storage (always the injected instance)
-  const getDb = (): Promise<SQLiteStorage> => Promise.resolve(storage);
+  // Helper: resolve storage (only valid in local mode; proxy mode passes null and never calls getDb)
+  const getDb = (): Promise<SQLiteStorage> => Promise.resolve(storage as SQLiteStorage);
 
   // Helper: normalize a project path through the configured prefix map
   const np = (p: string | undefined): string | undefined =>

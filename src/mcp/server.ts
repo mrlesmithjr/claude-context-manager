@@ -171,7 +171,10 @@ async function main() {
     }
   }
 
-  const db = await getStorage();
+  // In proxy/remote mode, SQLiteStorage is never needed — all tool calls are
+  // forwarded to the remote server. Skip getStorage() entirely so the MCP server
+  // can start even when native modules are absent (marketplace install).
+  const db = REMOTE_URL ? null : await getStorage();
   const pathMap = loadPathPrefixMap();
 
   const server = createContextManagerServer(db, {
