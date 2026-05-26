@@ -60895,7 +60895,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.88" : "unknown"
+      version: true ? "0.8.89" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -60969,12 +60969,16 @@ function createContextManagerServer(storage, options = {}) {
           results = tagObs.filter((o) => ftsIds.has(o.id));
         }
         results = applyTemporalAdjustment(results, temporalMode, "created_at");
+        if (branch && branch !== "*") {
+          results = results.filter((o) => o.branch === branch);
+        }
         const label = remainingQuery ? `tag:${tag} + keyword "${remainingQuery}"` : `tag:${tag}`;
         const modeLabel2 = useCompact ? "compact" : "full";
         const temporalLabel2 = temporalMode !== "neutral" ? ` | temporal: ${temporalMode}` : "";
+        const tagBranchLabel = branch && branch !== "*" ? ` | branch: ${branch}` : branch === "*" ? " | branch: * (all)" : "";
         const tagSupersededLabel = includeSuperseded ? " | +superseded" : "";
         const formattedResults = useCompact ? results.map((o) => formatObservationCompact(o)).join("\n") : formatObservations(results);
-        const text = results.length > 0 ? `[search: ${label}${temporalLabel2}${tagSupersededLabel} | ${modeLabel2}] ${results.length} results
+        const text = results.length > 0 ? `[search: ${label}${temporalLabel2}${tagBranchLabel}${tagSupersededLabel} | ${modeLabel2}] ${results.length} results
 
 ${formattedResults}` : `No observations found for ${label}.`;
         return { content: [{ type: "text", text }] };
@@ -64571,8 +64575,8 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.88")
-    return "0.8.88";
+  if ("0.8.89")
+    return "0.8.89";
   try {
     const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

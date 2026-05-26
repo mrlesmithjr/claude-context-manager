@@ -580,17 +580,26 @@ export function createContextManagerServer(
         }
         // Apply temporal ordering to tag results the same way as other paths
         results = applyTemporalAdjustment(results, temporalMode, 'created_at');
+        // Apply branch filter post-hoc — searchByTag has no branch parameter
+        if (branch && branch !== '*') {
+          results = results.filter(o => o.branch === branch);
+        }
         const label = remainingQuery
           ? `tag:${tag} + keyword "${remainingQuery}"`
           : `tag:${tag}`;
         const modeLabel = useCompact ? 'compact' : 'full';
         const temporalLabel = temporalMode !== 'neutral' ? ` | temporal: ${temporalMode}` : '';
+        const tagBranchLabel = branch && branch !== '*'
+          ? ` | branch: ${branch}`
+          : branch === '*'
+            ? ' | branch: * (all)'
+            : '';
         const tagSupersededLabel = includeSuperseded ? ' | +superseded' : '';
         const formattedResults = useCompact
           ? results.map(o => formatObservationCompact(o)).join('\n')
           : formatObservations(results);
         const text = results.length > 0
-          ? `[search: ${label}${temporalLabel}${tagSupersededLabel} | ${modeLabel}] ${results.length} results\n\n${formattedResults}`
+          ? `[search: ${label}${temporalLabel}${tagBranchLabel}${tagSupersededLabel} | ${modeLabel}] ${results.length} results\n\n${formattedResults}`
           : `No observations found for ${label}.`;
         return { content: [{ type: 'text' as const, text }] };
       }
