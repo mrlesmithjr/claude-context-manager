@@ -6817,6 +6817,7 @@ var require_dist = __commonJS({
 var remote_client_exports = {};
 __export(remote_client_exports, {
   remoteAddObservation: () => remoteAddObservation,
+  remoteCloseStale: () => remoteCloseStale,
   remoteCreateSession: () => remoteCreateSession,
   remoteEndSession: () => remoteEndSession,
   remoteExportMemory: () => remoteExportMemory,
@@ -6904,6 +6905,9 @@ async function remoteAddObservation(client, params) {
   } catch {
     return void 0;
   }
+}
+async function remoteCloseStale(client) {
+  await post(client, "/capture/session/gc", {});
 }
 async function remoteHealthCheck(client, timeoutMs = 3e3) {
   const ac = new AbortController();
@@ -22865,8 +22869,9 @@ ${storedOutput}`;
   }
   async createSession(sessionId, project) {
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO sessions (id, project, started_at, status)
+      INSERT INTO sessions (id, project, started_at, status)
       VALUES (?, ?, ?, 'active')
+      ON CONFLICT(id) DO UPDATE SET project = excluded.project
     `);
     stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
   }
@@ -33458,7 +33463,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.73" : "unknown"
+      version: true ? "0.8.74" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."

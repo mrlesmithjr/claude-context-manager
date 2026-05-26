@@ -388,6 +388,19 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     }
   });
 
+  // POST /capture/session/gc — close stale active sessions (no Stop hook within 2h)
+  // Called by context-inject in remote mode at SessionStart, mirroring the local
+  // closeStaleActiveSessions() call that runs in the local SQLite path.
+  fastify.post('/capture/session/gc', async (_request, reply) => {
+    try {
+      const closed = await storage.closeStaleActiveSessions();
+      await reply.send({ status: 'ok', closed });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(500).send({ error: msg });
+    }
+  });
+
   // POST /capture/observation — save one observation from a remote hook
   fastify.post('/capture/observation', async (request, reply) => {
     try {

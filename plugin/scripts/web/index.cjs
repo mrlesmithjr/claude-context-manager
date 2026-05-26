@@ -47721,8 +47721,9 @@ ${storedOutput}`;
   }
   async createSession(sessionId, project) {
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO sessions (id, project, started_at, status)
+      INSERT INTO sessions (id, project, started_at, status)
       VALUES (?, ?, ?, 'active')
+      ON CONFLICT(id) DO UPDATE SET project = excluded.project
     `);
     stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
   }
@@ -49443,8 +49444,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.73")
-    return "0.8.73";
+  if ("0.8.74")
+    return "0.8.74";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

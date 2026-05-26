@@ -34599,6 +34599,7 @@ var require_cors = __commonJS({
 var remote_client_exports = {};
 __export(remote_client_exports, {
   remoteAddObservation: () => remoteAddObservation,
+  remoteCloseStale: () => remoteCloseStale,
   remoteCreateSession: () => remoteCreateSession,
   remoteEndSession: () => remoteEndSession,
   remoteExportMemory: () => remoteExportMemory,
@@ -34685,6 +34686,9 @@ async function remoteAddObservation(client, params) {
   } catch {
     return void 0;
   }
+}
+async function remoteCloseStale(client) {
+  await post(client, "/capture/session/gc", {});
 }
 async function remoteHealthCheck(client, timeoutMs = 3e3) {
   const ac = new AbortController();
@@ -60583,7 +60587,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.73" : "unknown"
+      version: true ? "0.8.74" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -61979,8 +61983,9 @@ ${storedOutput}`;
   }
   async createSession(sessionId, project) {
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO sessions (id, project, started_at, status)
+      INSERT INTO sessions (id, project, started_at, status)
       VALUES (?, ?, ?, 'active')
+      ON CONFLICT(id) DO UPDATE SET project = excluded.project
     `);
     stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
   }
@@ -63352,8 +63357,8 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.73")
-    return "0.8.73";
+  if ("0.8.74")
+    return "0.8.74";
   try {
     const pkg = JSON.parse((0, import_fs6.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)
@@ -63599,6 +63604,15 @@ async function startHttpServer(options = {}) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await reply.status(400).send({ error: msg });
+    }
+  });
+  fastify.post("/capture/session/gc", async (_request, reply) => {
+    try {
+      const closed = await storage.closeStaleActiveSessions();
+      await reply.send({ status: "ok", closed });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(500).send({ error: msg });
     }
   });
   fastify.post("/capture/observation", async (request, reply) => {

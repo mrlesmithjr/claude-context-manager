@@ -611,8 +611,9 @@ ${storedOutput}`;
       }
       async createSession(sessionId, project) {
         const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO sessions (id, project, started_at, status)
+      INSERT INTO sessions (id, project, started_at, status)
       VALUES (?, ?, ?, 'active')
+      ON CONFLICT(id) DO UPDATE SET project = excluded.project
     `);
         stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
       }
@@ -63274,6 +63275,7 @@ var init_path_map = __esm({
 var remote_client_exports = {};
 __export(remote_client_exports, {
   remoteAddObservation: () => remoteAddObservation,
+  remoteCloseStale: () => remoteCloseStale,
   remoteCreateSession: () => remoteCreateSession,
   remoteEndSession: () => remoteEndSession,
   remoteExportMemory: () => remoteExportMemory,
@@ -63361,6 +63363,9 @@ async function remoteAddObservation(client, params) {
   } catch {
     return void 0;
   }
+}
+async function remoteCloseStale(client) {
+  await post(client, "/capture/session/gc", {});
 }
 async function remoteHealthCheck(client, timeoutMs = 3e3) {
   const ac = new AbortController();
@@ -63575,7 +63580,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.73" : "unknown"
+      version: true ? "0.8.74" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -64789,6 +64794,15 @@ async function startHttpServer(options = {}) {
       await reply.status(400).send({ error: msg });
     }
   });
+  fastify.post("/capture/session/gc", async (_request, reply) => {
+    try {
+      const closed = await storage2.closeStaleActiveSessions();
+      await reply.send({ status: "ok", closed });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(500).send({ error: msg });
+    }
+  });
   fastify.post("/capture/observation", async (request, reply) => {
     try {
       const body = request.body;
@@ -64996,8 +65010,8 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.73")
-        return "0.8.73";
+      if ("0.8.74")
+        return "0.8.74";
       try {
         const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version)

@@ -754,11 +754,17 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async createSession(sessionId: string, project: string): Promise<void> {
-    // Use INSERT OR IGNORE to handle case where session already exists
-    // (e.g., Claude Code reconnect/restart with same session ID)
+    // Upsert: insert new session or update the project path if the session already
+    // exists. The project update handles context-window overflow: Claude Code reuses
+    // the same session_id when resuming a conversation after compaction, but the
+    // working directory may differ from the original session. Updating project here
+    // keeps the sessions table aligned with where observations are actually captured.
+    // All other columns (status, started_at, summary) are left unchanged so the
+    // session's history is preserved.
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO sessions (id, project, started_at, status)
+      INSERT INTO sessions (id, project, started_at, status)
       VALUES (?, ?, ?, 'active')
+      ON CONFLICT(id) DO UPDATE SET project = excluded.project
     `);
 
     stmt.run(sessionId, project, new Date().toISOString());

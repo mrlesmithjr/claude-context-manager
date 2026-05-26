@@ -180,6 +180,19 @@ export async function remoteAddObservation(
 }
 
 /**
+ * Trigger stale session GC on the remote server.
+ *
+ * Equivalent to the local closeStaleActiveSessions() call in context-inject's
+ * local mode path. Marks sessions that have been 'active' for more than 2 hours
+ * without a Stop hook (e.g. E2E test sessions, crashed runs) as 'complete'.
+ *
+ * Best-effort: never throws. Callers catch and log independently.
+ */
+export async function remoteCloseStale(client: RemoteClient): Promise<void> {
+  await post(client, '/capture/session/gc', {});
+}
+
+/**
  * Check whether the remote server is reachable by hitting its /health endpoint.
  * Returns true if the server responds with a 2xx status, false on any error.
  * Never throws.

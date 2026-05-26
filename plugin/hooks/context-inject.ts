@@ -28,6 +28,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import {
+  remoteCloseStale,
   remoteCreateSession,
   remoteGetMemory,
   remoteHealthCheck,
@@ -210,6 +211,16 @@ async function main() {
         await remoteCreateSession(client, input.session_id, input.cwd);
       } catch (err) {
         console.error('[context-manager] Remote session create failed:', err);
+      }
+
+      // Close stale active sessions on the server — mirrors the local-mode GC call
+      // that runs in the SQLite path below. Sessions that were 'active' for more
+      // than 2 hours without a Stop hook (crashed runs, E2E leftovers) are marked
+      // 'complete'. Best-effort: never blocks the hook response.
+      try {
+        await remoteCloseStale(client);
+      } catch {
+        // Silently ignore — GC failure must never affect session start
       }
 
       // Build remote status hint
