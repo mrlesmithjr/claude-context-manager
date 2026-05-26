@@ -60569,7 +60569,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.60" : "unknown"
+      version: true ? "0.8.61" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -63256,6 +63256,84 @@ ${storedOutput}`;
   }
 };
 
+// src/utils/sanitize.ts
+function stripPrivateTags(content) {
+  let result = "";
+  let i = 0;
+  const openTag = "<private>";
+  const closeTag = "</private>";
+  while (i < content.length) {
+    const remainingLength = content.length - i;
+    if (remainingLength >= openTag.length && content.substring(i, i + openTag.length) === openTag) {
+      const closeIndex = content.indexOf(closeTag, i + openTag.length);
+      if (closeIndex !== -1) {
+        result += "[REDACTED]";
+        i = closeIndex + closeTag.length;
+      } else {
+        result += "[REDACTED]";
+        i = content.length;
+      }
+      continue;
+    }
+    result += content[i];
+    i++;
+  }
+  return result;
+}
+var SENSITIVE_PATTERNS = [
+  // API keys
+  { pattern: /\b(sk|pk|api|token)[-_]?[a-zA-Z0-9]{20,}\b/gi, replacement: "[API_KEY_REDACTED]" },
+  // AWS credentials
+  { pattern: /\bAKIA[0-9A-Z]{16}\b/g, replacement: "[AWS_KEY_REDACTED]" },
+  {
+    pattern: /aws_secret_access_key\s*=\s*[^\s]+/gi,
+    replacement: "aws_secret_access_key=[REDACTED]"
+  },
+  // JWT tokens (basic pattern - 3 base64 segments separated by dots)
+  {
+    pattern: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g,
+    replacement: "[JWT_REDACTED]"
+  },
+  // URLs with embedded credentials
+  {
+    pattern: /(\w+):\/\/[^:]+:[^@]+@[^\s]+/gi,
+    replacement: (match) => {
+      try {
+        const url2 = new URL(match);
+        return `${url2.protocol}//${url2.hostname}${url2.pathname}`;
+      } catch {
+        return "[URL_WITH_CREDENTIALS_REDACTED]";
+      }
+    }
+  },
+  // Environment variables with common secret names
+  {
+    pattern: /(PASSWORD|SECRET|TOKEN|KEY|CREDENTIALS?)\s*[:=]\s*['"]?([^\s'"]+)['"]?/gi,
+    replacement: "$1=[REDACTED]"
+  },
+  // Private keys
+  {
+    pattern: /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
+    replacement: "[PRIVATE_KEY_REDACTED]"
+  }
+];
+function sanitizeSensitiveData(content) {
+  let sanitized = content;
+  for (const { pattern, replacement } of SENSITIVE_PATTERNS) {
+    if (typeof replacement === "function") {
+      sanitized = sanitized.replace(pattern, replacement);
+    } else {
+      sanitized = sanitized.replace(pattern, replacement);
+    }
+  }
+  return sanitized;
+}
+function sanitizeContent(content) {
+  let sanitized = stripPrivateTags(content);
+  sanitized = sanitizeSensitiveData(sanitized);
+  return sanitized;
+}
+
 // src/server/http.ts
 function abortableSleep(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -63543,7 +63621,7 @@ async function startHttpServer(options = {}) {
       const body = request.body;
       const sessionId = strBound(body["session_id"], SESSION_ID_MAX, "session_id");
       const project = strBound(body["project"], PROJECT_MAX, "project");
-      const promptText = strBound(body["prompt_text"], PROMPT_TEXT_MAX, "prompt_text");
+      const promptText = sanitizeContent(strBound(body["prompt_text"], PROMPT_TEXT_MAX, "prompt_text"));
       const promptNumber = typeof body["prompt_number"] === "number" ? Math.max(0, Math.floor(body["prompt_number"])) : 0;
       const rawPromptCreatedAt = body["created_at"];
       const createdAt = typeof rawPromptCreatedAt === "string" && !isNaN(Date.parse(rawPromptCreatedAt)) ? rawPromptCreatedAt : (/* @__PURE__ */ new Date()).toISOString();

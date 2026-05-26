@@ -21,6 +21,7 @@ import { readFileSync } from 'fs';
 import { createContextManagerServer } from '../mcp/create-server.js';
 import { SQLiteStorage } from '../storage/sqlite.js';
 import { loadPathPrefixMap, normalizePath } from '../utils/path-map.js';
+import { sanitizeContent } from '../utils/sanitize.js';
 import { exportToAutoMemory, resolveMemoryDir } from '../export/memory.js';
 import { getEmbeddingService } from '../embedding/service.js';
 import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
@@ -451,7 +452,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
 
       const sessionId = strBound(body['session_id'], SESSION_ID_MAX, 'session_id');
       const project = strBound(body['project'], PROJECT_MAX, 'project');
-      const promptText = strBound(body['prompt_text'], PROMPT_TEXT_MAX, 'prompt_text');
+      const promptText = sanitizeContent(strBound(body['prompt_text'], PROMPT_TEXT_MAX, 'prompt_text'));
 
       const promptNumber =
         typeof body['prompt_number'] === 'number'
