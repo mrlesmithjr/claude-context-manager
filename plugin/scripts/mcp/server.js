@@ -1,7 +1,13 @@
 import { createRequire as __ctxCreateRequire } from 'module';
 const __ctxRequire = __ctxCreateRequire(import.meta.url);
-const __betterSqlite3 = __ctxRequire('better-sqlite3');
-const __sqliteVec = __ctxRequire('sqlite-vec');
+let __betterSqlite3, __sqliteVec, __nativeModulesAvailable;
+try {
+  __betterSqlite3 = __ctxRequire('better-sqlite3');
+  __sqliteVec = __ctxRequire('sqlite-vec');
+  __nativeModulesAvailable = true;
+} catch (_nativeErr) {
+  __nativeModulesAvailable = false;
+}
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -33439,7 +33445,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.66" : "unknown"
+      version: true ? "0.8.67" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."

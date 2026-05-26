@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 import { createRequire as __ctxCreateRequire } from 'module';
 const __ctxRequire = __ctxCreateRequire(import.meta.url);
-const __betterSqlite3 = __ctxRequire('better-sqlite3');
-const __sqliteVec = __ctxRequire('sqlite-vec');
+let __betterSqlite3, __sqliteVec, __nativeModulesAvailable;
+try {
+  __betterSqlite3 = __ctxRequire('better-sqlite3');
+  __sqliteVec = __ctxRequire('sqlite-vec');
+  __nativeModulesAvailable = true;
+} catch (_nativeErr) {
+  __nativeModulesAvailable = false;
+}
 
 // shim:better-sqlite3
 var better_sqlite3_default = __betterSqlite3;
@@ -1944,6 +1950,13 @@ async function main() {
   const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
   if (remoteUrl) {
     debugLog("REMOTE_MODE_SKIP", { reason: "file-context injection skipped in remote mode" });
+    await writeResponse({});
+    return;
+  }
+  if (!__nativeModulesAvailable) {
+    console.error(
+      "[context-manager] No server configured and native SQLite modules are not available. Run 'make server-quickstart' (macOS) or 'make server-start' (Docker), then restart Claude Code."
+    );
     await writeResponse({});
     return;
   }

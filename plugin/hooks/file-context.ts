@@ -38,6 +38,9 @@ import { loadDotEnv } from '../../src/utils/env.js';
 import { createDebugLogger } from '../../src/utils/logger.js';
 import path from 'path';
 
+// Injected by esbuild banner. True when plugin/node_modules/ native binaries are present.
+declare const __nativeModulesAvailable: boolean;
+
 const debugLog = createDebugLogger('file-context-hook-debug.log');
 
 async function readStdin(): Promise<string> {
@@ -83,6 +86,19 @@ async function main() {
   const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
   if (remoteUrl) {
     debugLog('REMOTE_MODE_SKIP', { reason: 'file-context injection skipped in remote mode' });
+    await writeResponse({});
+    return;
+  }
+
+  // Local mode requires native SQLite binaries. When they are absent (marketplace
+  // install without a local build), write a stderr warning and return empty response.
+  // This hook is non-critical (file history injection is advisory), so we do not block
+  // the Read operation, but we do surface the error so users know injection is disabled.
+  if (!__nativeModulesAvailable) {
+    console.error(
+      '[context-manager] No server configured and native SQLite modules are not available. ' +
+      "Run 'make server-quickstart' (macOS) or 'make server-start' (Docker), then restart Claude Code."
+    );
     await writeResponse({});
     return;
   }

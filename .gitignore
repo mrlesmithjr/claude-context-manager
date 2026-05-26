@@ -17,13 +17,9 @@
 
 # Dependencies
 node_modules/
-# EXCEPT plugin's vendored native modules — committed so GitHub installs work.
-# These are pruned to runtime-only files (~2MB vs ~12MB full).
-# Platform-specific: rebuild with `npm run build:plugin` if switching OS/arch.
-!plugin/node_modules/
-# Override global gitignore rules that block vendored native build artifacts
-!plugin/node_modules/**/build/
-!plugin/node_modules/**/build/**
+# plugin/node_modules/ is gitignored -- not committed.
+# Marketplace installs require server mode (CONTEXT_MANAGER_URL in .env).
+# Local SQLite mode: clone repo, run npm install, install with /plugin marketplace add /local/path
 
 # Build output
 dist/

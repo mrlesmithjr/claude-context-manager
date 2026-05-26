@@ -34,8 +34,20 @@ import {
 } from '../../src/capture/remote-client.js';
 import { loadDotEnv } from '../../src/utils/env.js';
 
-// This will be injected by esbuild --define during build
+// Injected by esbuild --define during build
 declare const PLUGIN_VERSION: string;
+// Injected by esbuild banner. True when plugin/node_modules/ native binaries are present.
+declare const __nativeModulesAvailable: boolean;
+
+// Duplicated in capture-tool.ts, capture-prompt.ts, and session-end.ts.
+// Plugin hooks are compiled independently by esbuild into single-file bundles;
+// there is no shared hook module to import from, so each file carries its own copy.
+const NO_NATIVE_ERROR =
+  '[context-manager] No server configured and native SQLite modules are not available.\n' +
+  "Run 'make server-quickstart' (macOS) or 'make server-start' (Docker) to set up a server,\n" +
+  'then restart Claude Code.\n' +
+  "For local SQLite mode: clone the repo, run 'npm install', and install locally with\n" +
+  "'/plugin marketplace add /path/to/repo'.";
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -199,6 +211,17 @@ async function main() {
     }
 
     // --- Local mode: direct SQLite access ---
+    if (!__nativeModulesAvailable) {
+      console.error(NO_NATIVE_ERROR);
+      await writeResponse({
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext: NO_NATIVE_ERROR,
+        },
+      });
+      return;
+    }
+
     storage = new SQLiteStorage();
     await storage.initialize();
 

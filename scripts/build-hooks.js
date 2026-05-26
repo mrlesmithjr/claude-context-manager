@@ -5,9 +5,16 @@
  * Builds hook scripts with version injection for runtime version checking.
  *
  * IMPORTANT: better-sqlite3 is a native module that cannot be bundled.
- * We copy the native module and its dependencies into plugin/node_modules/
- * so the plugin is self-contained. The banner uses standard require()
- * resolution (relative to script location) to find the module.
+ * plugin/node_modules/ is gitignored and NOT committed to the repository.
+ * Marketplace installs require server mode (CONTEXT_MANAGER_URL in .env).
+ * For local SQLite mode: clone the repo, run npm install, then install
+ * with /plugin marketplace add /local/path. npm install populates
+ * plugin/node_modules/ via the build:plugin script.
+ *
+ * The banner wraps the require() calls in a try/catch and sets
+ * __nativeModulesAvailable to false when they are missing. Each hook
+ * checks this sentinel before entering the local SQLite path and outputs
+ * a helpful error message instead of crashing.
  */
 
 import { build } from 'esbuild';
@@ -82,14 +89,23 @@ if (existsSync(prebuildInstall)) {
 console.log(`[build-hooks] Pruned build-time artifacts from better-sqlite3`);
 
 // Create banner that sets up require() for better-sqlite3 using standard
-// Node.js module resolution. Since we copy deps to plugin/node_modules/,
-// require('better-sqlite3') resolves from plugin/scripts/ → plugin/node_modules/.
+// Node.js module resolution. When plugin/node_modules/ is present (local build),
+// require('better-sqlite3') resolves from plugin/scripts/ -> plugin/node_modules/.
+// When plugin/node_modules/ is absent (marketplace install without a local build),
+// the try/catch sets __nativeModulesAvailable to false and each hook outputs
+// a helpful error message instead of crashing.
 // Uses __ctxRequire to avoid conflicting with esbuild's own __require polyfill.
 const banner = `
 import { createRequire as __ctxCreateRequire } from 'module';
 const __ctxRequire = __ctxCreateRequire(import.meta.url);
-const __betterSqlite3 = __ctxRequire('better-sqlite3');
-const __sqliteVec = __ctxRequire('sqlite-vec');
+let __betterSqlite3, __sqliteVec, __nativeModulesAvailable;
+try {
+  __betterSqlite3 = __ctxRequire('better-sqlite3');
+  __sqliteVec = __ctxRequire('sqlite-vec');
+  __nativeModulesAvailable = true;
+} catch (_nativeErr) {
+  __nativeModulesAvailable = false;
+}
 `.trim();
 
 // esbuild plugin to shim native modules with the banner-provided variables
@@ -162,6 +178,14 @@ console.log('[build-hooks] MCP server built (plugin/scripts/mcp/server.js)');
 // Build web server into plugin/scripts/web/ so it ships with the plugin
 // Uses CJS format because Fastify's internals use dynamic require() for Node builtins.
 // Output as .cjs so Node treats it correctly even with "type": "module" in package.json.
+//
+// NOTE: The banner here uses bare require() for native modules (no try/catch), unlike the
+// hook banners above. This is intentional. Server processes (web dashboard, HTTP MCP) are
+// launched explicitly by the user via `make server-quickstart` or `make server-start`, which
+// ensures native modules are installed before the server ever starts. A hard crash on missing
+// natives is the correct behavior here: it surfaces the misconfiguration immediately rather
+// than silently degrading. Hooks, by contrast, fire on every tool use and must never block
+// Claude Code, so they use __nativeModulesAvailable to fail gracefully with instructions.
 await build({
   entryPoints: ['web/server/index.ts'],
   bundle: true,
@@ -180,6 +204,7 @@ console.log('[build-hooks] Web server built (plugin/scripts/web/index.cjs)');
 
 // Build HTTP MCP server into plugin/scripts/mcp-http/ so it ships with the plugin
 // Uses CJS format consistent with the web server above.
+// Same intentional bare-require banner as the web server — see note above.
 await build({
   entryPoints: ['src/server/http.ts'],
   bundle: true,

@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 import { createRequire as __ctxCreateRequire } from 'module';
 const __ctxRequire = __ctxCreateRequire(import.meta.url);
-const __betterSqlite3 = __ctxRequire('better-sqlite3');
-const __sqliteVec = __ctxRequire('sqlite-vec');
+let __betterSqlite3, __sqliteVec, __nativeModulesAvailable;
+try {
+  __betterSqlite3 = __ctxRequire('better-sqlite3');
+  __sqliteVec = __ctxRequire('sqlite-vec');
+  __nativeModulesAvailable = true;
+} catch (_nativeErr) {
+  __nativeModulesAvailable = false;
+}
 
 // shim:better-sqlite3
 var better_sqlite3_default = __betterSqlite3;
@@ -2812,6 +2818,7 @@ function loadDotEnv() {
 }
 
 // plugin/hooks/capture-tool.ts
+var NO_NATIVE_ERROR = "[context-manager] No server configured and native SQLite modules are not available.\nRun 'make server-quickstart' (macOS) or 'make server-start' (Docker) to set up a server,\nthen restart Claude Code.\nFor local SQLite mode: clone the repo, run 'npm install', and install locally with\n'/plugin marketplace add /path/to/repo'.";
 async function readStdin() {
   return new Promise((resolve) => {
     let data = "";
@@ -2914,6 +2921,11 @@ ${stderr}` : stdout;
       return;
     }
     const observation = result;
+    if (!__nativeModulesAvailable) {
+      console.error(NO_NATIVE_ERROR);
+      await writeResponse({ status: "error", error: "Native SQLite modules not available. Configure CONTEXT_MANAGER_URL or install locally." });
+      return;
+    }
     storage = new SQLiteStorage();
     await storage.initialize();
     if (observation.files_touched.length > 0) {

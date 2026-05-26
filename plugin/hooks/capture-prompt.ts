@@ -39,6 +39,19 @@ import { realpathSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 
+// Injected by esbuild banner. True when plugin/node_modules/ native binaries are present.
+declare const __nativeModulesAvailable: boolean;
+
+// Duplicated in capture-tool.ts, context-inject.ts, and session-end.ts.
+// Plugin hooks are compiled independently by esbuild into single-file bundles;
+// there is no shared hook module to import from, so each file carries its own copy.
+const NO_NATIVE_ERROR =
+  '[context-manager] No server configured and native SQLite modules are not available.\n' +
+  "Run 'make server-quickstart' (macOS) or 'make server-start' (Docker) to set up a server,\n" +
+  'then restart Claude Code.\n' +
+  "For local SQLite mode: clone the repo, run 'npm install', and install locally with\n" +
+  "'/plugin marketplace add /path/to/repo'.";
+
 const debugLog = createDebugLogger('prompt-hook-debug.log');
 
 /** Default checkpoint interval in minutes. */
@@ -325,6 +338,12 @@ async function main() {
     }
 
     // --- Local mode: full validation with filesystem path checks, then write to SQLite ---
+    if (!__nativeModulesAvailable) {
+      console.error(NO_NATIVE_ERROR);
+      await writeResponse({ status: 'error', error: 'Native SQLite modules not available. Configure CONTEXT_MANAGER_URL or install locally.' });
+      return;
+    }
+
     const input = validateUserPromptSubmitInput(rawInput);
 
     // Sanitize prompt text (strip <private> tags and sensitive data)

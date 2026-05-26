@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 import { createRequire as __ctxCreateRequire } from 'module';
 const __ctxRequire = __ctxCreateRequire(import.meta.url);
-const __betterSqlite3 = __ctxRequire('better-sqlite3');
-const __sqliteVec = __ctxRequire('sqlite-vec');
+let __betterSqlite3, __sqliteVec, __nativeModulesAvailable;
+try {
+  __betterSqlite3 = __ctxRequire('better-sqlite3');
+  __sqliteVec = __ctxRequire('sqlite-vec');
+  __nativeModulesAvailable = true;
+} catch (_nativeErr) {
+  __nativeModulesAvailable = false;
+}
 
 // shim:better-sqlite3
 var better_sqlite3_default = __betterSqlite3;
@@ -2611,6 +2617,7 @@ import * as fs from "fs";
 import { realpathSync as realpathSync2 } from "fs";
 import { homedir as homedir6 } from "os";
 import path3 from "path";
+var NO_NATIVE_ERROR = "[context-manager] No server configured and native SQLite modules are not available.\nRun 'make server-quickstart' (macOS) or 'make server-start' (Docker) to set up a server,\nthen restart Claude Code.\nFor local SQLite mode: clone the repo, run 'npm install', and install locally with\n'/plugin marketplace add /path/to/repo'.";
 var debugLog = createDebugLogger("prompt-hook-debug.log");
 var DEFAULT_CHECKPOINT_INTERVAL_MINUTES = 30;
 var CHECKPOINT_WALL_CLOCK_BUDGET_MS = 3e3;
@@ -2792,6 +2799,11 @@ async function main() {
       } catch {
       }
       await writeResponse({ status: "captured" });
+      return;
+    }
+    if (!__nativeModulesAvailable) {
+      console.error(NO_NATIVE_ERROR);
+      await writeResponse({ status: "error", error: "Native SQLite modules not available. Configure CONTEXT_MANAGER_URL or install locally." });
       return;
     }
     const input = validateUserPromptSubmitInput(rawInput);

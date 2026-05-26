@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 import { createRequire as __ctxCreateRequire } from 'module';
 const __ctxRequire = __ctxCreateRequire(import.meta.url);
-const __betterSqlite3 = __ctxRequire('better-sqlite3');
-const __sqliteVec = __ctxRequire('sqlite-vec');
+let __betterSqlite3, __sqliteVec, __nativeModulesAvailable;
+try {
+  __betterSqlite3 = __ctxRequire('better-sqlite3');
+  __sqliteVec = __ctxRequire('sqlite-vec');
+  __nativeModulesAvailable = true;
+} catch (_nativeErr) {
+  __nativeModulesAvailable = false;
+}
 
 // shim:better-sqlite3
 var better_sqlite3_default = __betterSqlite3;
@@ -2006,6 +2012,7 @@ function loadDotEnv() {
 }
 
 // plugin/hooks/context-inject.ts
+var NO_NATIVE_ERROR = "[context-manager] No server configured and native SQLite modules are not available.\nRun 'make server-quickstart' (macOS) or 'make server-start' (Docker) to set up a server,\nthen restart Claude Code.\nFor local SQLite mode: clone the repo, run 'npm install', and install locally with\n'/plugin marketplace add /path/to/repo'.";
 async function readStdin() {
   return new Promise((resolve) => {
     let data = "";
@@ -2041,11 +2048,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.66") {
+    if (installedVersion !== "0.8.67") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.66"}
+   Source:    v${"0.8.67"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2100,7 +2107,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.66"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.67"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats.");
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -2120,6 +2127,16 @@ async function main() {
       });
       return;
     }
+    if (!__nativeModulesAvailable) {
+      console.error(NO_NATIVE_ERROR);
+      await writeResponse({
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: NO_NATIVE_ERROR
+        }
+      });
+      return;
+    }
     storage = new SQLiteStorage();
     await storage.initialize();
     await storage.createSession(input.session_id, input.cwd);
@@ -2133,7 +2150,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.66"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.67"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
