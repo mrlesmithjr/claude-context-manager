@@ -109,7 +109,7 @@ TOOL_INPUT=$(printf '{
   "session_id": "%s",
   "cwd": "%s",
   "tool_name": "Edit",
-  "tool_input": {"file_path": "%s/test.ts", "old_string": "", "new_string": "x"},
+  "tool_input": {"file_path": "%s/test.ts", "old_string": "", "new_string": "marketplace-capture-test"},
   "tool_response": "ok"
 }' "$HOOK_SESSION" "$HOOK_PROJECT" "$HOOK_PROJECT")
 
@@ -228,9 +228,9 @@ info "Phase 3: verify remote observations are queryable"
 sleep 1  # allow writes to commit
 
 SEARCH_RESULT=$(mcp_text 'context_search' \
-  "{\"query\":\"zero to hero test\",\"project\":\"${HOOK_PROJECT}\"}")
+  "{\"query\":\"marketplace-capture-test\",\"project\":\"${HOOK_PROJECT}\"}")
 
-assert_contains "$SEARCH_RESULT" "zero" \
+assert_contains "$SEARCH_RESULT" "marketplace-capture-test" \
   "07i: prompt captured in remote mode is searchable via context_search"
 assert_not_contains "$SEARCH_RESULT" "No observations found" \
   "07i: context_search returned real results, not a no-match message"
