@@ -790,9 +790,9 @@ export function createContextManagerServer(
       let sessionEmbeddingStats: { embedded: number; pending: number } | undefined;
       if (vecEnabled) {
         const pendingSessions = await db.countUnembeddedSessions(normalizedProject);
-        const totalCompleteSessions = await db.countSessions(normalizedProject, 'complete');
+        const totalEmbeddedSessions = await db.countEmbeddedSessions(normalizedProject);
         sessionEmbeddingStats = {
-          embedded: totalCompleteSessions - pendingSessions,
+          embedded: totalEmbeddedSessions,
           pending: pendingSessions,
         };
       }

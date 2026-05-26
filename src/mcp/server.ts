@@ -55,9 +55,10 @@ async function backgroundEmbed(): Promise<void> {
     const db = await getStorage();
     if (!await db.isVectorSearchEnabled()) return;
 
-    // Check if there's anything to embed
+    // Check if there's anything to embed (observations or sessions)
     const pending = db.countUnembedded();
-    if (pending === 0) return;
+    const pendingSessionsCount = await db.countUnembeddedSessions();
+    if (pending === 0 && pendingSessionsCount === 0) return;
 
     const embeddingService = getEmbeddingService();
 

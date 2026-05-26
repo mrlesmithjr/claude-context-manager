@@ -48610,7 +48610,10 @@ ${storedOutput}`;
     return sessionId;
   }
   async addManualObservation(params) {
-    const { text, project, sessionId, importanceScore, tags } = params;
+    const { text: rawText, project, sessionId, importanceScore, tags } = params;
+    const text = rawText.trim();
+    if (!text)
+      return void 0;
     let importance;
     if (importanceScore >= 0.65) {
       importance = "high";
@@ -48652,16 +48655,10 @@ ${storedOutput}`;
     const sessionEnrichRow = this.db.prepare(
       `SELECT enriched_text FROM sessions WHERE id = ?`
     ).get(sessionId);
-    if (!sessionEnrichRow.enriched_text) {
-      this.db.prepare(
-        `UPDATE sessions SET enriched_text = ? WHERE id = ?`
-      ).run(text, sessionId);
-    } else {
-      const appended = (sessionEnrichRow.enriched_text + "\n" + text).substring(0, 2e3);
-      this.db.prepare(
-        `UPDATE sessions SET enriched_text = ? WHERE id = ?`
-      ).run(appended, sessionId);
-    }
+    const newEntry = !sessionEnrichRow.enriched_text ? `Actions: ${text}` : `${sessionEnrichRow.enriched_text}. ${text}`;
+    this.db.prepare(
+      `UPDATE sessions SET enriched_text = ? WHERE id = ?`
+    ).run(newEntry.substring(0, 2e3), sessionId);
     return obsId;
   }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
@@ -48765,6 +48762,11 @@ ${storedOutput}`;
   }
   countUnembeddedSessions(project) {
     const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL)) AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL))`;
+    const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
+    return Promise.resolve(row.count);
+  }
+  countEmbeddedSessions(project) {
+    const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NOT NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL)) AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NOT NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL))`;
     const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
     return Promise.resolve(row.count);
   }
@@ -49444,8 +49446,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.74")
-    return "0.8.74";
+  if ("0.8.75")
+    return "0.8.75";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

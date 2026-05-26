@@ -425,6 +425,12 @@ export interface ContextStorage {
   countUnembeddedSessions(project?: string): Promise<number>;
 
   /**
+   * Count sessions that have embeddings (complete or manual with enriched_text)
+   * @param project - Project path (optional)
+   */
+  countEmbeddedSessions(project?: string): Promise<number>;
+
+  /**
    * Get recent sessions with their observations, grouped for display.
    * @param project - Project path
    * @param sessionLimit - Maximum number of sessions (default: 10)

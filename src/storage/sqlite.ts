@@ -1981,7 +1981,11 @@ export class SQLiteStorage implements ContextStorage {
     importanceScore: number;
     tags: string | undefined;
   }): Promise<number | undefined> {
-    const { text, project, sessionId, importanceScore, tags } = params;
+    const { text: rawText, project, sessionId, importanceScore, tags } = params;
+    // Defensive trim — call sites (MCP tool, HTTP handler) already validate, but guard here
+    // in case addManualObservation is called directly from tests or future integrations.
+    const text = rawText.trim();
+    if (!text) return undefined;
 
     // Derive importance level from score (same thresholds used throughout)
     let importance: ImportanceLevel;
@@ -2034,16 +2038,14 @@ export class SQLiteStorage implements ContextStorage {
       `SELECT enriched_text FROM sessions WHERE id = ?`
     ).get(sessionId) as { enriched_text: string | null };
 
-    if (!sessionEnrichRow.enriched_text) {
-      this.db.prepare(
-        `UPDATE sessions SET enriched_text = ? WHERE id = ?`
-      ).run(text, sessionId);
-    } else {
-      const appended = (sessionEnrichRow.enriched_text + '\n' + text).substring(0, 2000);
-      this.db.prepare(
-        `UPDATE sessions SET enriched_text = ? WHERE id = ?`
-      ).run(appended, sessionId);
-    }
+    // Write enriched_text in the structured session embedding format (matches buildSessionEmbeddingText)
+    // so the embedding aligns with how context_semantic_search queries are ranked.
+    const newEntry = !sessionEnrichRow.enriched_text
+      ? `Actions: ${text}`
+      : `${sessionEnrichRow.enriched_text}. ${text}`;
+    this.db.prepare(
+      `UPDATE sessions SET enriched_text = ? WHERE id = ?`
+    ).run(newEntry.substring(0, 2000), sessionId);
 
     return obsId;
   }
@@ -2169,6 +2171,18 @@ export class SQLiteStorage implements ContextStorage {
     const sql = project
       ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL)) AND project LIKE ?`
       : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL))`;
+
+    const row = project
+      ? this.db.prepare(sql).get(project + '%') as { count: number }
+      : this.db.prepare(sql).get() as { count: number };
+
+    return Promise.resolve(row.count);
+  }
+
+  countEmbeddedSessions(project?: string): Promise<number> {
+    const sql = project
+      ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NOT NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL)) AND project LIKE ?`
+      : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NOT NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL))`;
 
     const row = project
       ? this.db.prepare(sql).get(project + '%') as { count: number }

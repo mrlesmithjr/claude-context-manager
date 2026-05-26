@@ -1500,7 +1500,10 @@ ${storedOutput}`;
         return sessionId;
       }
       async addManualObservation(params) {
-        const { text, project, sessionId, importanceScore, tags } = params;
+        const { text: rawText, project, sessionId, importanceScore, tags } = params;
+        const text = rawText.trim();
+        if (!text)
+          return void 0;
         let importance;
         if (importanceScore >= 0.65) {
           importance = "high";
@@ -1542,16 +1545,10 @@ ${storedOutput}`;
         const sessionEnrichRow = this.db.prepare(
           `SELECT enriched_text FROM sessions WHERE id = ?`
         ).get(sessionId);
-        if (!sessionEnrichRow.enriched_text) {
-          this.db.prepare(
-            `UPDATE sessions SET enriched_text = ? WHERE id = ?`
-          ).run(text, sessionId);
-        } else {
-          const appended = (sessionEnrichRow.enriched_text + "\n" + text).substring(0, 2e3);
-          this.db.prepare(
-            `UPDATE sessions SET enriched_text = ? WHERE id = ?`
-          ).run(appended, sessionId);
-        }
+        const newEntry = !sessionEnrichRow.enriched_text ? `Actions: ${text}` : `${sessionEnrichRow.enriched_text}. ${text}`;
+        this.db.prepare(
+          `UPDATE sessions SET enriched_text = ? WHERE id = ?`
+        ).run(newEntry.substring(0, 2e3), sessionId);
         return obsId;
       }
       async saveSessionEmbedding(sessionId, embedding, enrichedText) {
@@ -1655,6 +1652,11 @@ ${storedOutput}`;
       }
       countUnembeddedSessions(project) {
         const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL)) AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL))`;
+        const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
+        return Promise.resolve(row.count);
+      }
+      countEmbeddedSessions(project) {
+        const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NOT NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL)) AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NOT NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL))`;
         const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
         return Promise.resolve(row.count);
       }
@@ -63580,7 +63582,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.74" : "unknown"
+      version: true ? "0.8.75" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -63960,9 +63962,9 @@ ${lines.join("\n")}`
       let sessionEmbeddingStats;
       if (vecEnabled) {
         const pendingSessions = await db.countUnembeddedSessions(normalizedProject);
-        const totalCompleteSessions = await db.countSessions(normalizedProject, "complete");
+        const totalEmbeddedSessions = await db.countEmbeddedSessions(normalizedProject);
         sessionEmbeddingStats = {
-          embedded: totalCompleteSessions - pendingSessions,
+          embedded: totalEmbeddedSessions,
           pending: pendingSessions
         };
       }
@@ -65010,8 +65012,8 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.74")
-        return "0.8.74";
+      if ("0.8.75")
+        return "0.8.75";
       try {
         const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version)

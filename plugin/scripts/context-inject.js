@@ -1442,7 +1442,10 @@ ${storedOutput}`;
     return sessionId;
   }
   async addManualObservation(params) {
-    const { text, project, sessionId, importanceScore, tags } = params;
+    const { text: rawText, project, sessionId, importanceScore, tags } = params;
+    const text = rawText.trim();
+    if (!text)
+      return void 0;
     let importance;
     if (importanceScore >= 0.65) {
       importance = "high";
@@ -1484,16 +1487,10 @@ ${storedOutput}`;
     const sessionEnrichRow = this.db.prepare(
       `SELECT enriched_text FROM sessions WHERE id = ?`
     ).get(sessionId);
-    if (!sessionEnrichRow.enriched_text) {
-      this.db.prepare(
-        `UPDATE sessions SET enriched_text = ? WHERE id = ?`
-      ).run(text, sessionId);
-    } else {
-      const appended = (sessionEnrichRow.enriched_text + "\n" + text).substring(0, 2e3);
-      this.db.prepare(
-        `UPDATE sessions SET enriched_text = ? WHERE id = ?`
-      ).run(appended, sessionId);
-    }
+    const newEntry = !sessionEnrichRow.enriched_text ? `Actions: ${text}` : `${sessionEnrichRow.enriched_text}. ${text}`;
+    this.db.prepare(
+      `UPDATE sessions SET enriched_text = ? WHERE id = ?`
+    ).run(newEntry.substring(0, 2e3), sessionId);
     return obsId;
   }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
@@ -1597,6 +1594,11 @@ ${storedOutput}`;
   }
   countUnembeddedSessions(project) {
     const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL)) AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL))`;
+    const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
+    return Promise.resolve(row.count);
+  }
+  countEmbeddedSessions(project) {
+    const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NOT NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL)) AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NOT NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL))`;
     const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
     return Promise.resolve(row.count);
   }
@@ -2064,11 +2066,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.74") {
+    if (installedVersion !== "0.8.75") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.74"}
+   Source:    v${"0.8.75"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2148,7 +2150,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.74"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.75"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats.");
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -2191,7 +2193,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.74"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.75"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
