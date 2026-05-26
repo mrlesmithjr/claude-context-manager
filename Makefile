@@ -387,6 +387,9 @@ update:
 #   2. Polls CI until the `test` check passes (fails fast on CI failure)
 #   3. Squash-merges the PR
 #   4. Tags the new main HEAD as v<version> and pushes the tag
+#   5. Merges main back into develop to prevent squash-merge divergence on the
+#      next release (squash commits on main are not ancestors of develop, so
+#      a follow-up merge would hit conflicts without this sync step)
 #
 # After this completes, run /plugin update context-manager inside Claude Code.
 release:
@@ -439,13 +442,20 @@ release:
 		gh pr checks "$$PR_NUM" --repo mrlesmithjr/claude-context-manager 2>&1; \
 		exit 1; \
 	fi; \
-	echo "[release] CI passed. Merging..."; \
-	gh pr merge "$$PR_NUM" --repo mrlesmithjr/claude-context-manager --squash; \
+	echo "[release] CI passed. Merging PR #$$PR_NUM..."; \
+	if ! gh pr merge "$$PR_NUM" --repo mrlesmithjr/claude-context-manager --squash; then \
+		echo "ERROR: PR merge failed. Check for conflicts: gh pr view $$PR_NUM"; \
+		exit 1; \
+	fi; \
 	git fetch origin main; \
 	git tag "v$$VERSION" origin/main 2>/dev/null \
 		|| echo "[release] Tag v$$VERSION already exists, skipping."; \
 	git push origin "v$$VERSION" 2>/dev/null \
 		|| echo "[release] Tag already on remote, skipping."; \
+	echo "[release] Syncing main back into develop to prevent future merge conflicts..."; \
+	git merge origin/main --no-edit -X ours 2>&1 \
+		&& git push origin develop \
+		|| echo "[WARN] Could not auto-sync main into develop. Run: git merge origin/main && git push"; \
 	echo ""; \
 	echo "================================================================"; \
 	echo " v$$VERSION is live on main and tagged."; \
