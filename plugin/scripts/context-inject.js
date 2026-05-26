@@ -2545,11 +2545,12 @@ async function post(client, path3, body) {
   }
   return response.json().catch(() => ({}));
 }
-async function remoteCreateSession(client, sessionId, project) {
+async function remoteCreateSession(client, sessionId, project, branch) {
   await post(client, "/capture/session", {
     action: "create",
     session_id: sessionId,
-    project
+    project,
+    ...branch != null ? { branch } : {}
   });
 }
 async function remoteGetMemory(client, project) {
@@ -2696,11 +2697,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.90") {
+    if (installedVersion !== "0.8.91") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.90"}
+   Source:    v${"0.8.91"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2725,6 +2726,7 @@ async function main() {
       rawInput = {};
     }
     const input = validateSessionStartInput(rawInput);
+    const branch = getCurrentBranch(input.cwd);
     const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
     const remoteToken = (process.env["CONTEXT_MANAGER_TOKEN"] ?? "").trim();
     if (remoteUrl) {
@@ -2763,7 +2765,7 @@ async function main() {
         return;
       }
       try {
-        await remoteCreateSession(client, input.session_id, input.cwd);
+        await remoteCreateSession(client, input.session_id, input.cwd, branch);
       } catch (err) {
         console.error("[context-manager] Remote session create failed:", err);
       }
@@ -2780,7 +2782,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.90"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.91"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -2859,7 +2861,6 @@ async function main() {
     }
     storage = new SQLiteStorage();
     await storage.initialize();
-    const branch = getCurrentBranch(input.cwd);
     await storage.createSession(input.session_id, input.cwd, branch);
     try {
       await storage.closeStaleActiveSessions();
@@ -2872,7 +2873,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.90"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.91"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

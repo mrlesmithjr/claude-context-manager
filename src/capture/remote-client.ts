@@ -51,11 +51,13 @@ export async function remoteCreateSession(
   client: RemoteClient,
   sessionId: string,
   project: string,
+  branch?: string | null,
 ): Promise<void> {
   await post(client, '/capture/session', {
     action: 'create',
     session_id: sessionId,
     project,
+    ...(branch != null ? { branch } : {}),
   });
 }
 

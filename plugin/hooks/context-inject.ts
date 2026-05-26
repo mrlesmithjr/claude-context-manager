@@ -162,6 +162,10 @@ async function main() {
     // Validate and sanitize input
     const input = validateSessionStartInput(rawInput);
 
+    // Detect current git branch. Never throws; returns null on any failure.
+    // Detected here (before the remote/local split) so it is available in both paths.
+    const branch = getCurrentBranch(input.cwd);
+
     // --- Remote mode: create session + fetch context from central server ---
     const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
     const remoteToken = (process.env['CONTEXT_MANAGER_TOKEN'] ?? '').trim();
@@ -209,7 +213,7 @@ async function main() {
 
       // Create session on the remote server (best-effort, non-blocking on failure)
       try {
-        await remoteCreateSession(client, input.session_id, input.cwd);
+        await remoteCreateSession(client, input.session_id, input.cwd, branch);
       } catch (err) {
         console.error('[context-manager] Remote session create failed:', err);
       }
@@ -344,9 +348,6 @@ async function main() {
 
     storage = new SQLiteStorage();
     await storage.initialize();
-
-    // Detect current git branch. Never throws; returns null on any failure.
-    const branch = getCurrentBranch(input.cwd);
 
     // Create session record (passes branch so sessions table tracks which branch was active)
     await storage.createSession(input.session_id, input.cwd, branch);

@@ -366,8 +366,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       if (action === 'create') {
         const sessionId = strBound(body['session_id'], SESSION_ID_MAX, 'session_id');
         const project = strBound(body['project'], PROJECT_MAX, 'project');
+        const branch =
+          typeof body['branch'] === 'string' && body['branch'].length > 0
+            ? body['branch'].substring(0, 256)
+            : null;
         const normalizedProject = normalizePath(project, pathMap);
-        await storage.createSession(sessionId, normalizedProject);
+        await storage.createSession(sessionId, normalizedProject, branch);
         await reply.send({ status: 'ok' });
       } else if (action === 'end') {
         const sessionId = strBound(body['session_id'], SESSION_ID_MAX, 'session_id');
