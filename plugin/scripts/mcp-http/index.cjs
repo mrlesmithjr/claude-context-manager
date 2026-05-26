@@ -60895,7 +60895,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.87" : "unknown"
+      version: true ? "0.8.88" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -62604,26 +62604,28 @@ ${storedOutput}`;
     return results;
   }
   async searchByTag(tag, project, limit = 50, includeSuperseded = false) {
-    const likePattern = `%,${tag},%`;
-    const supersededClause = includeSuperseded ? "" : " AND superseded_by IS NULL";
+    const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     let sql;
     let params;
     if (project) {
       sql = `
-        SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?${supersededClause}
-        ORDER BY created_at DESC
+        SELECT o.* FROM observations o
+        WHERE o.tags IS NOT NULL
+          AND EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)
+          AND o.project LIKE ?${supersededClause}
+        ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [likePattern, project + "%", limit];
+      params = [tag, project + "%", limit];
     } else {
       sql = `
-        SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?${supersededClause}
-        ORDER BY created_at DESC
+        SELECT o.* FROM observations o
+        WHERE o.tags IS NOT NULL
+          AND EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)${supersededClause}
+        ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [likePattern, limit];
+      params = [tag, limit];
     }
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
@@ -64569,8 +64571,8 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.87")
-    return "0.8.87";
+  if ("0.8.88")
+    return "0.8.88";
   try {
     const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

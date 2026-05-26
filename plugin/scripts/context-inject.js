@@ -574,26 +574,28 @@ ${storedOutput}`;
     return results;
   }
   async searchByTag(tag, project, limit = 50, includeSuperseded = false) {
-    const likePattern = `%,${tag},%`;
-    const supersededClause = includeSuperseded ? "" : " AND superseded_by IS NULL";
+    const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     let sql;
     let params;
     if (project) {
       sql = `
-        SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?${supersededClause}
-        ORDER BY created_at DESC
+        SELECT o.* FROM observations o
+        WHERE o.tags IS NOT NULL
+          AND EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)
+          AND o.project LIKE ?${supersededClause}
+        ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [likePattern, project + "%", limit];
+      params = [tag, project + "%", limit];
     } else {
       sql = `
-        SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?${supersededClause}
-        ORDER BY created_at DESC
+        SELECT o.* FROM observations o
+        WHERE o.tags IS NOT NULL
+          AND EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)${supersededClause}
+        ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [likePattern, limit];
+      params = [tag, limit];
     }
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
@@ -2694,11 +2696,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.87") {
+    if (installedVersion !== "0.8.88") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.87"}
+   Source:    v${"0.8.88"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2778,7 +2780,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.87"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.88"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -2870,7 +2872,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.87"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.88"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

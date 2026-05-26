@@ -763,31 +763,32 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async searchByTag(tag: string, project?: string, limit: number = 50, includeSuperseded: boolean = false): Promise<Observation[]> {
-    // Use delimiter-anchored matching to avoid substring collisions (e.g. "auth"
-    // matching a future "authentication" tag) and to make the intent explicit.
-    // Tags are stored as JSON arrays; wrapping with commas matches exact tag values.
-    const likePattern = `%,${tag},%`;
+    // Tags are stored as JSON arrays (e.g. ["auth","database"]).
+    // Use json_each() for exact value matching, the same pattern used in getTagTrend().
     // Superseded exclusion clause applied by default
-    const supersededClause = includeSuperseded ? '' : ' AND superseded_by IS NULL';
+    const supersededClause = includeSuperseded ? '' : ' AND o.superseded_by IS NULL';
     let sql: string;
     let params: unknown[];
 
     if (project) {
       sql = `
-        SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?${supersededClause}
-        ORDER BY created_at DESC
+        SELECT o.* FROM observations o
+        WHERE o.tags IS NOT NULL
+          AND EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)
+          AND o.project LIKE ?${supersededClause}
+        ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [likePattern, project + '%', limit];
+      params = [tag, project + '%', limit];
     } else {
       sql = `
-        SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?${supersededClause}
-        ORDER BY created_at DESC
+        SELECT o.* FROM observations o
+        WHERE o.tags IS NOT NULL
+          AND EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)${supersededClause}
+        ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [likePattern, limit];
+      params = [tag, limit];
     }
 
     const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;

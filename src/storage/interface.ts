@@ -588,7 +588,7 @@ export interface ContextStorage {
    * @param params.project - Project path
    * @param params.sessionId - Session ID (from getOrCreateManualSession)
    * @param params.importanceScore - Numeric score 0.0–1.0
-   * @param params.tags - Domain tags (comma-separated string or undefined)
+   * @param params.tags - Domain tags (comma-separated string; stored internally as a JSON array)
    * @param params.client - Optional calling client identifier (e.g. "Desktop", "Script").
    *   Stored as tool_name "Manual:ClientName" when provided; "Manual" when omitted.
    * @returns The inserted observation ID, or undefined if deduplicated

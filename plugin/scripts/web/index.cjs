@@ -47742,26 +47742,28 @@ ${storedOutput}`;
     return results;
   }
   async searchByTag(tag, project, limit = 50, includeSuperseded = false) {
-    const likePattern = `%,${tag},%`;
-    const supersededClause = includeSuperseded ? "" : " AND superseded_by IS NULL";
+    const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     let sql;
     let params;
     if (project) {
       sql = `
-        SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?${supersededClause}
-        ORDER BY created_at DESC
+        SELECT o.* FROM observations o
+        WHERE o.tags IS NOT NULL
+          AND EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)
+          AND o.project LIKE ?${supersededClause}
+        ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [likePattern, project + "%", limit];
+      params = [tag, project + "%", limit];
     } else {
       sql = `
-        SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?${supersededClause}
-        ORDER BY created_at DESC
+        SELECT o.* FROM observations o
+        WHERE o.tags IS NOT NULL
+          AND EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)${supersededClause}
+        ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [likePattern, limit];
+      params = [tag, limit];
     }
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
@@ -50056,8 +50058,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.87")
-    return "0.8.87";
+  if ("0.8.88")
+    return "0.8.88";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)
