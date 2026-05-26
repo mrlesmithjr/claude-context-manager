@@ -34544,7 +34544,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.92" : "unknown"
+      version: true ? "0.8.93" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -34556,7 +34556,7 @@ function createContextManagerServer(storage2, options = {}) {
     const date5 = new Date(obs.created_at);
     const datePart = date5.toISOString().substring(0, 10);
     const timePart = date5.toISOString().substring(11, 16);
-    const summaryFragment = obs.summary.length > 60 ? obs.summary.substring(0, 60) : obs.summary;
+    const summaryFragment = obs.summary.length > 80 ? obs.summary.substring(0, 80) : obs.summary;
     return `#${obs.id} [${datePart} ${timePart}] ${obs.tool_name} ${summaryFragment}`;
   }
   server.tool(
@@ -34882,7 +34882,7 @@ ${formatPrompts(prompts)}`);
           if (!renderedIds.has(obs.id)) {
             const date5 = new Date(obs.created_at);
             const timePart = date5.toISOString().substring(11, 16);
-            const fragment = obs.summary.length > 60 ? obs.summary.substring(0, 60) : obs.summary;
+            const fragment = obs.summary.length > 80 ? obs.summary.substring(0, 80) : obs.summary;
             lines.push(`    #${obs.id} [${timePart}] ${obs.tool_name} ${fragment}`);
             renderedIds.add(obs.id);
           }
@@ -34890,7 +34890,7 @@ ${formatPrompts(prompts)}`);
         {
           const date5 = new Date(target.created_at);
           const timePart = date5.toISOString().substring(11, 16);
-          const fragment = target.summary.length > 60 ? target.summary.substring(0, 60) : target.summary;
+          const fragment = target.summary.length > 80 ? target.summary.substring(0, 80) : target.summary;
           lines.push(`>>> #${target.id} [${timePart}] ${target.tool_name} ${fragment}  [MATCH]`);
           renderedIds.add(target.id);
         }
@@ -34898,7 +34898,7 @@ ${formatPrompts(prompts)}`);
           if (!renderedIds.has(obs.id)) {
             const date5 = new Date(obs.created_at);
             const timePart = date5.toISOString().substring(11, 16);
-            const fragment = obs.summary.length > 60 ? obs.summary.substring(0, 60) : obs.summary;
+            const fragment = obs.summary.length > 80 ? obs.summary.substring(0, 80) : obs.summary;
             lines.push(`    #${obs.id} [${timePart}] ${obs.tool_name} ${fragment}`);
             renderedIds.add(obs.id);
           }
