@@ -483,8 +483,8 @@ export function createContextManagerServer(
     const date = new Date(obs.created_at);
     const datePart = date.toISOString().substring(0, 10);
     const timePart = date.toISOString().substring(11, 16);
-    const summaryFragment = obs.summary.length > 60
-      ? obs.summary.substring(0, 60)
+    const summaryFragment = obs.summary.length > 80
+      ? obs.summary.substring(0, 80)
       : obs.summary;
     return `#${obs.id} [${datePart} ${timePart}] ${obs.tool_name} ${summaryFragment}`;
   }
@@ -935,7 +935,7 @@ export function createContextManagerServer(
           if (!renderedIds.has(obs.id!)) {
             const date = new Date(obs.created_at);
             const timePart = date.toISOString().substring(11, 16);
-            const fragment = obs.summary.length > 60 ? obs.summary.substring(0, 60) : obs.summary;
+            const fragment = obs.summary.length > 80 ? obs.summary.substring(0, 80) : obs.summary;
             lines.push(`    #${obs.id} [${timePart}] ${obs.tool_name} ${fragment}`);
             renderedIds.add(obs.id!);
           }
@@ -945,7 +945,7 @@ export function createContextManagerServer(
         {
           const date = new Date(target.created_at);
           const timePart = date.toISOString().substring(11, 16);
-          const fragment = target.summary.length > 60 ? target.summary.substring(0, 60) : target.summary;
+          const fragment = target.summary.length > 80 ? target.summary.substring(0, 80) : target.summary;
           lines.push(`>>> #${target.id} [${timePart}] ${target.tool_name} ${fragment}  [MATCH]`);
           renderedIds.add(target.id!);
         }
@@ -954,7 +954,7 @@ export function createContextManagerServer(
           if (!renderedIds.has(obs.id!)) {
             const date = new Date(obs.created_at);
             const timePart = date.toISOString().substring(11, 16);
-            const fragment = obs.summary.length > 60 ? obs.summary.substring(0, 60) : obs.summary;
+            const fragment = obs.summary.length > 80 ? obs.summary.substring(0, 80) : obs.summary;
             lines.push(`    #${obs.id} [${timePart}] ${obs.tool_name} ${fragment}`);
             renderedIds.add(obs.id!);
           }
