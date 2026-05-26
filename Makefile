@@ -288,6 +288,7 @@ server-launchd-install: server-init build
 		-e "s|{{TOKEN}}|$$TOKEN|g" \
 		scripts/com.mrlesmithjr.context-manager.plist.template \
 		> "$(LAUNCHD_PLIST)" && \
+	launchctl unload "$(LAUNCHD_PLIST)" 2>/dev/null || true && \
 	launchctl load "$(LAUNCHD_PLIST)" && \
 	echo "[launchd] context-manager agent installed and started." && \
 	echo "  Plist: $(LAUNCHD_PLIST)" && \
@@ -322,6 +323,7 @@ server-launchd-web-install: server-init build
 		-e "s|{{TOKEN}}|$$TOKEN|g" \
 		scripts/com.mrlesmithjr.context-manager-web.plist.template \
 		> "$(LAUNCHD_PLIST_WEB)" && \
+	launchctl unload "$(LAUNCHD_PLIST_WEB)" 2>/dev/null || true && \
 	launchctl load "$(LAUNCHD_PLIST_WEB)" && \
 	echo "[launchd-web] Web dashboard agent installed and started." && \
 	echo "  Plist: $(LAUNCHD_PLIST_WEB)" && \
