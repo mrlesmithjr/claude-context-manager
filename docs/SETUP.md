@@ -107,6 +107,8 @@ Everything in Mode 1, plus:
 ### Stop and start
 
 ```bash
+make server-restart                  # restart (auto-detects mode, preferred over mode-specific commands)
+make server-apply-env                # apply .env changes to the running server
 make server-launchd-status           # check MCP server launchd agent status
 make server-launchd-web-status       # check web dashboard launchd agent status
 make server-stop-native              # stop both services without removing config
@@ -163,9 +165,11 @@ Everything in Mode 1, plus:
 ### Stop and start
 
 ```bash
-make server-stop     # stop containers (data preserved in named volume)
-make server-start    # restart
-make server-logs     # tail logs
+make server-restart        # restart (auto-detects mode)
+make server-apply-env      # apply .env changes to the running containers
+make server-stop           # stop containers (data preserved in named volume)
+make server-start          # restart
+make server-logs           # tail logs
 ```
 
 ---
@@ -240,15 +244,35 @@ Then in Claude Code:
 
 Restart Claude Code to apply the update.
 
-> If you are running the native server or Docker server, rebuild and restart the server after updating:
->
-> ```bash
-> # Native:
-> make server-stop-native && make server-launchd-install
->
-> # Docker:
-> make server-stop && make server-start
-> ```
+> If you are running the native server or Docker server, use `make update` instead of running these steps manually. It runs `git pull`, `npm install`, `npm run build`, and restarts the server in one command. After it completes, follow the two manual steps it prints.
+
+If you prefer to run only specific steps (for example, rebuild without pulling), use the individual commands:
+
+```bash
+# Native:
+npm run build && make server-launchd-install
+
+# Docker:
+npm run build && make server-stop && make server-start
+```
+
+---
+
+## When to restart
+
+Most restarts are handled by two commands: `make server-apply-env` when you change `.env`, and `make server-restart` when you change code or rebuild. The two things that cannot be automated are restarting Claude Code and running `/plugin update`.
+
+| What changed | Command | Notes |
+|---|---|---|
+| Edited `~/.claude-context/.env` | `make server-apply-env` | Launchd reads env from its plist, not `.env` directly. This command regenerates the plist and reloads the agent. |
+| Pulled new code (`git pull` + build) | `make server-restart` | After `npm run build` completes, restart the server to load the new binary. Or use `make update` for the full cycle. |
+| Full version update | `make update` | Runs git pull, npm install, npm run build, and server-restart automatically. Two manual steps follow -- see output. |
+| Hook scripts changed only | `/plugin update` + restart Claude Code | No server restart needed. Hooks are fresh process spawns; only the plugin cache needs updating. |
+| Hook-only env var changed (e.g., `CONTEXT_MANAGER_CHECKPOINT_INTERVAL`) | None | Hooks read `.env` on every invocation. Change takes effect on the next tool call. |
+| Web dashboard client files only (`web/client/`) | None | Static files served from disk per request. Change is visible on next browser refresh. |
+| Installed new npm packages (`npm install`) | `make server-restart` | Native modules (better-sqlite3, sqlite-vec) must be reloaded. |
+
+> For native (launchd) mode, "restart" means `make server-launchd-install`, which unloads and reloads the agent with a freshly generated plist. `make server-restart` handles this automatically. You do not need to know which mode you are in.
 
 ---
 
