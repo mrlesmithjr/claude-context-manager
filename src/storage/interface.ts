@@ -46,6 +46,8 @@ export interface Session {
   ended_at?: string;
   summary?: string;
   summary_extended?: string; // Top-3 scored narrative messages joined with separators
+  enriched_text?: string; // Pre-built embedding text (set by addManualObservation; used by embedding loop)
+  source?: string; // Session source: 'hook' | 'manual'
   status: 'active' | 'complete';
   similarity_score?: number; // Cosine similarity [0,1], only present on vector search results
   last_checkpoint_at?: number; // Unix epoch ms of last checkpoint run; NULL means no checkpoint yet

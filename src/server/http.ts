@@ -168,10 +168,18 @@ async function backgroundEmbed(storage: SQLiteStorage, signal: AbortSignal): Pro
           for (const session of sessionBatch) {
             if (signal.aborted) break;
             try {
-              const prompts = await storage.getSessionPrompts(session.id);
-              const observations = await storage.getSessionObservations(session.id);
-
-              const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+              // Use pre-built enriched_text for manual sessions (written by addManualObservation);
+              // fall back to buildSessionEmbeddingText for hook sessions.
+              let enrichedText: string;
+              if (session.enriched_text) {
+                enrichedText = session.enriched_text;
+              } else {
+                const [prompts, observations] = await Promise.all([
+                  storage.getSessionPrompts(session.id),
+                  storage.getSessionObservations(session.id),
+                ]);
+                enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+              }
               if (enrichedText.length < 20) continue;
 
               // ONNX inference cannot be interrupted; run it, then check signal

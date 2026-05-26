@@ -1936,24 +1936,29 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async getOrCreateManualSession(project: string): Promise<string> {
-    // Reuse the active manual session for this project created today. At most one active
-    // manual session exists per calendar day per project under normal conditions. Stale GC
-    // may close an idle session after 2 hours, in which case the next call creates a second
-    // session for the same day — observations are still scoped correctly.
+    // Look for any manual session for this project started today — most recent first.
+    // Drop status='active' constraint so stale GC cannot fragment rapid consecutive writes.
     const existing = this.db.prepare(`
-      SELECT id FROM sessions
+      SELECT id, status FROM sessions
       WHERE project = ?
         AND source = 'manual'
-        AND date(started_at) = date('now', 'localtime')
-        AND status = 'active'
+        AND date(started_at, 'localtime') = date('now', 'localtime')
+      ORDER BY started_at DESC
       LIMIT 1
-    `).get(project) as { id: string } | undefined;
+    `).get(project) as { id: string; status: string } | undefined;
 
     if (existing) {
+      // Re-activate if GC had marked it complete so subsequent GC respects freshness.
+      // Also clear summary so the stale GC message does not appear in context_list or embedding text.
+      if (existing.status === 'complete') {
+        this.db.prepare(
+          `UPDATE sessions SET status = 'active', ended_at = NULL, summary = NULL WHERE id = ?`
+        ).run(existing.id);
+      }
       return existing.id;
     }
 
-    // Create a new manual session for today
+    // No session for today — create one
     const sessionId = randomUUID();
     this.db.prepare(`
       INSERT INTO sessions (id, project, started_at, status, source)
@@ -2010,12 +2015,31 @@ export class SQLiteStorage implements ContextStorage {
       tokenEstimate,
       importance,
       importanceScore,
-      tags ?? null,
+      tags ? JSON.stringify(tags.split(',').map(t => t.trim()).filter(Boolean)) : null,
       contentHash,
       createdAt,
     );
 
-    return Number(info.lastInsertRowid);
+    const obsId = Number(info.lastInsertRowid);
+
+    // Eagerly write enriched_text to the session so the background embedder can pick it
+    // up without waiting for GC to close the session.
+    const sessionEnrichRow = this.db.prepare(
+      `SELECT enriched_text FROM sessions WHERE id = ?`
+    ).get(sessionId) as { enriched_text: string | null };
+
+    if (!sessionEnrichRow.enriched_text) {
+      this.db.prepare(
+        `UPDATE sessions SET enriched_text = ? WHERE id = ?`
+      ).run(text, sessionId);
+    } else {
+      const appended = (sessionEnrichRow.enriched_text + '\n' + text).substring(0, 2000);
+      this.db.prepare(
+        `UPDATE sessions SET enriched_text = ? WHERE id = ?`
+      ).run(appended, sessionId);
+    }
+
+    return obsId;
   }
 
   async saveSessionEmbedding(sessionId: string, embedding: Float32Array, enrichedText: string): Promise<void> {
@@ -2137,8 +2161,8 @@ export class SQLiteStorage implements ContextStorage {
 
   countUnembeddedSessions(project?: string): Promise<number> {
     const sql = project
-      ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?`
-      : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete'`;
+      ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL)) AND project LIKE ?`
+      : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL))`;
 
     const row = project
       ? this.db.prepare(sql).get(project + '%') as { count: number }
@@ -2154,7 +2178,12 @@ export class SQLiteStorage implements ContextStorage {
     if (project) {
       sql = `
         SELECT * FROM sessions
-        WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?
+        WHERE embedding IS NULL
+          AND (
+            status = 'complete'
+            OR (source = 'manual' AND enriched_text IS NOT NULL)
+          )
+          AND project LIKE ?
         ORDER BY started_at DESC
         LIMIT ?
       `;
@@ -2162,7 +2191,11 @@ export class SQLiteStorage implements ContextStorage {
     } else {
       sql = `
         SELECT * FROM sessions
-        WHERE embedding IS NULL AND status = 'complete'
+        WHERE embedding IS NULL
+          AND (
+            status = 'complete'
+            OR (source = 'manual' AND enriched_text IS NOT NULL)
+          )
         ORDER BY started_at DESC
         LIMIT ?
       `;
@@ -2175,6 +2208,8 @@ export class SQLiteStorage implements ContextStorage {
       started_at: string;
       ended_at: string | null;
       summary: string | null;
+      enriched_text: string | null;
+      source: string | null;
       status: 'active' | 'complete';
     }>;
 
@@ -2184,6 +2219,8 @@ export class SQLiteStorage implements ContextStorage {
       started_at: row.started_at,
       ended_at: row.ended_at || undefined,
       summary: row.summary || undefined,
+      enriched_text: row.enriched_text || undefined,
+      source: row.source || undefined,
       status: row.status,
     }));
   }

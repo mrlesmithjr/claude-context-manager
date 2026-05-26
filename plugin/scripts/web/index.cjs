@@ -48335,14 +48335,19 @@ ${storedOutput}`;
   }
   async getOrCreateManualSession(project) {
     const existing = this.db.prepare(`
-      SELECT id FROM sessions
+      SELECT id, status FROM sessions
       WHERE project = ?
         AND source = 'manual'
-        AND date(started_at) = date('now', 'localtime')
-        AND status = 'active'
+        AND date(started_at, 'localtime') = date('now', 'localtime')
+      ORDER BY started_at DESC
       LIMIT 1
     `).get(project);
     if (existing) {
+      if (existing.status === "complete") {
+        this.db.prepare(
+          `UPDATE sessions SET status = 'active', ended_at = NULL, summary = NULL WHERE id = ?`
+        ).run(existing.id);
+      }
       return existing.id;
     }
     const sessionId = (0, import_crypto2.randomUUID)();
@@ -48387,11 +48392,25 @@ ${storedOutput}`;
       tokenEstimate,
       importance,
       importanceScore,
-      tags ?? null,
+      tags ? JSON.stringify(tags.split(",").map((t) => t.trim()).filter(Boolean)) : null,
       contentHash,
       createdAt
     );
-    return Number(info.lastInsertRowid);
+    const obsId = Number(info.lastInsertRowid);
+    const sessionEnrichRow = this.db.prepare(
+      `SELECT enriched_text FROM sessions WHERE id = ?`
+    ).get(sessionId);
+    if (!sessionEnrichRow.enriched_text) {
+      this.db.prepare(
+        `UPDATE sessions SET enriched_text = ? WHERE id = ?`
+      ).run(text, sessionId);
+    } else {
+      const appended = (sessionEnrichRow.enriched_text + "\n" + text).substring(0, 2e3);
+      this.db.prepare(
+        `UPDATE sessions SET enriched_text = ? WHERE id = ?`
+      ).run(appended, sessionId);
+    }
+    return obsId;
   }
   async saveSessionEmbedding(sessionId, embedding, enrichedText) {
     if (!this.vecEnabled) {
@@ -48493,7 +48512,7 @@ ${storedOutput}`;
     });
   }
   countUnembeddedSessions(project) {
-    const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND status = 'complete'`;
+    const sql = project ? `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL)) AND project LIKE ?` : `SELECT COUNT(*) as count FROM sessions WHERE embedding IS NULL AND (status = 'complete' OR (source = 'manual' AND enriched_text IS NOT NULL))`;
     const row = project ? this.db.prepare(sql).get(project + "%") : this.db.prepare(sql).get();
     return Promise.resolve(row.count);
   }
@@ -48503,7 +48522,12 @@ ${storedOutput}`;
     if (project) {
       sql = `
         SELECT * FROM sessions
-        WHERE embedding IS NULL AND status = 'complete' AND project LIKE ?
+        WHERE embedding IS NULL
+          AND (
+            status = 'complete'
+            OR (source = 'manual' AND enriched_text IS NOT NULL)
+          )
+          AND project LIKE ?
         ORDER BY started_at DESC
         LIMIT ?
       `;
@@ -48511,7 +48535,11 @@ ${storedOutput}`;
     } else {
       sql = `
         SELECT * FROM sessions
-        WHERE embedding IS NULL AND status = 'complete'
+        WHERE embedding IS NULL
+          AND (
+            status = 'complete'
+            OR (source = 'manual' AND enriched_text IS NOT NULL)
+          )
         ORDER BY started_at DESC
         LIMIT ?
       `;
@@ -48524,6 +48552,8 @@ ${storedOutput}`;
       started_at: row.started_at,
       ended_at: row.ended_at || void 0,
       summary: row.summary || void 0,
+      enriched_text: row.enriched_text || void 0,
+      source: row.source || void 0,
       status: row.status
     }));
   }

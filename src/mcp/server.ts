@@ -121,10 +121,18 @@ async function backgroundEmbed(): Promise<void> {
 
       for (const session of sessionBatch) {
         try {
-          const prompts = await db.getSessionPrompts(session.id);
-          const observations = await db.getSessionObservations(session.id);
-
-          const enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+          // Use pre-built enriched_text for manual sessions (written by addManualObservation);
+          // fall back to buildSessionEmbeddingText for hook sessions.
+          let enrichedText: string;
+          if (session.enriched_text) {
+            enrichedText = session.enriched_text;
+          } else {
+            const [prompts, observations] = await Promise.all([
+              db.getSessionPrompts(session.id),
+              db.getSessionObservations(session.id),
+            ]);
+            enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
+          }
           if (enrichedText.length < 20) continue;
 
           const sessionEmb = await embeddingService.embed(enrichedText);
