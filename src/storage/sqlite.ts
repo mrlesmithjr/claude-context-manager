@@ -56,6 +56,40 @@ function recencyFactor(capturedAt: string): number {
   return 0.7;
 }
 
+/**
+ * Apply time-weighted decay to an observation's importance score at query time.
+ *
+ * Pinned observations (pinned = 1) are exempt — their base importance is returned
+ * unchanged. All other observations receive a weighted combination of base importance,
+ * exponential age decay (half-life ~23 days), and a log-scaled frequency bonus.
+ *
+ * Decay is transient — the adjusted score is for ranking only, never written to the DB.
+ *
+ * @param obs - The observation to score
+ */
+function applyDecay(obs: Observation): number {
+  // Pinned observations use base importance only — no decay
+  if (obs.pinned === 1) return obs.importance_score;
+
+  const base = obs.importance_score;
+  // created_at is non-null in schema; NULL from hand-imported data produces
+  // near-zero recency score (graceful degradation, no throw).
+  const ageMs = Date.now() - new Date(obs.created_at).getTime();
+  const ageDays = ageMs / (1000 * 60 * 60 * 24);
+
+  // Recency score: exponential decay, half-life ~23 days
+  // score = 0.5^(ageDays/23)
+  const recencyScore = Math.pow(0.5, ageDays / 23);
+
+  // Frequency score: log2(access_count + 1), normalized to [0, 1]
+  // Cap at log2(101) for normalization ceiling
+  const accessCount = obs.access_count ?? 0;
+  const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1.0);
+
+  // Weighted combination
+  return (base * 0.60) + (recencyScore * 0.25) + (frequencyScore * 0.15);
+}
+
 export class SQLiteStorage implements ContextStorage {
   private db: Database.Database;
   private vecEnabled: boolean = false;
@@ -286,6 +320,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add decisions table for first-class decision tracking
     this.migrateAddDecisionsTable();
+
+    // Migration: add pinned and access_count columns for decay-exempt observations and retrieval frequency
+    this.migrateAddPinnedAndAccessCount();
   }
 
   /**
@@ -372,6 +409,8 @@ export class SQLiteStorage implements ContextStorage {
       ) : undefined,
       content_hash: (row.content_hash as string) || undefined,
       lesson_type: (row.lesson_type as string | null) ?? null,
+      pinned: (row.pinned as number) ?? 0,
+      access_count: (row.access_count as number) ?? 0,
       created_at: row.created_at as string,
     };
   }
@@ -492,6 +531,18 @@ export class SQLiteStorage implements ContextStorage {
     // Infer relationships for the newly inserted observation
     this.inferRelationships(insertedId, observation);
 
+    // Auto-pin observations tagged 'decision' or 'lesson', or with a lesson_type.
+    // Tags are stored as JSON arrays (e.g., ["decision","auth"]).
+    // Using JSON string matching covers both tagged and lesson-classified observations.
+    this.db.prepare(`
+      UPDATE observations SET pinned = 1
+      WHERE id = ?
+        AND (
+          tags LIKE '%"decision"%' OR tags LIKE '%"lesson"%'
+          OR lesson_type IS NOT NULL
+        )
+    `).run(insertedId);
+
     return insertedId;
   }
 
@@ -552,6 +603,9 @@ export class SQLiteStorage implements ContextStorage {
     const temporalMode = typeof projectOrOptions === 'object' && projectOrOptions !== null
       ? (projectOrOptions.temporalMode ?? 'neutral')
       : 'neutral';
+    const skipDecay = typeof projectOrOptions === 'object' && projectOrOptions !== null
+      ? (projectOrOptions.skipDecay ?? false)
+      : false;
 
     let sql: string;
     let params: unknown[];
@@ -588,7 +642,24 @@ export class SQLiteStorage implements ContextStorage {
 
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params) as Array<Record<string, unknown>>;
-    const results = rows.map(row => this.mapRow(row));
+    let results = rows.map(row => this.mapRow(row));
+
+    // Increment access_count for all returned observations (synchronous better-sqlite3 call).
+    // The DB is written here so that future searches see the updated frequency.
+    // In-memory objects are NOT updated: applyDecay() below uses the pre-retrieval
+    // access_count so this search does not boost its own decay score. The incremented
+    // value takes effect on the next retrieval — "observations retrieved often stay
+    // relevant" refers to past retrievals, not the current one.
+    // The guard on ids.length > 0 prevents an empty IN () clause which would be a SQL error.
+    if (results.length > 0) {
+      const ids = results.map(o => o.id).filter((id): id is number => id != null);
+      if (ids.length > 0) {
+        const placeholders = ids.map(() => '?').join(', ');
+        this.db.prepare(
+          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${placeholders})`
+        ).run(...ids);
+      }
+    }
 
     // Apply temporal mode post-query adjustments
     if (temporalMode === 'current') {
@@ -610,7 +681,18 @@ export class SQLiteStorage implements ContextStorage {
       );
     }
 
-    // neutral: return as-is (SQL already orders by created_at DESC)
+    // neutral: apply decay only when no temporal override is active and skipDecay is false.
+    // Temporal mode ('current' / 'historical') already controls ranking — stacking decay
+    // on top would double-penalize age and produce conflicting signals.
+    // Decay is transient — adjusted importance_score is for ranking only, not written back to DB.
+    if (!skipDecay) {
+      results = results.map(obs => ({
+        ...obs,
+        importance_score: applyDecay(obs),
+      }));
+      results.sort((a, b) => b.importance_score - a.importance_score);
+    }
+
     return results;
   }
 
@@ -2150,6 +2232,17 @@ export class SQLiteStorage implements ContextStorage {
 
     const obsId = Number(info.lastInsertRowid);
 
+    // Auto-pin observations tagged 'decision' or 'lesson' so they are exempt from decay.
+    // Tags in addManualObservation are stored as a JSON array string, matching the same
+    // format used by save(). This mirrors the auto-pin logic in save().
+    this.db.prepare(`
+      UPDATE observations SET pinned = 1
+      WHERE id = ?
+        AND (
+          tags LIKE '%"decision"%' OR tags LIKE '%"lesson"%'
+        )
+    `).run(obsId);
+
     // Eagerly write enriched_text to the session so the background embedder can pick it
     // up without waiting for GC to close the session.
     const sessionEnrichRow = this.db.prepare(
@@ -2642,7 +2735,22 @@ export class SQLiteStorage implements ContextStorage {
       ORDER BY created_at ASC
     `;
     const rows = this.db.prepare(sql).all(...safeIds) as Array<Record<string, unknown>>;
-    return Promise.resolve(rows.map(row => this.mapRow(row)));
+    const observations = rows.map(row => this.mapRow(row));
+
+    // Increment access_count for drill-down fetches (context_get tool path) so that
+    // observations explicitly examined by the user receive the same frequency bonus as
+    // those returned by search().
+    if (observations.length > 0) {
+      const foundIds = observations.map(o => o.id).filter((id): id is number => id != null);
+      if (foundIds.length > 0) {
+        const idPlaceholders = foundIds.map(() => '?').join(', ');
+        this.db.prepare(
+          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`
+        ).run(...foundIds);
+      }
+    }
+
+    return Promise.resolve(observations);
   }
 
   /**
@@ -2739,6 +2847,34 @@ export class SQLiteStorage implements ContextStorage {
 
     const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
     return rows.map(row => this.mapRow(row));
+  }
+
+  /**
+   * Migration: add pinned and access_count columns to observations.
+   *
+   * pinned = 1 marks an observation as exempt from time-weighted decay.
+   * Auto-set at capture time for observations tagged 'decision' or 'lesson',
+   * or where lesson_type IS NOT NULL.
+   *
+   * access_count tracks how often an observation has been returned in search
+   * results. Used by applyDecay() to give a frequency bonus to frequently-retrieved
+   * observations.
+   */
+  private migrateAddPinnedAndAccessCount(): void {
+    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('pinned')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (!columnNames.has('access_count')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0`);
+    }
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_pinned
+      ON observations(project, pinned) WHERE pinned = 1
+    `);
   }
 
   /**

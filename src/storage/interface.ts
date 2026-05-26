@@ -24,6 +24,11 @@ export interface SearchOptions {
    * When 'neutral' (default), existing relevance ordering is preserved.
    */
   temporalMode?: TemporalMode;
+  /**
+   * When true, skip the time-weighted decay adjustment. Used by context_list
+   * to show raw importance scores for transparency.
+   */
+  skipDecay?: boolean;
 }
 export type RelationshipType = 'same_file' | 'followed_by' | 'cross_project_same_file';
 export type ObservationTag =
@@ -67,6 +72,8 @@ export interface Observation {
   content_hash?: string; // SHA256 of summary+files_touched+stored_output, used for exact dedup
   similarity_score?: number; // Cosine similarity [0,1], only present on vector search results
   lesson_type?: string | null; // Lesson classification: 'error' | 'build_failure' | 'test_failure' | 'permission_denied' | null
+  pinned?: number;        // 1 = exempt from decay, 0 = normal (default)
+  access_count?: number;  // incremented each time observation is returned in search results
   created_at: string; // ISO 8601 timestamp
 }
 

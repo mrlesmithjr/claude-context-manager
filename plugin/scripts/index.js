@@ -95,6 +95,17 @@ function recencyFactor(capturedAt) {
     return 0.9;
   return 0.7;
 }
+function applyDecay(obs) {
+  if (obs.pinned === 1)
+    return obs.importance_score;
+  const base = obs.importance_score;
+  const ageMs = Date.now() - new Date(obs.created_at).getTime();
+  const ageDays = ageMs / (1e3 * 60 * 60 * 24);
+  const recencyScore = Math.pow(0.5, ageDays / 23);
+  const accessCount = obs.access_count ?? 0;
+  const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1);
+  return base * 0.6 + recencyScore * 0.25 + frequencyScore * 0.15;
+}
 var DEFAULT_DB_PATH, GC_SESSION_SUMMARY, SQLiteStorage;
 var init_sqlite = __esm({
   "src/storage/sqlite.ts"() {
@@ -267,6 +278,7 @@ var init_sqlite = __esm({
         this.migrateTagsToJson();
         this.migrateAddLessonType();
         this.migrateAddDecisionsTable();
+        this.migrateAddPinnedAndAccessCount();
       }
       /**
        * Add importance and compaction columns if they don't exist.
@@ -338,6 +350,8 @@ var init_sqlite = __esm({
           tags: row.tags ? row.tags.startsWith("[") ? JSON.parse(row.tags) : row.tags.split(",").filter(Boolean) : void 0,
           content_hash: row.content_hash || void 0,
           lesson_type: row.lesson_type ?? null,
+          pinned: row.pinned ?? 0,
+          access_count: row.access_count ?? 0,
           created_at: row.created_at
         };
       }
@@ -420,6 +434,14 @@ ${storedOutput}`;
         );
         const insertedId = Number(info.lastInsertRowid);
         this.inferRelationships(insertedId, observation);
+        this.db.prepare(`
+      UPDATE observations SET pinned = 1
+      WHERE id = ?
+        AND (
+          tags LIKE '%"decision"%' OR tags LIKE '%"lesson"%'
+          OR lesson_type IS NOT NULL
+        )
+    `).run(insertedId);
         return insertedId;
       }
       async getRecent(project, limit) {
@@ -456,6 +478,7 @@ ${storedOutput}`;
       async search(query, projectOrOptions) {
         const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
         const temporalMode = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.temporalMode ?? "neutral" : "neutral";
+        const skipDecay = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.skipDecay ?? false : false;
         let sql;
         let params;
         const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
@@ -480,7 +503,16 @@ ${storedOutput}`;
         }
         const stmt = this.db.prepare(sql);
         const rows = stmt.all(...params);
-        const results = rows.map((row) => this.mapRow(row));
+        let results = rows.map((row) => this.mapRow(row));
+        if (results.length > 0) {
+          const ids = results.map((o) => o.id).filter((id) => id != null);
+          if (ids.length > 0) {
+            const placeholders = ids.map(() => "?").join(", ");
+            this.db.prepare(
+              `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${placeholders})`
+            ).run(...ids);
+          }
+        }
         if (temporalMode === "current") {
           return results.map((obs) => ({
             ...obs,
@@ -491,6 +523,13 @@ ${storedOutput}`;
           return results.sort(
             (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
           );
+        }
+        if (!skipDecay) {
+          results = results.map((obs) => ({
+            ...obs,
+            importance_score: applyDecay(obs)
+          }));
+          results.sort((a, b) => b.importance_score - a.importance_score);
         }
         return results;
       }
@@ -1605,6 +1644,13 @@ ${storedOutput}`;
           createdAt
         );
         const obsId = Number(info.lastInsertRowid);
+        this.db.prepare(`
+      UPDATE observations SET pinned = 1
+      WHERE id = ?
+        AND (
+          tags LIKE '%"decision"%' OR tags LIKE '%"lesson"%'
+        )
+    `).run(obsId);
         const sessionEnrichRow = this.db.prepare(
           `SELECT enriched_text FROM sessions WHERE id = ?`
         ).get(sessionId);
@@ -1995,7 +2041,17 @@ ${storedOutput}`;
       ORDER BY created_at ASC
     `;
         const rows = this.db.prepare(sql).all(...safeIds);
-        return Promise.resolve(rows.map((row) => this.mapRow(row)));
+        const observations = rows.map((row) => this.mapRow(row));
+        if (observations.length > 0) {
+          const foundIds = observations.map((o) => o.id).filter((id) => id != null);
+          if (foundIds.length > 0) {
+            const idPlaceholders = foundIds.map(() => "?").join(", ");
+            this.db.prepare(
+              `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`
+            ).run(...foundIds);
+          }
+        }
+        return Promise.resolve(observations);
       }
       /**
        * Fetch neighboring observations in the same session around a given ID.
@@ -2073,6 +2129,31 @@ ${storedOutput}`;
         }
         const rows = this.db.prepare(sql).all(...params);
         return rows.map((row) => this.mapRow(row));
+      }
+      /**
+       * Migration: add pinned and access_count columns to observations.
+       *
+       * pinned = 1 marks an observation as exempt from time-weighted decay.
+       * Auto-set at capture time for observations tagged 'decision' or 'lesson',
+       * or where lesson_type IS NOT NULL.
+       *
+       * access_count tracks how often an observation has been returned in search
+       * results. Used by applyDecay() to give a frequency bonus to frequently-retrieved
+       * observations.
+       */
+      migrateAddPinnedAndAccessCount() {
+        const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+        const columnNames = new Set(columns.map((c) => c.name));
+        if (!columnNames.has("pinned")) {
+          this.db.exec(`ALTER TABLE observations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
+        }
+        if (!columnNames.has("access_count")) {
+          this.db.exec(`ALTER TABLE observations ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0`);
+        }
+        this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_pinned
+      ON observations(project, pinned) WHERE pinned = 1
+    `);
       }
       /**
        * Migration: add decisions table for first-class decision tracking.
@@ -64033,7 +64114,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.83" : "unknown"
+      version: true ? "0.8.84" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -65731,8 +65812,8 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.83")
-        return "0.8.83";
+      if ("0.8.84")
+        return "0.8.84";
       try {
         const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version)
