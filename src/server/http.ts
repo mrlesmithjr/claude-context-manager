@@ -740,12 +740,13 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
   //   1. Abort the embed loop so it exits after the current ONNX batch.
   //   2. Wait for the loop to fully resolve (up to 10s — MiniLM batches are
   //      ~50ms, so this is generous, but ensures ONNX is idle before step 3).
-  //   3. Dispose the ONNX pipeline to release its thread pool. Without this,
-  //      process.exit() triggers V8 teardown while ONNX worker threads are
-  //      still alive, causing: libc++abi: mutex lock failed: Invalid argument
-  //      (issue #114).
+  //   3. Dispose the ONNX pipeline — handles the clean case where threads are
+  //      already idle after the embed loop drains.
   //   4. Close Fastify, then SQLite.
-  //   5. process.exit(0).
+  //   5. SIGKILL watchdog (1s, unref'd): fallback for when onnxruntime-node
+  //      thread pool threads survive disposal and hold the event loop open.
+  //      SIGKILL bypasses V8 teardown, avoiding the libc++ mutex race (#114).
+  //      Natural exit fires instead if Node.js drains on its own.
   let embedTask: Promise<void> | undefined;
   let shuttingDown = false;
   const shutdown = async () => {
@@ -763,7 +764,10 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     await getEmbeddingService().dispose();
     await fastify.close();
     await storage.close();
-    process.exit(0);
+    // process.exit(0) triggers V8 teardown which races against onnxruntime-node
+    // thread pool threads, causing: libc++abi: mutex lock failed: Invalid argument (#114).
+    // SIGKILL watchdog bypasses V8 teardown. WAL mode is crash-safe on hard kills.
+    setTimeout(() => { process.kill(process.pid, 'SIGKILL'); }, 1000).unref();
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
