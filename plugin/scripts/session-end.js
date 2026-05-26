@@ -20,7 +20,7 @@ import path from "path";
 import { mkdirSync } from "fs";
 
 // shim:sqlite-vec
-var load = __sqliteVec.load;
+var load = __sqliteVec?.load;
 var sqlite_vec_default = __sqliteVec;
 
 // src/utils/hash.ts

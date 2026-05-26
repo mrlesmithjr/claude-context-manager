@@ -47188,7 +47188,7 @@ var import_path = __toESM(require("path"), 1);
 var import_fs = require("fs");
 
 // shim:sqlite-vec
-var load = __sqliteVec.load;
+var load = __sqliteVec?.load;
 var sqlite_vec_default = __sqliteVec;
 
 // src/utils/hash.ts
@@ -49443,8 +49443,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.70")
-    return "0.8.70";
+  if ("0.8.71")
+    return "0.8.71";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

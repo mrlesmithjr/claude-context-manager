@@ -126,7 +126,10 @@ const nativeModuleShim = {
     });
     build.onLoad({ filter: /^sqlite-vec$/, namespace: 'shim' }, args => {
       return {
-        contents: 'export const load = __sqliteVec.load; export default __sqliteVec;',
+        // Optional chaining is required: __sqliteVec is undefined when native modules
+        // are absent (marketplace install without plugin/node_modules/). Accessing
+        // .load on undefined throws at module init, before any hook code can run.
+        contents: 'export const load = __sqliteVec?.load; export default __sqliteVec;',
         loader: 'js'
       };
     });
