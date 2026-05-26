@@ -12,6 +12,37 @@ This guide walks you through installing and configuring claude-context-manager. 
 | **Docker server** | Linux, or macOS with Docker already running | Named Docker volume, shared across restarts |
 | **Local SQLite** (advanced) | Contributors, offline/embedded operation — requires cloning the repo | `~/.claude-context/context.db` on your machine |
 
+```mermaid
+flowchart LR
+    subgraph CC["Claude Code"]
+        H["Hooks\n(thin HTTP clients)"]
+    end
+
+    subgraph M1["Mode 1: Native Server (macOS)"]
+        S1["HTTP Capture Server\nport 4000 (launchd)"]
+        W1["Web Dashboard\nport 3847 (launchd)"]
+        DB1[("context.db\n~/.claude-context/")]
+    end
+
+    subgraph M2["Mode 2: Docker Server"]
+        S2["HTTP Capture Server\nport 4000 (Docker)"]
+        W2["Web Dashboard\nport 3847 (Docker)"]
+        DB2[("context.db\nDocker volume")]
+    end
+
+    subgraph M3["Mode 3: Local SQLite"]
+        DB3[("context.db\n~/.claude-context/\ndirect write")]
+    end
+
+    H -->|"CONTEXT_MANAGER_URL set"| S1
+    H -->|"CONTEXT_MANAGER_URL set"| S2
+    H -->|"no URL — direct write"| DB3
+    S1 --> DB1
+    S2 --> DB2
+    W1 --> DB1
+    W2 --> DB2
+```
+
 > **Marketplace installs require a server.** Native SQLite binaries (`better-sqlite3`, `sqlite-vec`) are not bundled with the marketplace plugin. If you install via `/plugin install context-manager` without a running server, hooks will fail at startup with a message telling you to configure one. Set up Mode 1 or Mode 2 first, then install the plugin.
 
 **Quick decision:**
@@ -162,7 +193,7 @@ This mode requires cloning the repository and building from source. It is intend
 - The repo cloned locally: `git clone https://github.com/mrlesmithjr/claude-context-manager`
 - Node.js 18+
 - Xcode Command Line Tools (macOS): `xcode-select --install` (required to build `better-sqlite3` and `sqlite-vec`)
-- `npm install` run from the repo root to build the native modules
+- `npm install && npm run build` run from the repo root — `npm install` builds native modules; `npm run build` compiles the TypeScript hooks and MCP server
 
 ### Install
 

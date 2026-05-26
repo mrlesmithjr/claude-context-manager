@@ -54,10 +54,13 @@ After installing and restarting:
 3. Use MCP tools to search or review what was captured:
 
 ```
-context_stats          # overview of current project
-context_list           # recent sessions with summaries
-context_search "auth"  # keyword search
-context_search "tag:database sqlite"  # tag-filtered search
+context_stats                          # overview of current project
+context_list                           # recent sessions with summaries
+context_search "auth"                  # keyword search
+context_search "tag:database sqlite"   # tag-filtered search
+context_decisions                      # recorded decisions from past sessions
+context_lessons                        # error patterns and lessons learned
+context_reflect                        # domain-grouped summary of recent activity
 ```
 
 To enable semantic (vector) search, run `context_embed` once. It auto-installs dependencies (~265 MB) and bootstraps embeddings for existing sessions.
@@ -68,18 +71,27 @@ To enable semantic (vector) search, run `context_embed` once. It auto-installs d
 
 | Feature | Description |
 |---------|-------------|
-| Automatic capture | PostToolUse hook records every tool interaction |
-| Importance scoring | Each observation scored 0.0-1.0; high/medium/low classification |
-| Surprise scoring | First-time file encounters boosted; frequently-seen files decayed |
+| Automatic capture | PostToolUse hook records every tool interaction with zero configuration |
+| Importance scoring | Each observation scored 0.0-1.0 at capture time; classified as high/medium/low |
+| Surprise scoring | First-time file encounters boosted; frequently-seen files decayed via 7-day windowed counter |
 | Domain tag inference | Auto-tags with `auth`, `database`, `testing`, `infra`, `config`, `frontend`, `api`, `git`, `build`, `deps` |
-| Retrieval routing | Short queries use FTS5; natural language uses vectors; mixed uses Reciprocal Rank Fusion |
-| Tag search | `tag:X` prefix in `context_search` routes directly to tag-filtered results |
-| Session summaries | Stop hook selects the best-scoring assistant message as the session narrative |
-| Conversation insights | High-signal assistant responses (tables, decisions, comparisons) extracted and stored |
+| Retrieval routing | Short queries use FTS5; natural language uses vectors; mixed queries use Reciprocal Rank Fusion |
+| Tag search | `tag:X` prefix in `context_search` routes directly to tag-filtered results; optional keyword for intersection |
+| Temporal routing | Detects current/historical/neutral intent in search queries; boosts or orders results accordingly |
+| Fuzzy search | Auto-corrects typos in search queries (Levenshtein distance <= 2, min frequency 3); correction shown in response header |
+| Branch-aware capture | Git branch stored on every observation and session; soft-rank boost in search for current branch |
+| Fact supersession | Conflicting facts (version, tech choice, etc.) auto-superseded on save; `include_superseded` param to opt in |
+| Progressive disclosure | 3-layer retrieval: `context_search` (compact) → `context_get` (full detail) → `context_timeline` (session context) |
+| Session summaries | Stop hook selects the best-scoring assistant message as the session narrative (score >= 0.25 threshold) |
+| Conversation insights | High-signal assistant responses (tables, decisions, comparisons) extracted and stored as `Conversation` observations |
+| Decisions tracking | `extractDecisions()` in Stop hook records architectural and technical decisions; queryable via `context_decisions` |
+| Error lessons | Failed tool calls analyzed for lesson type; queryable via `context_lessons` with `lesson_type` filter |
+| Reflection | `context_reflect` generates a domain-grouped summary of recent patterns, habits, and lessons |
+| Memory decay | Importance scores decay over time (23-day half-life); pinned, decision, and lesson observations are exempt |
 | Auto-memory export | Observations scoring >= 0.65 exported to `context-manager-activity.md` at session end |
 | Semantic search | Session-level vector embeddings via sqlite-vec; enriched text from prompts and actions |
 | Auto-compaction | Old observations compressed into summaries during vacuum (`Read x4: file1, file2, ...`) |
-| Observation relationships | Observations linked by shared file (`same_file`), sequence (`followed_by`), and cross-project shared file (`cross_project_same_file`); `context_search` shows cross-project results in a separate section when they exist |
+| Observation relationships | Observations linked by shared file (`same_file`), sequence (`followed_by`), and cross-project shared file; cross-project results shown in a separate section |
 | Hierarchical visibility | Parent directories see all child project contexts via prefix matching |
 | Memory audit | Detect orphaned memory directories when launch points change |
 | Memory consolidation | Migrate orphaned memories to parent with dedup and index rebuild |
@@ -87,7 +99,7 @@ To enable semantic (vector) search, run `context_embed` once. It auto-installs d
 | Web dashboard | Browse sessions, search observations, view analytics at `http://localhost:3847` |
 | PreCompact hook | Saves session state before `/compact` so context survives compaction |
 | File-context injection | Before each Read, injects a compact history of prior work on that file (first read per file per session only) |
-| Privacy tags | `<private>` tag excludes content from storage |
+| Privacy tags | `<private>` tag excludes content from storage; `old_string`/`new_string`/`content` fields stripped from Edit/Write |
 | Local storage | All data stays on your machine; no external APIs required |
 
 ---
@@ -116,16 +128,22 @@ Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server 
 
 | Tool | Description |
 |------|-------------|
+| `context_search` | Search observations and prompts. Auto-routes to FTS5, vector, or hybrid based on query length. Supports `tag:X` prefix, temporal intent detection (current/historical), branch filtering, and fuzzy typo correction. Returns compact one-line results by default. |
+| `context_get` | Fetch full detail for specific observations by ID. Use after `context_search` to read complete content of results. Accepts up to 20 IDs. |
+| `context_timeline` | Show session context around specific observation IDs. Returns the matched observations plus neighboring observations from the same session, giving chronological context for what was happening around each result. |
+| `context_list` | List recent sessions with summaries and importance distribution |
+| `context_list_projects` | List all project paths that have observations, with counts and last activity. Useful for discovering project scopes before using `context_add`. |
 | `context_add` | Write a manual observation from any MCP client (Claude Desktop, etc.). Accepts `text` (required), `project`, `importance` ("high", "medium", "low", or float 0–1), and `tags` (comma-separated). |
-| `context_stats` | Show statistics for the current project |
-| `context_list` | List recent sessions with summaries |
-| `context_search` | Search observations and prompts. Auto-routes to FTS5, vector, or hybrid. Supports `tag:X` prefix and `tag:X keyword` for intersection. |
-| `context_semantic_search` | Search sessions by meaning using enriched vector embeddings |
-| `context_embed` | Generate vector embeddings. First run installs dependencies and bootstraps all sessions. |
-| `context_vacuum` | Delete observations older than N days and run compaction. Stale session cleanup (sessions with no Stop hook) now runs automatically on every session open — `context_vacuum` is no longer needed for that purpose. Optional `stale_session_hours` (default: 2) is still accepted for on-demand cleanup. |
-| `context_prune` | Targeted pruning by tool name, importance, and/or age. Always use `dry_run=true` first. |
+| `context_stats` | Show statistics for the current project: observation counts, token usage, importance distribution, vector search status |
+| `context_lessons` | List error lessons and patterns captured from failed tool calls. Supports `query`, `lesson_type`, and `days` filters. |
+| `context_decisions` | List recorded decisions extracted from sessions. Supports free-text `query`. |
+| `context_reflect` | Generate a reflection summary of recent patterns, habits, and lessons grouped by domain. Useful at the start of a session to orient to recent work. |
+| `context_semantic_search` | Search sessions by meaning using enriched vector embeddings. Scoped to session level; use `context_search` for observation-level semantic search. |
+| `context_embed` | Generate vector embeddings. First run installs dependencies (~265 MB) and bootstraps all sessions. |
+| `context_vacuum` | Delete observations older than N days and run compaction. Stale session cleanup runs automatically on every session open; `context_vacuum` is for manual bulk cleanup. Optional `stale_session_hours` (default: 2) accepted for on-demand cleanup. |
+| `context_prune` | Targeted pruning by tool name, importance, and/or age. Always use `dry_run=true` first. At least one filter required. |
 | `context_export` | Trigger auto-memory export manually |
-| `context_memory_audit` | Scan for orphaned memory directories |
+| `context_memory_audit` | Scan for orphaned memory directories when launch points change |
 | `context_memory_consolidate` | Migrate orphaned memories to parent project (dry-run by default) |
 
 ---
@@ -300,23 +318,23 @@ Hooks write directly to SQLite via `better-sqlite3`. No background service requi
 ```mermaid
 flowchart LR
     subgraph hooks["Claude Code Hooks"]
-        SI["SessionStart\nstatus hint ~30 tokens"]
-        UP["UserPromptSubmit\ncapture prompt"]
+        SI["SessionStart\nstatus hint · session GC"]
+        UP["UserPromptSubmit\ncapture prompt · checkpoint"]
         FC["PreToolUse\nfile history before Read"]
-        PT["PostToolUse\nsummarize + score + tag"]
-        SE["Stop\nnarrative + insights + export"]
+        PT["PostToolUse\nsummarize · score · tag · branch"]
+        SE["Stop\nnarrative · insights · decisions · export"]
         PC["PreCompact\nsave session before /compact"]
     end
 
     subgraph db["SQLite ~/.claude-context/context.db"]
-        OBS["observations\nimportance · tags · embedding"]
+        OBS["observations\nimportance · tags · branch · embedding"]
         SES["sessions\nsummary · enriched_text · embedding"]
-        UPT["user_prompts FTS5-indexed"]
+        DEC["decisions · lessons · token_index"]
     end
 
     subgraph out["Outputs"]
         MEM["Auto-Memory\ncontext-manager-activity.md"]
-        MCP["MCP Tools\ncontext_search · context_list\ncontext_stats · context_embed\ncontext_vacuum · context_prune"]
+        MCP["MCP Tools\ncontext_search · context_get · context_timeline\ncontext_list · context_stats · context_add\ncontext_lessons · context_decisions · context_reflect\ncontext_embed · context_prune · context_vacuum\ncontext_export · context_memory_audit · +more"]
         WEB["Web Dashboard\nlocalhost:3847"]
     end
 
