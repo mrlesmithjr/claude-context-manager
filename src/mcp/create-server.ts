@@ -169,12 +169,24 @@ function formatStats(
     );
   }
 
-  if (stats.compacted_count > 0) {
+  const hasCompactionData = stats.compacted_count > 0 || stats.compacted_last_24h > 0 || stats.next_compaction_eligible > 0 || stats.sessions_gc_last_24h > 0;
+  if (hasCompactionData) {
     lines.push('');
     lines.push('=== Compaction ===');
-    lines.push(
-      `  Compacted: ${stats.compacted_count} observations (from ${stats.compacted_original_count} originals)`
-    );
+    if (stats.compacted_count > 0) {
+      lines.push(
+        `  Total compacted: ${stats.compacted_count} groups (from ${stats.compacted_original_count} originals)`
+      );
+    }
+    if (stats.compacted_last_24h > 0) {
+      lines.push(`  Compacted last 24h: ${stats.compacted_last_24h} groups`);
+    }
+    if (stats.sessions_gc_last_24h > 0) {
+      lines.push(`  Sessions GC'd last 24h: ${stats.sessions_gc_last_24h}`);
+    }
+    if (stats.next_compaction_eligible > 0) {
+      lines.push(`  Eligible for next compaction: ${stats.next_compaction_eligible} observations`);
+    }
   }
 
   if (vectorStats) {

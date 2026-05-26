@@ -34,6 +34,7 @@ function l2DistanceToCosine(l2Distance) {
 
 // src/storage/sqlite.ts
 var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
+var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
 var SQLiteStorage = class {
   db;
   vecEnabled = false;
@@ -535,6 +536,18 @@ ${storedOutput}`;
     const compactedRow = this.db.prepare(compactedSql).get(
       ...project ? [project] : []
     );
+    const compactedLast24hSql = project ? `SELECT COUNT(*) as count FROM observations WHERE is_compacted = 1 AND datetime(json_extract(metadata, '$.compacted_at')) > datetime('now', '-1 day') AND project LIKE ? || '%'` : `SELECT COUNT(*) as count FROM observations WHERE is_compacted = 1 AND datetime(json_extract(metadata, '$.compacted_at')) > datetime('now', '-1 day')`;
+    const compactedLast24hRow = this.db.prepare(compactedLast24hSql).get(
+      ...project ? [project] : []
+    );
+    const gcLast24hSql = project ? `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day') AND project LIKE ? || '%'` : `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day')`;
+    const gcLast24hRow = this.db.prepare(gcLast24hSql).get(
+      ...project ? [project] : []
+    );
+    const eligibleSql = project ? `SELECT COALESCE(SUM(cnt), 0) as count FROM (SELECT COUNT(*) as cnt FROM observations WHERE created_at < datetime('now', '-7 days') AND importance != 'high' AND is_compacted = 0 AND project LIKE ? || '%' GROUP BY session_id, tool_name HAVING COUNT(*) >= 3)` : `SELECT COALESCE(SUM(cnt), 0) as count FROM (SELECT COUNT(*) as cnt FROM observations WHERE created_at < datetime('now', '-7 days') AND importance != 'high' AND is_compacted = 0 GROUP BY session_id, tool_name HAVING COUNT(*) >= 3)`;
+    const eligibleRow = this.db.prepare(eligibleSql).get(
+      ...project ? [project] : []
+    );
     return {
       total_observations: baseRow.total_observations,
       total_sessions: sessionRow.count,
@@ -548,7 +561,10 @@ ${storedOutput}`;
       typical_injection_tokens: typicalInjection,
       importance_counts: importanceCounts,
       compacted_count: compactedRow?.compacted_count || 0,
-      compacted_original_count: compactedRow?.original_count || 0
+      compacted_original_count: compactedRow?.original_count || 0,
+      compacted_last_24h: compactedLast24hRow?.count || 0,
+      sessions_gc_last_24h: gcLast24hRow?.count || 0,
+      next_compaction_eligible: eligibleRow?.count || 0
     };
   }
   async createSession(sessionId, project) {
@@ -648,7 +664,7 @@ ${storedOutput}`;
       SET
         status = 'complete',
         ended_at = datetime('now'),
-        summary = '[Session ended abnormally - no Stop hook fired]'
+        summary = '${GC_SESSION_SUMMARY}'
       WHERE status = 'active'
         AND ended_at IS NULL
         AND (
@@ -1087,7 +1103,7 @@ ${storedOutput}`;
           group.tool_name,
           summary,
           JSON.stringify(uniqueFiles),
-          JSON.stringify({ compacted_from: group.cnt, original_tokens: group.total_tokens }),
+          JSON.stringify({ compacted_from: group.cnt, original_tokens: group.total_tokens, compacted_at: (/* @__PURE__ */ new Date()).toISOString() }),
           tokenEstimate,
           group.earliest
         );

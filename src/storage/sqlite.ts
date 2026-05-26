@@ -32,6 +32,10 @@ import type {
 
 const DEFAULT_DB_PATH = path.join(homedir(), '.claude-context', 'context.db');
 
+// Sentinel summary written by closeStaleActiveSessions() — used by getStats() to count GC-closed sessions.
+// Kept as a shared constant so writer and reader cannot diverge silently across refactors.
+const GC_SESSION_SUMMARY = '[Session ended abnormally - no Stop hook fired]';
+
 export class SQLiteStorage implements ContextStorage {
   private db: Database.Database;
   private vecEnabled: boolean = false;
@@ -736,6 +740,31 @@ export class SQLiteStorage implements ContextStorage {
       ...(project ? [project] : [])
     ) as { compacted_count: number; original_count: number } | undefined;
 
+    // Wrap json_extract in datetime() to canonicalize the ISO-8601 stored value
+    // ('2026-05-26T14:30:00.000Z') to SQLite's internal format before comparison.
+    // Without this, the 'T' separator (ASCII 84) sorts above space (ASCII 32),
+    // making every stored timestamp compare as "more recent" than datetime() output.
+    const compactedLast24hSql = project
+      ? `SELECT COUNT(*) as count FROM observations WHERE is_compacted = 1 AND datetime(json_extract(metadata, '$.compacted_at')) > datetime('now', '-1 day') AND project LIKE ? || '%'`
+      : `SELECT COUNT(*) as count FROM observations WHERE is_compacted = 1 AND datetime(json_extract(metadata, '$.compacted_at')) > datetime('now', '-1 day')`;
+    const compactedLast24hRow = this.db.prepare(compactedLast24hSql).get(
+      ...(project ? [project] : [])
+    ) as { count: number } | undefined;
+
+    const gcLast24hSql = project
+      ? `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day') AND project LIKE ? || '%'`
+      : `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day')`;
+    const gcLast24hRow = this.db.prepare(gcLast24hSql).get(
+      ...(project ? [project] : [])
+    ) as { count: number } | undefined;
+
+    const eligibleSql = project
+      ? `SELECT COALESCE(SUM(cnt), 0) as count FROM (SELECT COUNT(*) as cnt FROM observations WHERE created_at < datetime('now', '-7 days') AND importance != 'high' AND is_compacted = 0 AND project LIKE ? || '%' GROUP BY session_id, tool_name HAVING COUNT(*) >= 3)`
+      : `SELECT COALESCE(SUM(cnt), 0) as count FROM (SELECT COUNT(*) as cnt FROM observations WHERE created_at < datetime('now', '-7 days') AND importance != 'high' AND is_compacted = 0 GROUP BY session_id, tool_name HAVING COUNT(*) >= 3)`;
+    const eligibleRow = this.db.prepare(eligibleSql).get(
+      ...(project ? [project] : [])
+    ) as { count: number } | undefined;
+
     return {
       total_observations: baseRow.total_observations,
       total_sessions: sessionRow.count,
@@ -750,6 +779,9 @@ export class SQLiteStorage implements ContextStorage {
       importance_counts: importanceCounts,
       compacted_count: compactedRow?.compacted_count || 0,
       compacted_original_count: compactedRow?.original_count || 0,
+      compacted_last_24h: compactedLast24hRow?.count || 0,
+      sessions_gc_last_24h: gcLast24hRow?.count || 0,
+      next_compaction_eligible: eligibleRow?.count || 0,
     };
   }
 
@@ -908,7 +940,7 @@ export class SQLiteStorage implements ContextStorage {
       SET
         status = 'complete',
         ended_at = datetime('now'),
-        summary = '[Session ended abnormally - no Stop hook fired]'
+        summary = '${GC_SESSION_SUMMARY}'
       WHERE status = 'active'
         AND ended_at IS NULL
         AND (
@@ -1528,7 +1560,7 @@ export class SQLiteStorage implements ContextStorage {
           group.tool_name,
           summary,
           JSON.stringify(uniqueFiles),
-          JSON.stringify({ compacted_from: group.cnt, original_tokens: group.total_tokens }),
+          JSON.stringify({ compacted_from: group.cnt, original_tokens: group.total_tokens, compacted_at: new Date().toISOString() }),
           tokenEstimate,
           group.earliest
         );

@@ -60494,12 +60494,24 @@ function formatStats(stats, project, vectorStats, sessionEmbeddingStats) {
       `  Low:    ${imp.low.toLocaleString()} (${Math.round(imp.low / impTotal * 100)}%)`
     );
   }
-  if (stats.compacted_count > 0) {
+  const hasCompactionData = stats.compacted_count > 0 || stats.compacted_last_24h > 0 || stats.next_compaction_eligible > 0 || stats.sessions_gc_last_24h > 0;
+  if (hasCompactionData) {
     lines.push("");
     lines.push("=== Compaction ===");
-    lines.push(
-      `  Compacted: ${stats.compacted_count} observations (from ${stats.compacted_original_count} originals)`
-    );
+    if (stats.compacted_count > 0) {
+      lines.push(
+        `  Total compacted: ${stats.compacted_count} groups (from ${stats.compacted_original_count} originals)`
+      );
+    }
+    if (stats.compacted_last_24h > 0) {
+      lines.push(`  Compacted last 24h: ${stats.compacted_last_24h} groups`);
+    }
+    if (stats.sessions_gc_last_24h > 0) {
+      lines.push(`  Sessions GC'd last 24h: ${stats.sessions_gc_last_24h}`);
+    }
+    if (stats.next_compaction_eligible > 0) {
+      lines.push(`  Eligible for next compaction: ${stats.next_compaction_eligible} observations`);
+    }
   }
   if (vectorStats) {
     lines.push("");
@@ -60588,7 +60600,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.76" : "unknown"
+      version: true ? "0.8.77" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -61496,6 +61508,7 @@ function l2DistanceToCosine(l2Distance) {
 
 // src/storage/sqlite.ts
 var DEFAULT_DB_PATH = import_path5.default.join((0, import_os4.homedir)(), ".claude-context", "context.db");
+var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
 var SQLiteStorage = class {
   db;
   vecEnabled = false;
@@ -61997,6 +62010,18 @@ ${storedOutput}`;
     const compactedRow = this.db.prepare(compactedSql).get(
       ...project ? [project] : []
     );
+    const compactedLast24hSql = project ? `SELECT COUNT(*) as count FROM observations WHERE is_compacted = 1 AND datetime(json_extract(metadata, '$.compacted_at')) > datetime('now', '-1 day') AND project LIKE ? || '%'` : `SELECT COUNT(*) as count FROM observations WHERE is_compacted = 1 AND datetime(json_extract(metadata, '$.compacted_at')) > datetime('now', '-1 day')`;
+    const compactedLast24hRow = this.db.prepare(compactedLast24hSql).get(
+      ...project ? [project] : []
+    );
+    const gcLast24hSql = project ? `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day') AND project LIKE ? || '%'` : `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day')`;
+    const gcLast24hRow = this.db.prepare(gcLast24hSql).get(
+      ...project ? [project] : []
+    );
+    const eligibleSql = project ? `SELECT COALESCE(SUM(cnt), 0) as count FROM (SELECT COUNT(*) as cnt FROM observations WHERE created_at < datetime('now', '-7 days') AND importance != 'high' AND is_compacted = 0 AND project LIKE ? || '%' GROUP BY session_id, tool_name HAVING COUNT(*) >= 3)` : `SELECT COALESCE(SUM(cnt), 0) as count FROM (SELECT COUNT(*) as cnt FROM observations WHERE created_at < datetime('now', '-7 days') AND importance != 'high' AND is_compacted = 0 GROUP BY session_id, tool_name HAVING COUNT(*) >= 3)`;
+    const eligibleRow = this.db.prepare(eligibleSql).get(
+      ...project ? [project] : []
+    );
     return {
       total_observations: baseRow.total_observations,
       total_sessions: sessionRow.count,
@@ -62010,7 +62035,10 @@ ${storedOutput}`;
       typical_injection_tokens: typicalInjection,
       importance_counts: importanceCounts,
       compacted_count: compactedRow?.compacted_count || 0,
-      compacted_original_count: compactedRow?.original_count || 0
+      compacted_original_count: compactedRow?.original_count || 0,
+      compacted_last_24h: compactedLast24hRow?.count || 0,
+      sessions_gc_last_24h: gcLast24hRow?.count || 0,
+      next_compaction_eligible: eligibleRow?.count || 0
     };
   }
   async createSession(sessionId, project) {
@@ -62110,7 +62138,7 @@ ${storedOutput}`;
       SET
         status = 'complete',
         ended_at = datetime('now'),
-        summary = '[Session ended abnormally - no Stop hook fired]'
+        summary = '${GC_SESSION_SUMMARY}'
       WHERE status = 'active'
         AND ended_at IS NULL
         AND (
@@ -62549,7 +62577,7 @@ ${storedOutput}`;
           group.tool_name,
           summary,
           JSON.stringify(uniqueFiles),
-          JSON.stringify({ compacted_from: group.cnt, original_tokens: group.total_tokens }),
+          JSON.stringify({ compacted_from: group.cnt, original_tokens: group.total_tokens, compacted_at: (/* @__PURE__ */ new Date()).toISOString() }),
           tokenEstimate,
           group.earliest
         );
@@ -63391,8 +63419,8 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.76")
-    return "0.8.76";
+  if ("0.8.77")
+    return "0.8.77";
   try {
     const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

@@ -79,6 +79,10 @@ export interface Stats {
   // Compaction stats
   compacted_count: number;
   compacted_original_count: number;
+  // Compaction activity
+  compacted_last_24h: number;       // compacted observation groups written in the last 24h
+  sessions_gc_last_24h: number;     // sessions closed by stale GC in the last 24h
+  next_compaction_eligible: number; // individual observations currently eligible for next compaction run
 }
 
 export interface TimelineEntry {
