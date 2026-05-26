@@ -69,6 +69,7 @@ run_scenario "${SCRIPT_DIR}/03-concurrent-writes.sh"
 run_scenario "${SCRIPT_DIR}/04-stats.sh"
 run_scenario "${SCRIPT_DIR}/05-remote-capture.sh"
 run_scenario "${SCRIPT_DIR}/06-hook-remote-mode.sh"
+run_scenario "${SCRIPT_DIR}/07-marketplace-install-path.sh"
 
 # --- Phase 3: Summary ---
 echo "============================================"
