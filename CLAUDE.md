@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 27, 2026 (v0.8.92)
+**Last Updated**: May 26, 2026 (v0.8.94)
 
 ---
 
@@ -33,17 +33,10 @@ This file provides guidance to Claude Code when working in this repository.
 
 **Release workflow (develop to main):**
 ```bash
-gh pr create --base main --head develop --title "Release: v<version>" --body "..."
-# Wait for Tests to pass, then merge via GitHub UI or:
-gh pr merge --squash
+make release
 ```
 
-**Tag after merging:**
-```bash
-git checkout main && git pull
-git tag v<version> && git push origin v<version>
-git checkout develop
-```
+`make release` opens the PR, polls CI until the `test` check passes, squash-merges, and pushes the tag. After it completes, run `/plugin update context-manager` inside Claude Code.
 
 ---
 
@@ -67,13 +60,12 @@ This is a TypeScript Claude Code plugin. All code changes follow the mandatory m
 
 **Plugin release workflow** (after code review passes):
 1. `npm version patch --no-git-tag-version` - bump the version
-2. `npm run build:plugin` - builds all components and syncs the version to `plugin/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`
-3. Commit all changed files, including `plugin/scripts/`, `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `package.json`, and `package-lock.json`
-4. `git push` - built artifacts must be on GitHub before `/plugin update` will see the new version
-5. `/plugin update context-manager` inside Claude Code
-6. Restart Claude Code
+2. `make update` - builds artifacts, commits, pushes to develop, restarts server
+3. `make release` - opens PR, waits for CI, merges to main, tags
+4. `/plugin update context-manager` inside Claude Code
+5. Restart Claude Code
 
-`make update` automates steps 2-4 (pull, install, build, commit, push, server restart). It does NOT bump the version. Run `npm version patch --no-git-tag-version` before `make update` if you want a version number change.
+`make update` does NOT bump the version — always run step 1 first. `make release` is the step that surfaces changes to the marketplace; skipping it means `/plugin update` will not see the new version.
 
 **Note:** `/plugin update` refreshes the Claude Code side (hooks + proxy) but does NOT restart the HTTP server. After pushing, run `make update` in the repo to rebuild and restart the server so new MCP tools and fixes take effect in remote mode.
 

@@ -26,7 +26,7 @@ NODE_BIN         := $(shell which node)
 
 .PHONY: help build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
         server-build server-clean server-init server-start server-stop server-logs \
-        server-status server-env server-restart server-apply-env update \
+        server-status server-env server-restart server-apply-env update release \
         server-native-start server-native-stop server-native-status \
         server-launchd-install server-launchd-uninstall server-launchd-status \
         server-quickstart server-stop-native switch-to-docker switch-to-native \
@@ -76,6 +76,7 @@ help:
 	@echo ""
 	@echo "Development"
 	@echo "  make update              Pull, build, and restart server (then follow prompts)"
+	@echo "  make release             Merge develop->main, tag, and publish to marketplace"
 	@echo ""
 	@echo "See docs/SETUP.md for a full setup walkthrough."
 
@@ -374,6 +375,82 @@ update:
 	@echo "   1. Restart Claude Code  (Cmd+Q and reopen, or /exit in terminal mode)"
 	@echo "   2. /plugin update context-manager  (run inside Claude Code after restart)"
 	@echo "================================================================"
+
+# Merge develop -> main, tag the release, and surface it to the marketplace.
+#
+# Prerequisites (must be done first):
+#   npm version patch --no-git-tag-version   bump the version
+#   make update                              build artifacts, commit, push to develop
+#
+# What this does:
+#   1. Opens a PR from develop -> main (or reuses an existing one)
+#   2. Polls CI until the `test` check passes (fails fast on CI failure)
+#   3. Squash-merges the PR
+#   4. Tags the new main HEAD as v<version> and pushes the tag
+#
+# After this completes, run /plugin update context-manager inside Claude Code.
+release:
+	@BRANCH=$$(git branch --show-current); \
+	if [ "$$BRANCH" != "develop" ]; then \
+		echo "ERROR: run 'make release' from 'develop' (currently on '$$BRANCH')."; \
+		exit 1; \
+	fi; \
+	if [ -n "$$(git status --porcelain)" ]; then \
+		echo "ERROR: uncommitted changes present -- commit and push first."; \
+		exit 1; \
+	fi; \
+	AHEAD=$$(git rev-list origin/develop..develop --count 2>/dev/null || echo "0"); \
+	if [ "$$AHEAD" -gt 0 ]; then \
+		echo "ERROR: local develop is ahead of origin -- run 'git push' first."; \
+		exit 1; \
+	fi; \
+	VERSION=$$(node -p "require('./package.json').version"); \
+	echo "[release] v$$VERSION: develop -> main"; \
+	PR_OUTPUT=$$(gh pr create \
+		--repo mrlesmithjr/claude-context-manager \
+		--base main --head develop \
+		--title "Release: v$$VERSION" \
+		--body "Release v$$VERSION." 2>&1); \
+	PR_EXIT=$$?; \
+	if [ "$$PR_EXIT" -ne 0 ]; then \
+		if echo "$$PR_OUTPUT" | grep -qi "already exists"; then \
+			PR_NUM=$$(gh pr list \
+				--repo mrlesmithjr/claude-context-manager \
+				--base main --head develop \
+				--json number --jq '.[0].number'); \
+			echo "[release] Reusing existing PR #$$PR_NUM"; \
+		else \
+			echo "ERROR: gh pr create failed:"; echo "$$PR_OUTPUT"; exit 1; \
+		fi; \
+	else \
+		PR_NUM=$$(echo "$$PR_OUTPUT" | grep -oE '[0-9]+$$'); \
+		echo "[release] PR #$$PR_NUM created"; \
+	fi; \
+	echo "[release] Waiting for CI on PR #$$PR_NUM (polling every 10s)..."; \
+	sleep 5; \
+	while gh pr checks "$$PR_NUM" \
+			--repo mrlesmithjr/claude-context-manager 2>&1 | grep -q "pending"; do \
+		printf "."; sleep 10; \
+	done; \
+	echo ""; \
+	if gh pr checks "$$PR_NUM" \
+			--repo mrlesmithjr/claude-context-manager 2>&1 | grep -q "fail"; then \
+		echo "ERROR: CI checks failed:"; \
+		gh pr checks "$$PR_NUM" --repo mrlesmithjr/claude-context-manager 2>&1; \
+		exit 1; \
+	fi; \
+	echo "[release] CI passed. Merging..."; \
+	gh pr merge "$$PR_NUM" --repo mrlesmithjr/claude-context-manager --squash; \
+	git fetch origin main; \
+	git tag "v$$VERSION" origin/main 2>/dev/null \
+		|| echo "[release] Tag v$$VERSION already exists, skipping."; \
+	git push origin "v$$VERSION" 2>/dev/null \
+		|| echo "[release] Tag already on remote, skipping."; \
+	echo ""; \
+	echo "================================================================"; \
+	echo " v$$VERSION is live on main and tagged."; \
+	echo " Next: /plugin update context-manager  (inside Claude Code)"; \
+	echo "================================================================"
 
 # --- Native server (macOS recommended) ---
 #
