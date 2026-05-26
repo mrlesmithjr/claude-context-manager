@@ -544,6 +544,39 @@ export interface ContextStorage {
   }): Promise<number | undefined>;
 
   /**
+   * Fetch full Observation objects for a list of IDs.
+   * IDs that do not exist in the database are silently skipped.
+   * Results are returned in ascending created_at order.
+   *
+   * @param ids - Array of integer observation rowids (max 20)
+   */
+  getObservationsByIds(ids: number[]): Promise<Observation[]>;
+
+  /**
+   * Get related observation references for a given observation ID.
+   * Returns the related observation's ID and the relationship type.
+   * Checks both source_id and target_id columns so direction does not matter.
+   *
+   * @param id - The observation ID to find relations for
+   * @returns Array of { id, relationship } pairs (max 5)
+   */
+  getRelatedObservationRefs(id: number): Promise<Array<{ id: number; relationship: string }>>;
+
+  /**
+   * Fetch neighboring observations in the same session around a given ID.
+   * Used by context_timeline to provide chronological context.
+   *
+   * @param id - The target observation ID
+   * @param window - Number of observations to include on each side (default: 3)
+   * @returns before (reversed to chronological), target, after arrays
+   *   If the target ID does not exist, returns null.
+   */
+  getObservationNeighbors(
+    id: number,
+    window: number
+  ): Promise<{ before: Observation[]; target: Observation; after: Observation[] } | null>;
+
+  /**
    * Close storage connection
    */
   close(): Promise<void>;

@@ -356,9 +356,23 @@ export function createContextManagerServer(
 
   // --- Tool Definitions ---
 
+  /**
+   * Format a single observation as a compact one-line summary.
+   * Format: #<id> [YYYY-MM-DD HH:MM] <tool_name> <first 60 chars of summary>
+   */
+  function formatObservationCompact(obs: Observation): string {
+    const date = new Date(obs.created_at);
+    const datePart = date.toISOString().substring(0, 10);
+    const timePart = date.toISOString().substring(11, 16);
+    const summaryFragment = obs.summary.length > 60
+      ? obs.summary.substring(0, 60)
+      : obs.summary;
+    return `#${obs.id} [${datePart} ${timePart}] ${obs.tool_name} ${summaryFragment}`;
+  }
+
   server.tool(
     'context_search',
-    'Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain tag.',
+    'Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain tag. Returns compact one-line summaries by default; pass compact=false for full text.',
     {
       query: z.string().describe('Search query. Supports tag:X prefix to filter by domain tag (e.g. "tag:auth", "tag:finance budget"). Developer tags: auth, database, testing, infra, config, frontend, api, git, build, deps. Personal ops tags: home, lawn, finance, health, travel, planning, decision, personal.'),
       project: z
@@ -367,10 +381,19 @@ export function createContextManagerServer(
         .describe(
           'Project path to scope search. Omit to search all projects.'
         ),
+      compact: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe(
+          'When true (default), each result is one line: #<id> [date time] tool summary. Pass compact=false to get full observation text. Use context_get with the returned IDs to fetch full detail for specific results.'
+        ),
     },
-    async ({ query, project }) => {
+    async ({ query, project, compact }) => {
+      const useCompact = compact !== false;
+
       if (isProxy) {
-        return proxyToolCall('context_search', { query, project: np(project) }, remoteUrl, remoteToken);
+        return proxyToolCall('context_search', { query, project: np(project), compact: useCompact }, remoteUrl, remoteToken);
       }
 
       const db = await getDb();
@@ -390,8 +413,12 @@ export function createContextManagerServer(
         const label = remainingQuery
           ? `tag:${tag} + keyword "${remainingQuery}"`
           : `tag:${tag}`;
+        const modeLabel = useCompact ? 'compact' : 'full';
+        const formattedResults = useCompact
+          ? results.map(o => formatObservationCompact(o)).join('\n')
+          : formatObservations(results);
         const text = results.length > 0
-          ? `Found ${results.length} observations (${label}):\n\n${formatObservations(results)}`
+          ? `[search: ${label} | ${modeLabel}] ${results.length} results\n\n${formattedResults}`
           : `No observations found for ${label}.`;
         return { content: [{ type: 'text' as const, text }] };
       }
@@ -461,6 +488,7 @@ export function createContextManagerServer(
 
       // Build response sections
       const sections: string[] = [];
+      const modeLabel = useCompact ? 'compact' : 'full';
 
       // Session-level results (from semantic strategy)
       if (sessionResults.length > 0) {
@@ -475,41 +503,46 @@ export function createContextManagerServer(
           lines.push(`  ${summaryPreview}`);
           lines.push('');
         }
-        sections.push(`Found ${sessionResults.length} semantically similar sessions (${searchMethod}):\n\n${lines.join('\n')}`);
+        sections.push(`[search: ${searchMethod} | ${modeLabel}] ${sessionResults.length} sessions\n\n${lines.join('\n')}`);
       }
 
       // Observation results
       if (observations.length > 0) {
-        sections.push(`Found ${observations.length} observations (${searchMethod}):\n\n${formatObservations(observations)}`);
+        const formattedObs = useCompact
+          ? observations.map(o => formatObservationCompact(o)).join('\n')
+          : formatObservations(observations);
+        sections.push(`[search: ${searchMethod} | ${modeLabel}] ${observations.length} results\n\n${formattedObs}`);
 
-        // Enrich top 3 results with related observations
-        const topResults = observations.slice(0, 3).filter(o => o.id != null);
-        const relatedIds = new Set(observations.map(o => o.id));
-        const relatedObs: Observation[] = [];
-        const crossProjectObs: Observation[] = [];
-        for (const obs of topResults) {
-          // Intra-project relations (same_file, followed_by)
-          const related = await db.getRelatedObservations(obs.id!, ['same_file', 'followed_by']);
-          for (const r of related) {
-            if (r.id != null && !relatedIds.has(r.id)) {
-              relatedIds.add(r.id);
-              relatedObs.push(r);
+        if (!useCompact) {
+          // Enrich top 3 results with related observations (full mode only)
+          const topResults = observations.slice(0, 3).filter(o => o.id != null);
+          const relatedIds = new Set(observations.map(o => o.id));
+          const relatedObs: Observation[] = [];
+          const crossProjectObs: Observation[] = [];
+          for (const obs of topResults) {
+            // Intra-project relations (same_file, followed_by)
+            const related = await db.getRelatedObservations(obs.id!, ['same_file', 'followed_by']);
+            for (const r of related) {
+              if (r.id != null && !relatedIds.has(r.id)) {
+                relatedIds.add(r.id);
+                relatedObs.push(r);
+              }
+            }
+            // Cross-project relations (cross_project_same_file)
+            const crossRelated = await db.getRelatedObservations(obs.id!, ['cross_project_same_file']);
+            for (const r of crossRelated) {
+              if (r.id != null && !relatedIds.has(r.id)) {
+                relatedIds.add(r.id);
+                crossProjectObs.push(r);
+              }
             }
           }
-          // Cross-project relations (cross_project_same_file)
-          const crossRelated = await db.getRelatedObservations(obs.id!, ['cross_project_same_file']);
-          for (const r of crossRelated) {
-            if (r.id != null && !relatedIds.has(r.id)) {
-              relatedIds.add(r.id);
-              crossProjectObs.push(r);
-            }
+          if (relatedObs.length > 0) {
+            sections.push(`Related observations:\n\n${formatObservations(relatedObs.slice(0, 10))}`);
           }
-        }
-        if (relatedObs.length > 0) {
-          sections.push(`Related observations:\n\n${formatObservations(relatedObs.slice(0, 10))}`);
-        }
-        if (crossProjectObs.length > 0) {
-          sections.push(`Cross-project related observations (same file, different project):\n\n${formatObservations(crossProjectObs.slice(0, 10))}`);
+          if (crossProjectObs.length > 0) {
+            sections.push(`Cross-project related observations (same file, different project):\n\n${formatObservations(crossProjectObs.slice(0, 10))}`);
+          }
         }
       }
 
@@ -539,6 +572,139 @@ export function createContextManagerServer(
             text: sections.join('\n\n'),
           },
         ],
+      };
+    }
+  );
+
+  server.tool(
+    'context_get',
+    'Fetch full detail for specific observations by ID. Use after context_search to read the complete content of results you want to examine. Pass the IDs shown in compact search output (e.g. #142 -> id 142).',
+    {
+      ids: z.array(z.number().int().positive()).min(1).max(20).describe('Observation IDs from a prior context_search call (max 20)'),
+    },
+    async ({ ids }) => {
+      if (isProxy) {
+        return proxyToolCall('context_get', { ids }, remoteUrl, remoteToken);
+      }
+
+      const db = await getDb();
+      const observations = await db.getObservationsByIds(ids);
+
+      // Report any missing IDs
+      const foundIds = new Set(observations.map(o => o.id));
+      const missingIds = ids.filter(id => !foundIds.has(id));
+
+      const lines: string[] = [];
+
+      for (const obs of observations) {
+        const date = new Date(obs.created_at);
+        const datePart = date.toISOString().substring(0, 10);
+        const timePart = date.toISOString().substring(11, 16);
+        const tagsStr = obs.tags && obs.tags.length > 0 ? `[${obs.tags.join(', ')}]` : '[]';
+        const shortSessionId = obs.session_id.substring(0, 8);
+
+        lines.push(`#${obs.id} [${datePart} ${timePart}] importance: ${obs.importance_score.toFixed(2)} tags: ${tagsStr}`);
+
+        const fileStr = obs.files_touched.length > 0
+          ? obs.files_touched.map(f => f.split('/').pop()).join(', ')
+          : '(none)';
+        lines.push(`Tool: ${obs.tool_name} | File: ${fileStr} | Session: ${shortSessionId}`);
+        lines.push(`Summary: ${obs.summary}`);
+
+        // Fetch related observations with relationship types
+        const relRows = await db.getRelatedObservationRefs(obs.id!);
+        if (relRows.length > 0) {
+          const relatedParts = relRows.map(r => `#${r.id} (${r.relationship})`);
+          lines.push(`Related: ${relatedParts.join(', ')}`);
+        }
+
+        lines.push('');
+      }
+
+      if (missingIds.length > 0) {
+        for (const id of missingIds) {
+          lines.push(`ID ${id} not found`);
+        }
+      }
+
+      const text = lines.join('\n').trimEnd();
+      return {
+        content: [{ type: 'text' as const, text: text || 'No observations found for the given IDs.' }],
+      };
+    }
+  );
+
+  server.tool(
+    'context_timeline',
+    'Show session context around specific observation IDs. Returns the matched observations plus neighboring observations from the same session, giving chronological context for what was happening around each match. Use after context_search to understand what led up to and followed a result.',
+    {
+      ids: z.array(z.number().int().positive()).min(1).max(10).describe('Observation IDs from a prior context_search call (max 10)'),
+      window: z.number().int().min(1).max(10).optional().default(3).describe('Number of observations to include on each side of each match (default: 3)'),
+    },
+    async ({ ids, window: windowSize }) => {
+      const effectiveWindow = windowSize ?? 3;
+
+      if (isProxy) {
+        return proxyToolCall('context_timeline', { ids, window: effectiveWindow }, remoteUrl, remoteToken);
+      }
+
+      const db = await getDb();
+      const lines: string[] = [];
+
+      // Deduplicate incoming IDs before processing to avoid redundant neighbor queries
+      const uniqueIds = [...new Set(ids)];
+
+      // Track globally rendered observation IDs to suppress duplicates when windows overlap
+      const renderedIds = new Set<number>();
+
+      for (const id of uniqueIds) {
+        const result = await db.getObservationNeighbors(id, effectiveWindow);
+
+        if (!result) {
+          lines.push(`ID ${id} not found`);
+          lines.push('');
+          continue;
+        }
+
+        const { before, target, after } = result;
+
+        lines.push(`=== Context around #${id} ===`);
+
+        for (const obs of before) {
+          if (!renderedIds.has(obs.id!)) {
+            const date = new Date(obs.created_at);
+            const timePart = date.toISOString().substring(11, 16);
+            const fragment = obs.summary.length > 60 ? obs.summary.substring(0, 60) : obs.summary;
+            lines.push(`    #${obs.id} [${timePart}] ${obs.tool_name} ${fragment}`);
+            renderedIds.add(obs.id!);
+          }
+        }
+
+        // Target observation (highlighted)
+        {
+          const date = new Date(target.created_at);
+          const timePart = date.toISOString().substring(11, 16);
+          const fragment = target.summary.length > 60 ? target.summary.substring(0, 60) : target.summary;
+          lines.push(`>>> #${target.id} [${timePart}] ${target.tool_name} ${fragment}  [MATCH]`);
+          renderedIds.add(target.id!);
+        }
+
+        for (const obs of after) {
+          if (!renderedIds.has(obs.id!)) {
+            const date = new Date(obs.created_at);
+            const timePart = date.toISOString().substring(11, 16);
+            const fragment = obs.summary.length > 60 ? obs.summary.substring(0, 60) : obs.summary;
+            lines.push(`    #${obs.id} [${timePart}] ${obs.tool_name} ${fragment}`);
+            renderedIds.add(obs.id!);
+          }
+        }
+
+        lines.push('');
+      }
+
+      const text = lines.join('\n').trimEnd();
+      return {
+        content: [{ type: 'text' as const, text: text || 'No timeline data found for the given IDs.' }],
       };
     }
   );

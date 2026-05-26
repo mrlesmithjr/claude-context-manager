@@ -49027,6 +49027,70 @@ ${storedOutput}`;
       return null;
     return this.mapRow(row);
   }
+  /**
+   * Get related observation references via observation_relationships.
+   * Checks both source_id and target_id so direction does not matter.
+   */
+  getRelatedObservationRefs(id) {
+    const rows = this.db.prepare(`
+      SELECT
+        CASE WHEN r.source_id = ? THEN r.target_id ELSE r.source_id END AS related_id,
+        r.relationship
+      FROM observation_relationships r
+      WHERE r.source_id = ? OR r.target_id = ?
+      LIMIT 5
+    `).all(id, id, id);
+    return Promise.resolve(rows.map((r) => ({ id: r.related_id, relationship: r.relationship })));
+  }
+  /**
+   * Fetch full Observation objects for a list of IDs.
+   * IDs that do not exist are silently skipped.
+   * Results returned in ascending created_at order.
+   */
+  getObservationsByIds(ids) {
+    if (ids.length === 0)
+      return Promise.resolve([]);
+    const safeIds = ids.map((id) => Math.trunc(id)).filter((id) => id > 0);
+    if (safeIds.length === 0)
+      return Promise.resolve([]);
+    const placeholders = safeIds.map(() => "?").join(", ");
+    const sql = `
+      SELECT * FROM observations
+      WHERE id IN (${placeholders})
+      ORDER BY created_at ASC
+    `;
+    const rows = this.db.prepare(sql).all(...safeIds);
+    return Promise.resolve(rows.map((row) => this.mapRow(row)));
+  }
+  /**
+   * Fetch neighboring observations in the same session around a given ID.
+   * Returns null if the target ID does not exist.
+   */
+  getObservationNeighbors(id, window) {
+    const targetRow = this.db.prepare(`
+      SELECT * FROM observations WHERE id = ?
+    `).get(id);
+    if (!targetRow)
+      return Promise.resolve(null);
+    const target = this.mapRow(targetRow);
+    const sessionId = targetRow.session_id;
+    const capturedAt = targetRow.created_at;
+    const beforeRows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all(sessionId, capturedAt, capturedAt, id, window);
+    const before = beforeRows.map((row) => this.mapRow(row)).reverse();
+    const afterRows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ? AND (created_at > ? OR (created_at = ? AND id > ?))
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `).all(sessionId, capturedAt, capturedAt, id, window);
+    const after = afterRows.map((row) => this.mapRow(row));
+    return Promise.resolve({ before, target, after });
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -49464,8 +49528,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.79")
-    return "0.8.79";
+  if ("0.8.80")
+    return "0.8.80";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

@@ -60611,7 +60611,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.79" : "unknown"
+      version: true ? "0.8.80" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -60619,18 +60619,29 @@ function createContextManagerServer(storage, options = {}) {
   );
   const getDb = () => Promise.resolve(storage);
   const np = (p) => p !== void 0 ? normalizePath(p, pathMap) : void 0;
+  function formatObservationCompact(obs) {
+    const date5 = new Date(obs.created_at);
+    const datePart = date5.toISOString().substring(0, 10);
+    const timePart = date5.toISOString().substring(11, 16);
+    const summaryFragment = obs.summary.length > 60 ? obs.summary.substring(0, 60) : obs.summary;
+    return `#${obs.id} [${datePart} ${timePart}] ${obs.tool_name} ${summaryFragment}`;
+  }
   server.tool(
     "context_search",
-    "Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain tag.",
+    "Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain tag. Returns compact one-line summaries by default; pass compact=false for full text.",
     {
       query: external_exports.string().describe('Search query. Supports tag:X prefix to filter by domain tag (e.g. "tag:auth", "tag:finance budget"). Developer tags: auth, database, testing, infra, config, frontend, api, git, build, deps. Personal ops tags: home, lawn, finance, health, travel, planning, decision, personal.'),
       project: external_exports.string().optional().describe(
         "Project path to scope search. Omit to search all projects."
+      ),
+      compact: external_exports.boolean().optional().default(true).describe(
+        "When true (default), each result is one line: #<id> [date time] tool summary. Pass compact=false to get full observation text. Use context_get with the returned IDs to fetch full detail for specific results."
       )
     },
-    async ({ query, project }) => {
+    async ({ query, project, compact }) => {
+      const useCompact = compact !== false;
       if (isProxy) {
-        return proxyToolCall("context_search", { query, project: np(project) }, remoteUrl, remoteToken);
+        return proxyToolCall("context_search", { query, project: np(project), compact: useCompact }, remoteUrl, remoteToken);
       }
       const db = await getDb();
       const normalizedProject = np(project);
@@ -60644,9 +60655,11 @@ function createContextManagerServer(storage, options = {}) {
           results = tagObs.filter((o) => ftsIds.has(o.id));
         }
         const label = remainingQuery ? `tag:${tag} + keyword "${remainingQuery}"` : `tag:${tag}`;
-        const text = results.length > 0 ? `Found ${results.length} observations (${label}):
+        const modeLabel2 = useCompact ? "compact" : "full";
+        const formattedResults = useCompact ? results.map((o) => formatObservationCompact(o)).join("\n") : formatObservations(results);
+        const text = results.length > 0 ? `[search: ${label} | ${modeLabel2}] ${results.length} results
 
-${formatObservations(results)}` : `No observations found for ${label}.`;
+${formattedResults}` : `No observations found for ${label}.`;
         return { content: [{ type: "text", text }] };
       }
       const strategy = classifyQuery(query);
@@ -60703,6 +60716,7 @@ ${formatObservations(results)}` : `No observations found for ${label}.`;
       }
       const prompts = await db.searchPrompts(query, normalizedProject);
       const sections = [];
+      const modeLabel = useCompact ? "compact" : "full";
       if (sessionResults.length > 0) {
         const lines = [];
         for (const session of sessionResults) {
@@ -60713,43 +60727,46 @@ ${formatObservations(results)}` : `No observations found for ${label}.`;
           lines.push(`  ${summaryPreview}`);
           lines.push("");
         }
-        sections.push(`Found ${sessionResults.length} semantically similar sessions (${searchMethod}):
+        sections.push(`[search: ${searchMethod} | ${modeLabel}] ${sessionResults.length} sessions
 
 ${lines.join("\n")}`);
       }
       if (observations.length > 0) {
-        sections.push(`Found ${observations.length} observations (${searchMethod}):
+        const formattedObs = useCompact ? observations.map((o) => formatObservationCompact(o)).join("\n") : formatObservations(observations);
+        sections.push(`[search: ${searchMethod} | ${modeLabel}] ${observations.length} results
 
-${formatObservations(observations)}`);
-        const topResults = observations.slice(0, 3).filter((o) => o.id != null);
-        const relatedIds = new Set(observations.map((o) => o.id));
-        const relatedObs = [];
-        const crossProjectObs = [];
-        for (const obs of topResults) {
-          const related = await db.getRelatedObservations(obs.id, ["same_file", "followed_by"]);
-          for (const r of related) {
-            if (r.id != null && !relatedIds.has(r.id)) {
-              relatedIds.add(r.id);
-              relatedObs.push(r);
+${formattedObs}`);
+        if (!useCompact) {
+          const topResults = observations.slice(0, 3).filter((o) => o.id != null);
+          const relatedIds = new Set(observations.map((o) => o.id));
+          const relatedObs = [];
+          const crossProjectObs = [];
+          for (const obs of topResults) {
+            const related = await db.getRelatedObservations(obs.id, ["same_file", "followed_by"]);
+            for (const r of related) {
+              if (r.id != null && !relatedIds.has(r.id)) {
+                relatedIds.add(r.id);
+                relatedObs.push(r);
+              }
+            }
+            const crossRelated = await db.getRelatedObservations(obs.id, ["cross_project_same_file"]);
+            for (const r of crossRelated) {
+              if (r.id != null && !relatedIds.has(r.id)) {
+                relatedIds.add(r.id);
+                crossProjectObs.push(r);
+              }
             }
           }
-          const crossRelated = await db.getRelatedObservations(obs.id, ["cross_project_same_file"]);
-          for (const r of crossRelated) {
-            if (r.id != null && !relatedIds.has(r.id)) {
-              relatedIds.add(r.id);
-              crossProjectObs.push(r);
-            }
-          }
-        }
-        if (relatedObs.length > 0) {
-          sections.push(`Related observations:
+          if (relatedObs.length > 0) {
+            sections.push(`Related observations:
 
 ${formatObservations(relatedObs.slice(0, 10))}`);
-        }
-        if (crossProjectObs.length > 0) {
-          sections.push(`Cross-project related observations (same file, different project):
+          }
+          if (crossProjectObs.length > 0) {
+            sections.push(`Cross-project related observations (same file, different project):
 
 ${formatObservations(crossProjectObs.slice(0, 10))}`);
+          }
         }
       }
       if (prompts.length > 0) {
@@ -60775,6 +60792,107 @@ ${formatPrompts(prompts)}`);
             text: sections.join("\n\n")
           }
         ]
+      };
+    }
+  );
+  server.tool(
+    "context_get",
+    "Fetch full detail for specific observations by ID. Use after context_search to read the complete content of results you want to examine. Pass the IDs shown in compact search output (e.g. #142 -> id 142).",
+    {
+      ids: external_exports.array(external_exports.number().int().positive()).min(1).max(20).describe("Observation IDs from a prior context_search call (max 20)")
+    },
+    async ({ ids }) => {
+      if (isProxy) {
+        return proxyToolCall("context_get", { ids }, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const observations = await db.getObservationsByIds(ids);
+      const foundIds = new Set(observations.map((o) => o.id));
+      const missingIds = ids.filter((id) => !foundIds.has(id));
+      const lines = [];
+      for (const obs of observations) {
+        const date5 = new Date(obs.created_at);
+        const datePart = date5.toISOString().substring(0, 10);
+        const timePart = date5.toISOString().substring(11, 16);
+        const tagsStr = obs.tags && obs.tags.length > 0 ? `[${obs.tags.join(", ")}]` : "[]";
+        const shortSessionId = obs.session_id.substring(0, 8);
+        lines.push(`#${obs.id} [${datePart} ${timePart}] importance: ${obs.importance_score.toFixed(2)} tags: ${tagsStr}`);
+        const fileStr = obs.files_touched.length > 0 ? obs.files_touched.map((f) => f.split("/").pop()).join(", ") : "(none)";
+        lines.push(`Tool: ${obs.tool_name} | File: ${fileStr} | Session: ${shortSessionId}`);
+        lines.push(`Summary: ${obs.summary}`);
+        const relRows = await db.getRelatedObservationRefs(obs.id);
+        if (relRows.length > 0) {
+          const relatedParts = relRows.map((r) => `#${r.id} (${r.relationship})`);
+          lines.push(`Related: ${relatedParts.join(", ")}`);
+        }
+        lines.push("");
+      }
+      if (missingIds.length > 0) {
+        for (const id of missingIds) {
+          lines.push(`ID ${id} not found`);
+        }
+      }
+      const text = lines.join("\n").trimEnd();
+      return {
+        content: [{ type: "text", text: text || "No observations found for the given IDs." }]
+      };
+    }
+  );
+  server.tool(
+    "context_timeline",
+    "Show session context around specific observation IDs. Returns the matched observations plus neighboring observations from the same session, giving chronological context for what was happening around each match. Use after context_search to understand what led up to and followed a result.",
+    {
+      ids: external_exports.array(external_exports.number().int().positive()).min(1).max(10).describe("Observation IDs from a prior context_search call (max 10)"),
+      window: external_exports.number().int().min(1).max(10).optional().default(3).describe("Number of observations to include on each side of each match (default: 3)")
+    },
+    async ({ ids, window: windowSize }) => {
+      const effectiveWindow = windowSize ?? 3;
+      if (isProxy) {
+        return proxyToolCall("context_timeline", { ids, window: effectiveWindow }, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const lines = [];
+      const uniqueIds = [...new Set(ids)];
+      const renderedIds = /* @__PURE__ */ new Set();
+      for (const id of uniqueIds) {
+        const result = await db.getObservationNeighbors(id, effectiveWindow);
+        if (!result) {
+          lines.push(`ID ${id} not found`);
+          lines.push("");
+          continue;
+        }
+        const { before, target, after } = result;
+        lines.push(`=== Context around #${id} ===`);
+        for (const obs of before) {
+          if (!renderedIds.has(obs.id)) {
+            const date5 = new Date(obs.created_at);
+            const timePart = date5.toISOString().substring(11, 16);
+            const fragment = obs.summary.length > 60 ? obs.summary.substring(0, 60) : obs.summary;
+            lines.push(`    #${obs.id} [${timePart}] ${obs.tool_name} ${fragment}`);
+            renderedIds.add(obs.id);
+          }
+        }
+        {
+          const date5 = new Date(target.created_at);
+          const timePart = date5.toISOString().substring(11, 16);
+          const fragment = target.summary.length > 60 ? target.summary.substring(0, 60) : target.summary;
+          lines.push(`>>> #${target.id} [${timePart}] ${target.tool_name} ${fragment}  [MATCH]`);
+          renderedIds.add(target.id);
+        }
+        for (const obs of after) {
+          if (!renderedIds.has(obs.id)) {
+            const date5 = new Date(obs.created_at);
+            const timePart = date5.toISOString().substring(11, 16);
+            const fragment = obs.summary.length > 60 ? obs.summary.substring(0, 60) : obs.summary;
+            lines.push(`    #${obs.id} [${timePart}] ${obs.tool_name} ${fragment}`);
+            renderedIds.add(obs.id);
+          }
+        }
+        lines.push("");
+      }
+      const text = lines.join("\n").trimEnd();
+      return {
+        content: [{ type: "text", text: text || "No timeline data found for the given IDs." }]
       };
     }
   );
@@ -63349,6 +63467,70 @@ ${storedOutput}`;
       return null;
     return this.mapRow(row);
   }
+  /**
+   * Get related observation references via observation_relationships.
+   * Checks both source_id and target_id so direction does not matter.
+   */
+  getRelatedObservationRefs(id) {
+    const rows = this.db.prepare(`
+      SELECT
+        CASE WHEN r.source_id = ? THEN r.target_id ELSE r.source_id END AS related_id,
+        r.relationship
+      FROM observation_relationships r
+      WHERE r.source_id = ? OR r.target_id = ?
+      LIMIT 5
+    `).all(id, id, id);
+    return Promise.resolve(rows.map((r) => ({ id: r.related_id, relationship: r.relationship })));
+  }
+  /**
+   * Fetch full Observation objects for a list of IDs.
+   * IDs that do not exist are silently skipped.
+   * Results returned in ascending created_at order.
+   */
+  getObservationsByIds(ids) {
+    if (ids.length === 0)
+      return Promise.resolve([]);
+    const safeIds = ids.map((id) => Math.trunc(id)).filter((id) => id > 0);
+    if (safeIds.length === 0)
+      return Promise.resolve([]);
+    const placeholders = safeIds.map(() => "?").join(", ");
+    const sql = `
+      SELECT * FROM observations
+      WHERE id IN (${placeholders})
+      ORDER BY created_at ASC
+    `;
+    const rows = this.db.prepare(sql).all(...safeIds);
+    return Promise.resolve(rows.map((row) => this.mapRow(row)));
+  }
+  /**
+   * Fetch neighboring observations in the same session around a given ID.
+   * Returns null if the target ID does not exist.
+   */
+  getObservationNeighbors(id, window) {
+    const targetRow = this.db.prepare(`
+      SELECT * FROM observations WHERE id = ?
+    `).get(id);
+    if (!targetRow)
+      return Promise.resolve(null);
+    const target = this.mapRow(targetRow);
+    const sessionId = targetRow.session_id;
+    const capturedAt = targetRow.created_at;
+    const beforeRows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all(sessionId, capturedAt, capturedAt, id, window);
+    const before = beforeRows.map((row) => this.mapRow(row)).reverse();
+    const afterRows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ? AND (created_at > ? OR (created_at = ? AND id > ?))
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `).all(sessionId, capturedAt, capturedAt, id, window);
+    const after = afterRows.map((row) => this.mapRow(row));
+    return Promise.resolve({ before, target, after });
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -63437,8 +63619,8 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.79")
-    return "0.8.79";
+  if ("0.8.80")
+    return "0.8.80";
   try {
     const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)
