@@ -242,10 +242,14 @@ server-restart:
 		echo "  then use 'make switch-to-docker' or 'make switch-to-native' to resolve."; \
 		exit 1; \
 	elif [ "$$NATIVE_ON" -gt 0 ]; then \
-		echo "[restart] Mode: native (launchd). Regenerating plist and reloading agent..."; \
+		echo "[restart] Mode: native (launchd). Restarting all agents..."; \
 		$(MAKE) server-launchd-install; \
+		WEB_ON=$$(launchctl list 2>/dev/null | grep -c "$(LAUNCHD_LABEL_WEB)$$"); \
+		if [ "$$WEB_ON" -gt 0 ]; then \
+			$(MAKE) server-launchd-web-install; \
+		fi; \
 		echo ""; \
-		echo "[restart] MCP server agent restarted."; \
+		echo "[restart] All native agents restarted."; \
 		echo "  Verify: make server-status"; \
 	elif [ "$$DOCKER_ON" -gt 0 ]; then \
 		echo "[restart] Mode: Docker. Stopping and starting compose stack..."; \
