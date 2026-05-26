@@ -22,7 +22,10 @@ WORKDIR /app
 
 # Install dependencies first for layer caching
 COPY package.json package-lock.json ./
-RUN npm ci
+# --ignore-scripts skips the `prepare` lifecycle hook (install-hooks.sh installs
+# a git pre-push hook — meaningless in Docker where there is no .git directory).
+# The explicit build:src, build:cli, and build:hooks steps below handle everything needed.
+RUN npm ci --ignore-scripts
 
 # Copy source files
 COPY tsconfig.json ./
