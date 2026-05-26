@@ -34603,6 +34603,7 @@ __export(remote_client_exports, {
   remoteEndSession: () => remoteEndSession,
   remoteExportMemory: () => remoteExportMemory,
   remoteGetMemory: () => remoteGetMemory,
+  remoteHealthCheck: () => remoteHealthCheck,
   remoteMcpText: () => remoteMcpText,
   remoteSaveObservation: () => remoteSaveObservation,
   remoteSavePrompt: () => remoteSavePrompt
@@ -34683,6 +34684,18 @@ async function remoteAddObservation(client, params) {
     return typeof data.session_id === "string" ? data.session_id : void 0;
   } catch {
     return void 0;
+  }
+}
+async function remoteHealthCheck(client, timeoutMs = 3e3) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${client.url}/health`, { signal: ac.signal });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 async function remoteMcpText(client, toolName, args) {
@@ -60570,7 +60583,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.67" : "unknown"
+      version: true ? "0.8.68" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -63339,8 +63352,8 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.67")
-    return "0.8.67";
+  if ("0.8.68")
+    return "0.8.68";
   try {
     const pkg = JSON.parse((0, import_fs6.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

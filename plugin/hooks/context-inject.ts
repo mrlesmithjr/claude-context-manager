@@ -30,6 +30,7 @@ import { homedir } from 'os';
 import {
   remoteCreateSession,
   remoteGetMemory,
+  remoteHealthCheck,
   remoteMcpText,
 } from '../../src/capture/remote-client.js';
 import { loadDotEnv } from '../../src/utils/env.js';
@@ -162,6 +163,25 @@ async function main() {
       }
 
       const client = { url: remoteUrl, token: remoteToken };
+
+      // Health check: if the server is configured but not reachable, inject a clear
+      // warning so Claude surfaces it to the user immediately. Skip session creation
+      // and all further remote calls — they would all fail anyway.
+      const serverReachable = await remoteHealthCheck(client);
+      if (!serverReachable) {
+        console.error(`[context-manager] Remote server unreachable at ${remoteUrl}`);
+        await writeResponse({
+          hookSpecificOutput: {
+            hookEventName: 'SessionStart',
+            additionalContext: [
+              `[WARNING] context-manager server not responding at ${remoteUrl}.`,
+              `Observations are not being captured this session.`,
+              `Run 'make server-status' to diagnose, then restart Claude Code.`,
+            ].join('\n'),
+          },
+        });
+        return;
+      }
 
       // Create session on the remote server (best-effort, non-blocking on failure)
       try {

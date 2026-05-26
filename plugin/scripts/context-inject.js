@@ -1955,6 +1955,18 @@ async function remoteGetMemory(client, project) {
     return "";
   }
 }
+async function remoteHealthCheck(client, timeoutMs = 3e3) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${client.url}/health`, { signal: ac.signal });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 async function remoteMcpText(client, toolName, args) {
   try {
     const response = await fetch(`${client.url}/mcp`, {
@@ -2048,11 +2060,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.67") {
+    if (installedVersion !== "0.8.68") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.67"}
+   Source:    v${"0.8.68"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2093,6 +2105,21 @@ async function main() {
         return;
       }
       const client = { url: remoteUrl, token: remoteToken };
+      const serverReachable = await remoteHealthCheck(client);
+      if (!serverReachable) {
+        console.error(`[context-manager] Remote server unreachable at ${remoteUrl}`);
+        await writeResponse({
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext: [
+              `[WARNING] context-manager server not responding at ${remoteUrl}.`,
+              `Observations are not being captured this session.`,
+              `Run 'make server-status' to diagnose, then restart Claude Code.`
+            ].join("\n")
+          }
+        });
+        return;
+      }
       try {
         await remoteCreateSession(client, input.session_id, input.cwd);
       } catch (err) {
@@ -2107,7 +2134,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.67"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.68"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats.");
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -2150,7 +2177,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.67"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.68"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

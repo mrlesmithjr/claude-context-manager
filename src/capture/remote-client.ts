@@ -180,6 +180,28 @@ export async function remoteAddObservation(
 }
 
 /**
+ * Check whether the remote server is reachable by hitting its /health endpoint.
+ * Returns true if the server responds with a 2xx status, false on any error.
+ * Never throws.
+ */
+export async function remoteHealthCheck(
+  client: RemoteClient,
+  timeoutMs = 3000,
+): Promise<boolean> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    // /health is auth-exempt on the server; no Authorization header needed.
+    const response = await fetch(`${client.url}/health`, { signal: ac.signal });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Call an MCP tool on the remote server and return the text of the first
  * content block, or empty string on any error (never throws).
  *
