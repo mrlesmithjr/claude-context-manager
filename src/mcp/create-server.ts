@@ -35,6 +35,14 @@ import { normalizePath, type PathPrefixEntry } from '../utils/path-map.js';
 // Override via CONTEXT_SEARCH_MIN_SCORE env var.
 const SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? '0.25');
 
+// Allowed tag values for context_add — must match ObservationTag union in storage/interface.ts
+// and the TAG_FILE_RULES / TAG_BASH_RULES sets in capture/processor.ts.
+// Typed as Set<ObservationTag> so a compile error fires if the union gains a new member.
+const ALLOWED_OBSERVATION_TAGS = new Set<ObservationTag>([
+  'auth', 'database', 'testing', 'infra', 'config',
+  'frontend', 'api', 'git', 'build', 'deps',
+]);
+
 // Version injected by esbuild; falls back for non-bundled environments (e.g., ts-node, vitest)
 declare const PLUGIN_VERSION: string;
 
@@ -627,24 +635,49 @@ export function createContextManagerServer(
         .describe('Comma-separated domain tags (auth, database, testing, infra, config, frontend, api, git, build, deps). If omitted, no tags are assigned.'),
     },
     async ({ text, project, importance, tags }) => {
+      // Fix #81: Reject whitespace-only text
+      const trimmedText = text.trim();
+      if (!trimmedText) {
+        return {
+          content: [{ type: 'text' as const, text: 'Error: text must not be empty or whitespace-only.' }],
+        };
+      }
+
       // Resolve the project path: explicit param > server-configured default
       const resolvedProject = np(project) ?? project ?? process.cwd();
 
-      // Resolve importance score
+      // Fix #82: Resolve importance score with clamping warning and error on unrecognized string
       let importanceScore = 0.60; // default: medium
+      let importanceWarning = '';
       if (importance !== undefined) {
         if (typeof importance === 'number') {
-          importanceScore = Math.max(0.0, Math.min(1.0, importance));
+          const clamped = Math.max(0.0, Math.min(1.0, importance));
+          if (clamped !== importance) {
+            importanceWarning = ` [warning: importance ${importance} clamped to ${clamped}]`;
+          }
+          importanceScore = clamped;
         } else {
-          switch (importance.toLowerCase()) {
+          switch (importance.trim().toLowerCase()) {
             case 'high':   importanceScore = 0.80; break;
             case 'medium': importanceScore = 0.60; break;
             case 'low':    importanceScore = 0.40; break;
             default: {
               const parsed = parseFloat(importance);
-              if (!isNaN(parsed)) {
-                importanceScore = Math.max(0.0, Math.min(1.0, parsed));
+              if (isNaN(parsed)) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `Error: unrecognized importance value '${importance}'. Use 'high', 'medium', 'low', or a float 0.0–1.0.`,
+                    },
+                  ],
+                };
               }
+              const clamped = Math.max(0.0, Math.min(1.0, parsed));
+              if (clamped !== parsed) {
+                importanceWarning = ` [warning: importance ${parsed} clamped to ${clamped}]`;
+              }
+              importanceScore = clamped;
               break;
             }
           }
@@ -661,27 +694,36 @@ export function createContextManagerServer(
         importanceLabel = 'low';
       }
 
-      // Resolve tags: explicit value only — tag inference requires file paths or Bash commands
-      // and cannot be applied to free-form text. Users should pass explicit tags when needed.
-      const resolvedTags = tags !== undefined ? (tags.trim() || undefined) : undefined;
+      // Fix #83: Tag validation against allowed set with feedback on rejected tags
+      let resolvedTags: string | undefined;
+      let tagNote = '';
+      if (tags !== undefined) {
+        const requested = tags.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+        const applied = requested.filter(t => ALLOWED_OBSERVATION_TAGS.has(t as ObservationTag));
+        const rejected = requested.filter(t => !ALLOWED_OBSERVATION_TAGS.has(t as ObservationTag));
+        resolvedTags = applied.length > 0 ? applied.join(',') : undefined;
+        if (rejected.length > 0) {
+          tagNote = ` [tags rejected (not in allowed set): ${rejected.join(', ')}]`;
+        }
+      }
 
       if (isProxy) {
         // Forward to the remote server's /capture/add endpoint
         const { remoteAddObservation } = await import('../capture/remote-client.js');
         const remoteClient = { url: remoteUrl, token: remoteToken };
         const sessionId = await remoteAddObservation(remoteClient, {
-          text,
+          text: trimmedText,
           project: resolvedProject,
           importanceScore,
           tags: resolvedTags,
         });
 
-        const preview = text.length > 60 ? text.substring(0, 60) + '...' : text;
+        const preview = trimmedText.length > 60 ? trimmedText.substring(0, 60) + '...' : trimmedText;
         return {
           content: [
             {
               type: 'text' as const,
-              text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId ?? 'unknown'})`,
+              text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId ?? 'unknown'})${importanceWarning}${tagNote}`,
             },
           ],
         };
@@ -690,20 +732,20 @@ export function createContextManagerServer(
       const db = await getDb();
       const sessionId = await db.getOrCreateManualSession(resolvedProject);
       const obsId = await db.addManualObservation({
-        text,
+        text: trimmedText,
         project: resolvedProject,
         sessionId,
         importanceScore,
         tags: resolvedTags,
       });
 
-      const preview = text.length > 60 ? text.substring(0, 60) + '...' : text;
+      const preview = trimmedText.length > 60 ? trimmedText.substring(0, 60) + '...' : trimmedText;
       const dedupNote = obsId === undefined ? ' (duplicate, not stored)' : '';
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${dedupNote}`,
+            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${importanceWarning}${dedupNote}${tagNote}`,
           },
         ],
       };

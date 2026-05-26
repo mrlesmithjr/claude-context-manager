@@ -33228,6 +33228,18 @@ function normalizePath(p, map2) {
 
 // src/mcp/create-server.ts
 var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
+var ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
+  "auth",
+  "database",
+  "testing",
+  "infra",
+  "config",
+  "frontend",
+  "api",
+  "git",
+  "build",
+  "deps"
+]);
 function formatObservations(observations) {
   if (observations.length === 0) {
     return "No observations found.";
@@ -33397,7 +33409,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.57" : "unknown"
+      version: true ? "0.8.58" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -33639,13 +33651,24 @@ ${lines.join("\n")}`
       tags: external_exports.string().optional().describe("Comma-separated domain tags (auth, database, testing, infra, config, frontend, api, git, build, deps). If omitted, no tags are assigned.")
     },
     async ({ text, project, importance, tags }) => {
+      const trimmedText = text.trim();
+      if (!trimmedText) {
+        return {
+          content: [{ type: "text", text: "Error: text must not be empty or whitespace-only." }]
+        };
+      }
       const resolvedProject = np(project) ?? project ?? process.cwd();
       let importanceScore = 0.6;
+      let importanceWarning = "";
       if (importance !== void 0) {
         if (typeof importance === "number") {
-          importanceScore = Math.max(0, Math.min(1, importance));
+          const clamped = Math.max(0, Math.min(1, importance));
+          if (clamped !== importance) {
+            importanceWarning = ` [warning: importance ${importance} clamped to ${clamped}]`;
+          }
+          importanceScore = clamped;
         } else {
-          switch (importance.toLowerCase()) {
+          switch (importance.trim().toLowerCase()) {
             case "high":
               importanceScore = 0.8;
               break;
@@ -33657,9 +33680,21 @@ ${lines.join("\n")}`
               break;
             default: {
               const parsed = parseFloat(importance);
-              if (!isNaN(parsed)) {
-                importanceScore = Math.max(0, Math.min(1, parsed));
+              if (isNaN(parsed)) {
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: `Error: unrecognized importance value '${importance}'. Use 'high', 'medium', 'low', or a float 0.0\u20131.0.`
+                    }
+                  ]
+                };
               }
+              const clamped = Math.max(0, Math.min(1, parsed));
+              if (clamped !== parsed) {
+                importanceWarning = ` [warning: importance ${parsed} clamped to ${clamped}]`;
+              }
+              importanceScore = clamped;
               break;
             }
           }
@@ -33673,22 +33708,32 @@ ${lines.join("\n")}`
       } else {
         importanceLabel = "low";
       }
-      const resolvedTags = tags !== void 0 ? tags.trim() || void 0 : void 0;
+      let resolvedTags;
+      let tagNote = "";
+      if (tags !== void 0) {
+        const requested = tags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
+        const applied = requested.filter((t) => ALLOWED_OBSERVATION_TAGS.has(t));
+        const rejected = requested.filter((t) => !ALLOWED_OBSERVATION_TAGS.has(t));
+        resolvedTags = applied.length > 0 ? applied.join(",") : void 0;
+        if (rejected.length > 0) {
+          tagNote = ` [tags rejected (not in allowed set): ${rejected.join(", ")}]`;
+        }
+      }
       if (isProxy) {
         const { remoteAddObservation: remoteAddObservation2 } = await Promise.resolve().then(() => (init_remote_client(), remote_client_exports));
         const remoteClient = { url: remoteUrl, token: remoteToken };
         const sessionId2 = await remoteAddObservation2(remoteClient, {
-          text,
+          text: trimmedText,
           project: resolvedProject,
           importanceScore,
           tags: resolvedTags
         });
-        const preview2 = text.length > 60 ? text.substring(0, 60) + "..." : text;
+        const preview2 = trimmedText.length > 60 ? trimmedText.substring(0, 60) + "..." : trimmedText;
         return {
           content: [
             {
               type: "text",
-              text: `Saved: "${preview2}" (importance: ${importanceLabel}, session: ${sessionId2 ?? "unknown"})`
+              text: `Saved: "${preview2}" (importance: ${importanceLabel}, session: ${sessionId2 ?? "unknown"})${importanceWarning}${tagNote}`
             }
           ]
         };
@@ -33696,19 +33741,19 @@ ${lines.join("\n")}`
       const db = await getDb();
       const sessionId = await db.getOrCreateManualSession(resolvedProject);
       const obsId = await db.addManualObservation({
-        text,
+        text: trimmedText,
         project: resolvedProject,
         sessionId,
         importanceScore,
         tags: resolvedTags
       });
-      const preview = text.length > 60 ? text.substring(0, 60) + "..." : text;
+      const preview = trimmedText.length > 60 ? trimmedText.substring(0, 60) + "..." : trimmedText;
       const dedupNote = obsId === void 0 ? " (duplicate, not stored)" : "";
       return {
         content: [
           {
             type: "text",
-            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${dedupNote}`
+            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${importanceWarning}${dedupNote}${tagNote}`
           }
         ]
       };
