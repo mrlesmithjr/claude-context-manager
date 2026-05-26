@@ -30,7 +30,10 @@ WORKDIR /app
 # Install all dependencies (including devDependencies for build tools).
 # Layer-cached until package-lock.json changes.
 COPY package.json package-lock.json ./
-RUN npm ci
+# --ignore-scripts skips the `prepare` lifecycle hook (install-hooks.sh installs
+# a git pre-push hook — meaningless in Docker where there is no .git directory).
+# The actual build steps (build:src, build:web) are invoked explicitly below.
+RUN npm ci --ignore-scripts
 
 # Copy source files needed for compilation
 COPY tsconfig.json ./
