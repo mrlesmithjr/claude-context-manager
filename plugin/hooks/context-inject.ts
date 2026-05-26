@@ -48,7 +48,8 @@ const NO_NATIVE_ERROR =
   "Run 'make server-quickstart' (macOS) or 'make server-start' (Docker) to set up a server,\n" +
   'then restart Claude Code.\n' +
   "For local SQLite mode: clone the repo, run 'npm install', and install locally with\n" +
-  "'/plugin marketplace add /path/to/repo'.";
+  "'/plugin marketplace add /path/to/repo'.\n" +
+  'Need help? Ask Claude to walk you through the complete setup, or type /context-manager-setup.';
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -176,7 +177,8 @@ async function main() {
             additionalContext: [
               `[WARNING] context-manager server not responding at ${remoteUrl}.`,
               `Observations are not being captured this session.`,
-              `Run 'make server-status' to diagnose, then restart Claude Code.`,
+              `To diagnose an existing install: run 'make server-status' from the repo directory, then restart Claude Code.`,
+              `For first-time setup or to be walked through recovery: ask Claude for help setting up context-manager, or type /context-manager-setup.`,
             ].join('\n'),
           },
         });
