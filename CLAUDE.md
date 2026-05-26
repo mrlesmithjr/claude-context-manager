@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 25, 2026 (v0.8.56)
+**Last Updated**: May 26, 2026 (v0.8.64)
 
 ---
 
@@ -33,6 +33,16 @@ This is a TypeScript Claude Code plugin. All code changes follow the mandatory m
 - Bump patch version after code review passes: `npm version patch --no-git-tag-version`
 - The plugin system caches by version number - bump before `/plugin update context-manager` or changes won't apply
 - Never bump before code review is complete
+
+**Plugin release workflow** (after code review passes):
+1. `npm version patch --no-git-tag-version` - bump the version
+2. `npm run build:plugin` - builds all components and syncs the version to `plugin/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`
+3. Commit all changed files, including `plugin/scripts/`, `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `package.json`, and `package-lock.json`
+4. `git push` - built artifacts must be on GitHub before `/plugin update` will see the new version
+5. `/plugin update context-manager` inside Claude Code
+6. Restart Claude Code
+
+`make update` automates steps 2-4 (pull, install, build, commit, push, server restart). It does NOT bump the version. Run `npm version patch --no-git-tag-version` before `make update` if you want a version number change.
 
 **Issue tracking:**
 - Every code change must reference a GitHub issue in the commit (`fixes #N` or `refs #N`)
@@ -150,7 +160,7 @@ claude-context-manager/
 |   |   +-- file-context.ts         # PreToolUse: inject file history before Read
 |   |   +-- capture-tool.ts         # PostToolUse
 |   |   +-- session-end.ts          # Stop
-|   +-- scripts/                    # Built hooks (gitignored)
+|   +-- scripts/                    # Built hooks (committed to git for marketplace installs)
 +-- src/
 |   +-- capture/processor.ts        # Process tool outputs + scoring
 |   +-- capture/remote-client.ts    # HTTP client for remote mode
@@ -263,7 +273,7 @@ Unclosed tags redact all remaining content. `old_string`/`new_string`/`content` 
 
 ## Troubleshooting
 
-**Updates not applying:** The plugin caches by version number. Always `npm version patch --no-git-tag-version` before `/plugin update context-manager`. If still stale: `/plugin uninstall context-manager` then `/plugin install context-manager`, then restart.
+**Updates not applying:** The plugin caches by version number. Always `npm version patch --no-git-tag-version` before `/plugin update context-manager`. Also confirm that `npm run build:plugin` has run AND the built artifacts in `plugin/scripts/`, `plugin/.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json` have been committed and pushed to GitHub. For marketplace installs, `/plugin update` pulls from GitHub, so local-only builds will not take effect. If still stale after pushing: `/plugin uninstall context-manager` then `/plugin install context-manager`, then restart.
 
 **Native module errors:** `npm rebuild better-sqlite3`
 

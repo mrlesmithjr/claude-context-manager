@@ -227,16 +227,16 @@ This only needs to run once. After that, new sessions are embedded automatically
 
 ## Updating the plugin
 
-When a new version is available:
+**If you installed from the marketplace (the standard path):**
+
+`make update` is the single command. It pulls the latest changes, runs `npm install`, runs `npm run build:plugin` (which builds all components and syncs the version to `plugin.json` and `marketplace.json`), commits the built plugin artifacts, pushes to the current branch, and restarts the server if one is active. After it completes, follow the two manual steps it prints.
 
 ```bash
 cd ~/Projects/Personal/claude-context-manager
-git pull
-npm install
-npm run build:plugin
+make update
 ```
 
-Then in Claude Code:
+Then in Claude Code (after restarting):
 
 ```
 /plugin update context-manager
@@ -244,17 +244,19 @@ Then in Claude Code:
 
 Restart Claude Code to apply the update.
 
-> If you are running the native server or Docker server, use `make update` instead of running these steps manually. It runs `git pull`, `npm install`, `npm run build`, and restarts the server in one command. After it completes, follow the two manual steps it prints.
+> Built plugin scripts must be committed and pushed to GitHub before `/plugin update` will see the new version. For marketplace installs, Claude Code pulls the plugin from GitHub, not from your local build. `make update` handles the commit and push automatically.
 
-If you prefer to run only specific steps (for example, rebuild without pulling), use the individual commands:
+**If you want to rebuild and release without pulling** (for example, after making local changes):
 
 ```bash
-# Native:
-npm run build && make server-launchd-install
-
-# Docker:
-npm run build && make server-stop && make server-start
+npm version patch --no-git-tag-version
+npm run build:plugin
+git add plugin/scripts/ plugin/.claude-plugin/plugin.json .claude-plugin/marketplace.json package.json package-lock.json
+git commit -m "chore: rebuild plugin scripts for vX.Y.Z, refs #N"
+git push origin develop
 ```
+
+Then `/plugin update context-manager` inside Claude Code and restart Claude Code.
 
 ---
 
@@ -266,7 +268,7 @@ Most restarts are handled by two commands: `make server-apply-env` when you chan
 |---|---|---|
 | Edited `~/.claude-context/.env` | `make server-apply-env` | Launchd reads env from its plist, not `.env` directly. This command regenerates the plist and reloads the agent. |
 | Pulled new code (`git pull` + build) | `make server-restart` | After `npm run build` completes, restart the server to load the new binary. Or use `make update` for the full cycle. |
-| Full version update | `make update` | Runs git pull, npm install, npm run build, and server-restart automatically. Two manual steps follow -- see output. |
+| Full version update | `make update` | Runs git pull, npm install, npm run build:plugin (syncs version to plugin.json + marketplace.json), commits and pushes built artifacts, and restarts the server. Two manual steps follow: restart Claude Code, then `/plugin update context-manager`. |
 | Hook scripts changed only | `/plugin update` + restart Claude Code | No server restart needed. Hooks are fresh process spawns; only the plugin cache needs updating. |
 | Hook-only env var changed (e.g., `CONTEXT_MANAGER_CHECKPOINT_INTERVAL`) | None | Hooks read `.env` on every invocation. Change takes effect on the next tool call. |
 | Web dashboard client files only (`web/client/`) | None | Static files served from disk per request. Change is visible on next browser refresh. |
