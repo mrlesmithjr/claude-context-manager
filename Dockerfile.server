@@ -32,8 +32,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 # --ignore-scripts skips the `prepare` lifecycle hook (install-hooks.sh installs
 # a git pre-push hook — meaningless in Docker where there is no .git directory).
-# The actual build steps (build:src, build:web) are invoked explicitly below.
-RUN npm ci --ignore-scripts
+# npm rebuild then recompiles only the native modules needed at runtime.
+RUN npm ci --ignore-scripts && npm rebuild better-sqlite3 sqlite-vec
 
 # Copy source files needed for compilation
 COPY tsconfig.json ./
