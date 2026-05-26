@@ -16,6 +16,37 @@ This file provides guidance to Claude Code when working in this repository.
 
 ---
 
+## Branch Strategy
+
+**Two branches. All development happens on `develop`. `main` is release-only.**
+
+| Branch | Purpose | Direct push |
+|--------|---------|-------------|
+| `develop` | Active development, all commits land here | Yes |
+| `main` | Stable releases only | NEVER — PRs only |
+
+**Rules enforced at three layers:**
+
+1. **GitHub ruleset** (`protect-main`, ID 16896369) — blocks any direct push to `main`, requires the `test` status check to pass before merge. No bypass, including for the repo owner.
+2. **Local pre-push hook** (`scripts/pre-push-hook.sh`) — installed automatically by `npm install` via the `prepare` script. Aborts `git push` immediately if the destination ref is `main`.
+3. **This document** — if you find yourself about to commit to `main`, stop. Push to `develop` and open a PR.
+
+**Release workflow (develop to main):**
+```bash
+gh pr create --base main --head develop --title "Release: v<version>" --body "..."
+# Wait for Tests to pass, then merge via GitHub UI or:
+gh pr merge --squash
+```
+
+**Tag after merging:**
+```bash
+git checkout main && git pull
+git tag v<version> && git push origin v<version>
+git checkout develop
+```
+
+---
+
 ## Development Workflow
 
 This is a TypeScript Claude Code plugin. All code changes follow the mandatory multi-agent sequence:

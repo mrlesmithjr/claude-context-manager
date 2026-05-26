@@ -15,6 +15,7 @@
     "build:hooks": "node scripts/build-hooks.js",
     "build:cli": "esbuild cli/index.ts --bundle --outfile=dist/cli.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --external:sqlite-vec --external:onnxruntime-node --banner:js=\"#!/usr/bin/env node\"",
     "build:web": "esbuild web/server/index.ts --bundle --outfile=dist/web/server.js --platform=node --target=node18 --format=esm --external:better-sqlite3 --packages=external",
+    "prepare": "bash scripts/install-hooks.sh",
     "build:plugin": "npm run typecheck && npm test && npm run build && node scripts/install.js",
     "plugin:uninstall": "node scripts/uninstall.js",
     "plugin:uninstall:all": "node scripts/uninstall.js --remove-data",
