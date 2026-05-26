@@ -47277,6 +47277,41 @@ function applyDecay(obs) {
   const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1);
   return base * 0.6 + recencyScore * 0.25 + frequencyScore * 0.15;
 }
+function extractTokens(text) {
+  const seen = /* @__PURE__ */ new Set();
+  const tokens = [];
+  for (const tok of text.toLowerCase().split(/\W+/)) {
+    if (tok.length >= 4 && !seen.has(tok)) {
+      seen.add(tok);
+      tokens.push(tok);
+    }
+  }
+  return tokens;
+}
+function levenshtein(a, b) {
+  const s = a.length <= 50 ? a : a.substring(0, 50);
+  const t = b.length <= 50 ? b : b.substring(0, 50);
+  const m = s.length;
+  const n = t.length;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let curr = new Array(n + 1).fill(0);
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1,
+        // deletion
+        curr[j - 1] + 1,
+        // insertion
+        prev[j - 1] + cost
+        // substitution
+      );
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
 var SQLiteStorage = class {
   db;
   vecEnabled = false;
@@ -47444,6 +47479,7 @@ var SQLiteStorage = class {
     this.migrateAddMetaTable();
     this.migrateAddBranchColumn();
     this.migrateAddSupersededBy();
+    this.migrateAddTokenIndex();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -47625,6 +47661,13 @@ ${storedOutput}`;
             await this.markSuperseded(conflictId, insertedId);
           }
         }
+      }
+    } catch {
+    }
+    try {
+      const tokens = extractTokens(observation.summary);
+      if (tokens.length > 0) {
+        this.addTokens(tokens);
       }
     } catch {
     }
@@ -48130,6 +48173,13 @@ ${storedOutput}`;
       prompt.prompt_text,
       prompt.created_at
     );
+    try {
+      const tokens = extractTokens(prompt.prompt_text);
+      if (tokens.length > 0) {
+        this.addTokens(tokens);
+      }
+    } catch {
+    }
   }
   async getRecentPrompts(project, limit) {
     const stmt = this.db.prepare(`
@@ -49621,6 +49671,66 @@ ${storedOutput}`;
       `UPDATE observations SET superseded_by = ? WHERE id = ?`
     ).run(newId, oldId);
   }
+  /**
+   * Migration: create the token_index table for fuzzy search correction.
+   * Safe to run on existing databases (uses IF NOT EXISTS).
+   */
+  migrateAddTokenIndex() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS token_index (
+        token TEXT PRIMARY KEY,
+        frequency INTEGER DEFAULT 1
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_token_index_frequency ON token_index(frequency DESC);
+    `);
+  }
+  /**
+   * Add tokens to the token_index, incrementing frequency on conflict.
+   * Runs as a transaction for efficiency. Tokens are already normalized.
+   */
+  addTokens(tokens) {
+    if (tokens.length === 0)
+      return;
+    const upsert = this.db.prepare(
+      `INSERT INTO token_index(token, frequency) VALUES(?, 1)
+       ON CONFLICT(token) DO UPDATE SET frequency = frequency + 1`
+    );
+    const runAll = this.db.transaction((toks) => {
+      for (const tok of toks) {
+        upsert.run(tok);
+      }
+    });
+    runAll(tokens);
+  }
+  /**
+   * Find the closest known token to the input using Levenshtein distance.
+   * Queries candidates with length within 2 of the input, frequency >= minFrequency,
+   * and token != the input (exact matches don't need correction).
+   * Returns the best candidate with edit distance <= 2, or null.
+   */
+  findClosestToken(token, minFrequency = 3) {
+    if (token.length > 50)
+      return null;
+    const minLen = Math.max(1, token.length - 2);
+    const maxLen = token.length + 2;
+    const rows = this.db.prepare(
+      `SELECT token FROM token_index
+       WHERE frequency >= ? AND length(token) BETWEEN ? AND ? AND token != ?
+       LIMIT 200`
+    ).all(minFrequency, minLen, maxLen, token);
+    let bestToken = null;
+    let bestDist = 3;
+    for (const row of rows) {
+      const dist = levenshtein(token, row.token);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestToken = row.token;
+      }
+    }
+    return bestToken;
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -50058,8 +50168,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.91")
-    return "0.8.91";
+  if ("0.8.92")
+    return "0.8.92";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

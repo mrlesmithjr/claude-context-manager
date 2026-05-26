@@ -727,6 +727,26 @@ export interface ContextStorage {
   markSuperseded(oldId: number, newId: number): Promise<void>;
 
   /**
+   * Add tokens to the token index, incrementing frequency counts.
+   * Tokens should be already-normalized (lowercase, length >= 4).
+   * Called after save() and saveUserPrompt() to build the index passively.
+   *
+   * @param tokens - Array of normalized token strings
+   */
+  addTokens(tokens: string[]): void;
+
+  /**
+   * Find the closest known token to the given input using Levenshtein distance.
+   * Queries the token_index table for candidates with similar length and
+   * sufficient frequency, then returns the best match within edit distance 2.
+   *
+   * @param token - The token to correct (already lowercase)
+   * @param minFrequency - Minimum frequency for a candidate to be considered (default: 3)
+   * @returns The best matching known token, or null if no close match found
+   */
+  findClosestToken(token: string, minFrequency?: number): string | null;
+
+  /**
    * Close storage connection
    */
   close(): Promise<void>;

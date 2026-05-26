@@ -22460,6 +22460,41 @@ function applyDecay(obs) {
   const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1);
   return base * 0.6 + recencyScore * 0.25 + frequencyScore * 0.15;
 }
+function extractTokens(text) {
+  const seen = /* @__PURE__ */ new Set();
+  const tokens = [];
+  for (const tok of text.toLowerCase().split(/\W+/)) {
+    if (tok.length >= 4 && !seen.has(tok)) {
+      seen.add(tok);
+      tokens.push(tok);
+    }
+  }
+  return tokens;
+}
+function levenshtein(a, b) {
+  const s = a.length <= 50 ? a : a.substring(0, 50);
+  const t = b.length <= 50 ? b : b.substring(0, 50);
+  const m = s.length;
+  const n = t.length;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let curr = new Array(n + 1).fill(0);
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1,
+        // deletion
+        curr[j - 1] + 1,
+        // insertion
+        prev[j - 1] + cost
+        // substitution
+      );
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
 var SQLiteStorage = class {
   db;
   vecEnabled = false;
@@ -22627,6 +22662,7 @@ var SQLiteStorage = class {
     this.migrateAddMetaTable();
     this.migrateAddBranchColumn();
     this.migrateAddSupersededBy();
+    this.migrateAddTokenIndex();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -22808,6 +22844,13 @@ ${storedOutput}`;
             await this.markSuperseded(conflictId, insertedId);
           }
         }
+      }
+    } catch {
+    }
+    try {
+      const tokens = extractTokens(observation.summary);
+      if (tokens.length > 0) {
+        this.addTokens(tokens);
       }
     } catch {
     }
@@ -23313,6 +23356,13 @@ ${storedOutput}`;
       prompt.prompt_text,
       prompt.created_at
     );
+    try {
+      const tokens = extractTokens(prompt.prompt_text);
+      if (tokens.length > 0) {
+        this.addTokens(tokens);
+      }
+    } catch {
+    }
   }
   async getRecentPrompts(project, limit) {
     const stmt = this.db.prepare(`
@@ -24803,6 +24853,66 @@ ${storedOutput}`;
     this.db.prepare(
       `UPDATE observations SET superseded_by = ? WHERE id = ?`
     ).run(newId, oldId);
+  }
+  /**
+   * Migration: create the token_index table for fuzzy search correction.
+   * Safe to run on existing databases (uses IF NOT EXISTS).
+   */
+  migrateAddTokenIndex() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS token_index (
+        token TEXT PRIMARY KEY,
+        frequency INTEGER DEFAULT 1
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_token_index_frequency ON token_index(frequency DESC);
+    `);
+  }
+  /**
+   * Add tokens to the token_index, incrementing frequency on conflict.
+   * Runs as a transaction for efficiency. Tokens are already normalized.
+   */
+  addTokens(tokens) {
+    if (tokens.length === 0)
+      return;
+    const upsert = this.db.prepare(
+      `INSERT INTO token_index(token, frequency) VALUES(?, 1)
+       ON CONFLICT(token) DO UPDATE SET frequency = frequency + 1`
+    );
+    const runAll = this.db.transaction((toks) => {
+      for (const tok of toks) {
+        upsert.run(tok);
+      }
+    });
+    runAll(tokens);
+  }
+  /**
+   * Find the closest known token to the input using Levenshtein distance.
+   * Queries candidates with length within 2 of the input, frequency >= minFrequency,
+   * and token != the input (exact matches don't need correction).
+   * Returns the best candidate with edit distance <= 2, or null.
+   */
+  findClosestToken(token, minFrequency = 3) {
+    if (token.length > 50)
+      return null;
+    const minLen = Math.max(1, token.length - 2);
+    const maxLen = token.length + 2;
+    const rows = this.db.prepare(
+      `SELECT token FROM token_index
+       WHERE frequency >= ? AND length(token) BETWEEN ? AND ? AND token != ?
+       LIMIT 200`
+    ).all(minFrequency, minLen, maxLen, token);
+    let bestToken = null;
+    let bestDist = 3;
+    for (const row of rows) {
+      const dist = levenshtein(token, row.token);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestToken = row.token;
+      }
+    }
+    return bestToken;
   }
   close() {
     this.db.close();
@@ -33956,6 +34066,34 @@ function classifyTemporalIntent(query) {
   return "neutral";
 }
 
+// src/utils/correct-tokens.ts
+var OPERATOR_PREFIXES = ["tag:", "lesson:", "decision:"];
+function correctTokens(query, findClosest) {
+  const parts = query.split(/(\s+)/);
+  const changes = [];
+  const correctedParts = parts.map((part) => {
+    if (/^\s+$/.test(part) || part === "") {
+      return part;
+    }
+    const lowerPart = part.toLowerCase();
+    for (const prefix of OPERATOR_PREFIXES) {
+      if (lowerPart.startsWith(prefix)) {
+        return part;
+      }
+    }
+    const suggestion = findClosest(lowerPart);
+    if (suggestion !== null && suggestion !== lowerPart) {
+      changes.push({ from: lowerPart, to: suggestion });
+      return suggestion;
+    }
+    return part;
+  });
+  return {
+    corrected: correctedParts.join(""),
+    changes
+  };
+}
+
 // src/utils/path-map.ts
 function loadPathPrefixMap() {
   const raw = process.env.CONTEXT_MANAGER_PATH_MAP || "";
@@ -34406,7 +34544,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.91" : "unknown"
+      version: true ? "0.8.92" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -34437,21 +34575,34 @@ function createContextManagerServer(storage2, options = {}) {
       ),
       include_superseded: external_exports.boolean().optional().default(false).describe(
         "Include superseded observations (older contradicted stack preference facts). Default false."
+      ),
+      fuzzy: external_exports.boolean().optional().default(true).describe(
+        "When true (default), attempt to correct likely typos in plain query tokens before searching. Tokens with operator prefixes (tag:, lesson:, decision:) are never altered. Set to false to disable correction and search the raw query."
       )
     },
-    async ({ query, project, compact, branch, include_superseded }) => {
+    async ({ query, project, compact, branch, include_superseded, fuzzy }) => {
       const useCompact = compact !== false;
       const includeSuperseded = include_superseded === true;
       if (isProxy) {
-        return proxyToolCall("context_search", { query, project: np(project), compact: useCompact, branch, include_superseded: includeSuperseded }, remoteUrl, remoteToken);
+        return proxyToolCall("context_search", { query, project: np(project), compact: useCompact, branch, include_superseded: includeSuperseded, fuzzy }, remoteUrl, remoteToken);
       }
       const db = await getDb();
       const normalizedProject = np(project);
+      let activeQuery = query;
+      let fuzzyChanges = [];
+      if (fuzzy !== false) {
+        const result = correctTokens(
+          activeQuery,
+          (token) => db.findClosestToken(token)
+        );
+        activeQuery = result.corrected;
+        fuzzyChanges = result.changes;
+      }
       const currentBranch = branch === void 0 ? getCurrentBranch(normalizedProject ?? process.cwd()) : null;
-      const temporalMode = classifyTemporalIntent(query);
-      if (query.startsWith("lesson:")) {
+      const temporalMode = classifyTemporalIntent(activeQuery);
+      if (activeQuery.startsWith("lesson:")) {
         const VALID_LESSON_TYPES = /* @__PURE__ */ new Set(["error", "build_failure", "test_failure", "permission_denied"]);
-        const lessonRaw = query.slice("lesson:".length).trim();
+        const lessonRaw = activeQuery.slice("lesson:".length).trim();
         const isType = VALID_LESSON_TYPES.has(lessonRaw);
         const lessons = await db.getLessons(
           normalizedProject,
@@ -34464,13 +34615,13 @@ function createContextManagerServer(storage2, options = {}) {
         const text = formatLessons(lessons);
         return { content: [{ type: "text", text }] };
       }
-      if (query.startsWith("decision:")) {
-        const decisionQuery = query.slice("decision:".length).trim() || void 0;
+      if (activeQuery.startsWith("decision:")) {
+        const decisionQuery = activeQuery.slice("decision:".length).trim() || void 0;
         const decisions = await db.searchDecisions(normalizedProject ?? "/", decisionQuery, 20);
         const text = formatDecisions(decisions);
         return { content: [{ type: "text", text }] };
       }
-      const { tag, remainingQuery } = parseTagPrefix(query);
+      const { tag, remainingQuery } = parseTagPrefix(activeQuery);
       if (tag) {
         const tagObs = await db.searchByTag(tag, normalizedProject, 50, includeSuperseded);
         let results = tagObs;
@@ -34494,7 +34645,7 @@ function createContextManagerServer(storage2, options = {}) {
 ${formattedResults}` : `No observations found for ${label}.`;
         return { content: [{ type: "text", text }] };
       }
-      const strategy = classifyQuery(query);
+      const strategy = classifyQuery(activeQuery);
       let observations = [];
       let searchMethod = "";
       let sessionResults = [];
@@ -34505,12 +34656,12 @@ ${formattedResults}` : `No observations found for ${label}.`;
         ...branch !== void 0 ? { branch } : {}
       };
       if (strategy === "keyword") {
-        observations = await db.search(query, searchOptions);
+        observations = await db.search(activeQuery, searchOptions);
         searchMethod = "keyword";
       } else if (strategy === "semantic") {
         if (await db.isVectorSearchEnabled()) {
           const embeddingService = getEmbeddingService();
-          const queryEmbedding = await embeddingService.embed(query);
+          const queryEmbedding = await embeddingService.embed(activeQuery);
           if (queryEmbedding) {
             const rawSessions = await db.vectorSearchSessions(queryEmbedding, normalizedProject, 10);
             const filteredSessions = rawSessions.filter(
@@ -34532,18 +34683,18 @@ ${formattedResults}` : `No observations found for ${label}.`;
             }
             searchMethod = "semantic";
           } else {
-            observations = await db.search(query, searchOptions);
+            observations = await db.search(activeQuery, searchOptions);
             searchMethod = "keyword (embedding unavailable)";
           }
         } else {
-          observations = await db.search(query, searchOptions);
+          observations = await db.search(activeQuery, searchOptions);
           searchMethod = "keyword (vector search unavailable)";
         }
       } else {
-        const ftsResults = await db.search(query, searchOptions);
+        const ftsResults = await db.search(activeQuery, searchOptions);
         if (await db.isVectorSearchEnabled()) {
           const embeddingService = getEmbeddingService();
-          const queryEmbedding = await embeddingService.embed(query);
+          const queryEmbedding = await embeddingService.embed(activeQuery);
           if (queryEmbedding) {
             const vecResults = await db.vectorSearch(queryEmbedding, normalizedProject, 20);
             const ftsIds = new Set(ftsResults.map((o) => o.id));
@@ -34566,7 +34717,7 @@ ${formattedResults}` : `No observations found for ${label}.`;
           searchMethod = "keyword (vector search unavailable)";
         }
       }
-      const prompts = await db.searchPrompts(query, normalizedProject);
+      const prompts = await db.searchPrompts(activeQuery, normalizedProject);
       if (branch === void 0 && currentBranch !== null && temporalMode === "neutral" && observations.length > 0) {
         observations = observations.map(
           (o) => o.branch === currentBranch ? { ...o, importance_score: Math.min(1, Math.round(o.importance_score * 1.2 * 100) / 100) } : o
@@ -34574,6 +34725,10 @@ ${formattedResults}` : `No observations found for ${label}.`;
       }
       const sections = [];
       const modeLabel = useCompact ? "compact" : "full";
+      if (fuzzyChanges.length > 0) {
+        const correctionParts = fuzzyChanges.map((c) => `"${c.from}" -> "${c.to}"`).join(", ");
+        sections.push(`[corrected: ${correctionParts}]`);
+      }
       const temporalLabel = temporalMode !== "neutral" ? ` | temporal: ${temporalMode}` : "";
       const branchLabel = branch && branch !== "*" ? ` | branch: ${branch}` : branch === "*" ? " | branch: * (all)" : "";
       const supersededLabel = includeSuperseded ? " | +superseded" : "";
@@ -34630,11 +34785,11 @@ ${formatObservations(crossProjectObs.slice(0, 10))}`);
         }
       }
       if (prompts.length > 0) {
-        sections.push(`Found ${prompts.length} user prompts matching "${query}":
+        sections.push(`Found ${prompts.length} user prompts matching "${activeQuery}":
 
 ${formatPrompts(prompts)}`);
       }
-      if (sections.length === 0) {
+      if (sections.length === 0 || sections.length === 1 && fuzzyChanges.length > 0) {
         const floorNote = strategy === "semantic" || strategy === "hybrid" && searchMethod === "hybrid (RRF)" ? ` Results may exist but scored below the relevance threshold (${SEARCH_MIN_SCORE}). Try a more specific query or use a keyword search.` : "";
         return {
           content: [

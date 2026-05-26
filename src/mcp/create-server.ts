@@ -29,6 +29,7 @@ import {
 } from '../utils/session-format.js';
 import { classifyQuery, type QueryStrategy } from '../utils/classify.js';
 import { classifyTemporalIntent, type TemporalMode } from '../utils/temporal.js';
+import { correctTokens } from '../utils/correct-tokens.js';
 import { normalizePath, type PathPrefixEntry } from '../utils/path-map.js';
 import { buildReflection, formatReflection } from '../utils/reflect.js';
 import { getCurrentBranch } from '../utils/git.js';
@@ -519,17 +520,37 @@ export function createContextManagerServer(
         .describe(
           'Include superseded observations (older contradicted stack preference facts). Default false.'
         ),
+      fuzzy: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe(
+          'When true (default), attempt to correct likely typos in plain query tokens before searching. Tokens with operator prefixes (tag:, lesson:, decision:) are never altered. Set to false to disable correction and search the raw query.'
+        ),
     },
-    async ({ query, project, compact, branch, include_superseded }) => {
+    async ({ query, project, compact, branch, include_superseded, fuzzy }) => {
       const useCompact = compact !== false;
       const includeSuperseded = include_superseded === true;
 
       if (isProxy) {
-        return proxyToolCall('context_search', { query, project: np(project), compact: useCompact, branch, include_superseded: includeSuperseded }, remoteUrl, remoteToken);
+        return proxyToolCall('context_search', { query, project: np(project), compact: useCompact, branch, include_superseded: includeSuperseded, fuzzy }, remoteUrl, remoteToken);
       }
 
       const db = await getDb();
       const normalizedProject = np(project);
+
+      // Fuzzy correction pre-pass: attempt to fix typos before routing.
+      // Runs before classifyQuery so that the corrected query drives strategy selection.
+      let activeQuery = query;
+      let fuzzyChanges: Array<{ from: string; to: string }> = [];
+
+      if (fuzzy !== false) {
+        const result = correctTokens(activeQuery, (token) =>
+          db.findClosestToken(token)
+        );
+        activeQuery = result.corrected;
+        fuzzyChanges = result.changes;
+      }
 
       // Detect the current branch at query time for soft-rank or label display.
       // Only used when branch param is omitted (soft-rank mode).
@@ -538,14 +559,14 @@ export function createContextManagerServer(
         : null;
 
       // Classify temporal intent before any branch so all paths can apply ordering.
-      const temporalMode: TemporalMode = classifyTemporalIntent(query);
+      const temporalMode: TemporalMode = classifyTemporalIntent(activeQuery);
 
       // Check for lesson: prefix — routes to getLessons() and returns early.
       // If the term after "lesson:" exactly matches a valid lesson_type value,
       // route it to the lessonType filter; otherwise treat it as a summary keyword.
-      if (query.startsWith('lesson:')) {
+      if (activeQuery.startsWith('lesson:')) {
         const VALID_LESSON_TYPES = new Set(['error', 'build_failure', 'test_failure', 'permission_denied']);
-        const lessonRaw = query.slice('lesson:'.length).trim();
+        const lessonRaw = activeQuery.slice('lesson:'.length).trim();
         const isType = VALID_LESSON_TYPES.has(lessonRaw);
         const lessons = await db.getLessons(
           normalizedProject,
@@ -560,15 +581,15 @@ export function createContextManagerServer(
       // Check for decision: prefix — routes to searchDecisions() and returns early.
       // This is distinct from the 'decision' tag filter (tag:decision) which searches
       // observations tagged with the 'decision' domain tag.
-      if (query.startsWith('decision:')) {
-        const decisionQuery = query.slice('decision:'.length).trim() || undefined;
+      if (activeQuery.startsWith('decision:')) {
+        const decisionQuery = activeQuery.slice('decision:'.length).trim() || undefined;
         const decisions = await db.searchDecisions(normalizedProject ?? '/', decisionQuery, 20);
         const text = formatDecisions(decisions);
         return { content: [{ type: 'text' as const, text }] };
       }
 
       // Check for tag: prefix, routes to tag search, optionally combined with keyword
-      const { tag, remainingQuery } = parseTagPrefix(query);
+      const { tag, remainingQuery } = parseTagPrefix(activeQuery);
       if (tag) {
         const tagObs = await db.searchByTag(tag, normalizedProject, 50, includeSuperseded);
         // If there's remaining query text, further filter via FTS5
@@ -604,7 +625,7 @@ export function createContextManagerServer(
         return { content: [{ type: 'text' as const, text }] };
       }
 
-      const strategy: QueryStrategy = classifyQuery(query);
+      const strategy: QueryStrategy = classifyQuery(activeQuery);
 
       let observations: Observation[] = [];
       let searchMethod = '';
@@ -621,13 +642,13 @@ export function createContextManagerServer(
       };
 
       if (strategy === 'keyword') {
-        observations = await db.search(query, searchOptions);
+        observations = await db.search(activeQuery, searchOptions);
         searchMethod = 'keyword';
       } else if (strategy === 'semantic') {
         // Try semantic search; fall back to keyword if embeddings unavailable
         if (await db.isVectorSearchEnabled()) {
           const embeddingService = getEmbeddingService();
-          const queryEmbedding = await embeddingService.embed(query);
+          const queryEmbedding = await embeddingService.embed(activeQuery);
           if (queryEmbedding) {
             // Try session-level first (enriched, higher quality)
             const rawSessions = await db.vectorSearchSessions(queryEmbedding, normalizedProject, 10);
@@ -654,20 +675,20 @@ export function createContextManagerServer(
             }
             searchMethod = 'semantic';
           } else {
-            observations = await db.search(query, searchOptions);
+            observations = await db.search(activeQuery, searchOptions);
             searchMethod = 'keyword (embedding unavailable)';
           }
         } else {
-          observations = await db.search(query, searchOptions);
+          observations = await db.search(activeQuery, searchOptions);
           searchMethod = 'keyword (vector search unavailable)';
         }
       } else {
         // hybrid: run FTS5 + vector, merge with RRF
-        const ftsResults = await db.search(query, searchOptions);
+        const ftsResults = await db.search(activeQuery, searchOptions);
 
         if (await db.isVectorSearchEnabled()) {
           const embeddingService = getEmbeddingService();
-          const queryEmbedding = await embeddingService.embed(query);
+          const queryEmbedding = await embeddingService.embed(activeQuery);
           if (queryEmbedding) {
             const vecResults = await db.vectorSearch(queryEmbedding, normalizedProject, 20);
             const ftsIds = new Set(ftsResults.map(o => o.id));
@@ -695,7 +716,7 @@ export function createContextManagerServer(
       }
 
       // Always search prompts (keyword-based, fast)
-      const prompts = await db.searchPrompts(query, normalizedProject);
+      const prompts = await db.searchPrompts(activeQuery, normalizedProject);
 
       // Soft-rank: when branch was omitted (undefined), boost results on the current branch.
       // Only applies when: branch param omitted, currentBranch is non-null, temporal mode is
@@ -712,6 +733,13 @@ export function createContextManagerServer(
       // Build response sections
       const sections: string[] = [];
       const modeLabel = useCompact ? 'compact' : 'full';
+
+      // When fuzzy correction applied changes, prepend a correction notice line.
+      // This is inserted as the first section so it appears above all results.
+      if (fuzzyChanges.length > 0) {
+        const correctionParts = fuzzyChanges.map(c => `"${c.from}" -> "${c.to}"`).join(', ');
+        sections.push(`[corrected: ${correctionParts}]`);
+      }
       // Append temporal label to headers only when the mode is non-neutral
       const temporalLabel = temporalMode !== 'neutral' ? ` | temporal: ${temporalMode}` : '';
       // Append branch label when branch filtering is explicitly active
@@ -780,10 +808,10 @@ export function createContextManagerServer(
       }
 
       if (prompts.length > 0) {
-        sections.push(`Found ${prompts.length} user prompts matching "${query}":\n\n${formatPrompts(prompts)}`);
+        sections.push(`Found ${prompts.length} user prompts matching "${activeQuery}":\n\n${formatPrompts(prompts)}`);
       }
 
-      if (sections.length === 0) {
+      if (sections.length === 0 || (sections.length === 1 && fuzzyChanges.length > 0)) {
         const floorNote =
           strategy === 'semantic' || (strategy === 'hybrid' && searchMethod === 'hybrid (RRF)')
             ? ` Results may exist but scored below the relevance threshold (${SEARCH_MIN_SCORE}). Try a more specific query or use a keyword search.`

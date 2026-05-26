@@ -91,6 +91,55 @@ function applyDecay(obs: Observation): number {
   return (base * 0.60) + (recencyScore * 0.25) + (frequencyScore * 0.15);
 }
 
+/**
+ * Tokenize text for the token index.
+ * Lowercases, splits on non-word characters, filters to length >= 4,
+ * and deduplicates within the call.
+ */
+function extractTokens(text: string): string[] {
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const tok of text.toLowerCase().split(/\W+/)) {
+    if (tok.length >= 4 && !seen.has(tok)) {
+      seen.add(tok);
+      tokens.push(tok);
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Compute the Levenshtein edit distance between two strings.
+ * Uses a standard DP matrix. Both strings are capped at 50 characters
+ * to bound the maximum cost of the operation.
+ */
+function levenshtein(a: string, b: string): number {
+  const s = a.length <= 50 ? a : a.substring(0, 50);
+  const t = b.length <= 50 ? b : b.substring(0, 50);
+  const m = s.length;
+  const n = t.length;
+
+  // Build two-row rolling DP to keep memory constant
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let curr = new Array<number>(n + 1).fill(0);
+
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+      // All indices are in-bounds by loop invariant; non-null assertions are safe.
+      curr[j] = Math.min(
+        prev[j]! + 1,         // deletion
+        curr[j - 1]! + 1,     // insertion
+        prev[j - 1]! + cost   // substitution
+      );
+    }
+    [prev, curr] = [curr, prev];
+  }
+
+  return prev[n]!;
+}
+
 export class SQLiteStorage implements ContextStorage {
   private db: Database.Database;
   private vecEnabled: boolean = false;
@@ -333,6 +382,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add superseded_by column for fact supersession detection
     this.migrateAddSupersededBy();
+
+    // Migration: add token_index table for fuzzy search correction
+    this.migrateAddTokenIndex();
   }
 
   /**
@@ -576,6 +628,17 @@ export class SQLiteStorage implements ContextStorage {
       }
     } catch {
       // Fact detection is best-effort. The observation was already saved.
+    }
+
+    // Index tokens from the summary for fuzzy search correction.
+    // Best-effort: a failure here must never abort the save.
+    try {
+      const tokens = extractTokens(observation.summary);
+      if (tokens.length > 0) {
+        this.addTokens(tokens);
+      }
+    } catch {
+      // Token indexing is non-critical.
     }
 
     return insertedId;
@@ -1343,6 +1406,17 @@ export class SQLiteStorage implements ContextStorage {
       prompt.prompt_text,
       prompt.created_at
     );
+
+    // Index tokens from the prompt for fuzzy search correction.
+    // Best-effort: a failure here must never abort the save.
+    try {
+      const tokens = extractTokens(prompt.prompt_text);
+      if (tokens.length > 0) {
+        this.addTokens(tokens);
+      }
+    } catch {
+      // Token indexing is non-critical.
+    }
   }
 
   async getRecentPrompts(project: string, limit: number): Promise<UserPrompt[]> {
@@ -3258,6 +3332,73 @@ export class SQLiteStorage implements ContextStorage {
     this.db.prepare(
       `UPDATE observations SET superseded_by = ? WHERE id = ?`
     ).run(newId, oldId);
+  }
+
+  /**
+   * Migration: create the token_index table for fuzzy search correction.
+   * Safe to run on existing databases (uses IF NOT EXISTS).
+   */
+  private migrateAddTokenIndex(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS token_index (
+        token TEXT PRIMARY KEY,
+        frequency INTEGER DEFAULT 1
+      );
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_token_index_frequency ON token_index(frequency DESC);
+    `);
+  }
+
+  /**
+   * Add tokens to the token_index, incrementing frequency on conflict.
+   * Runs as a transaction for efficiency. Tokens are already normalized.
+   */
+  addTokens(tokens: string[]): void {
+    if (tokens.length === 0) return;
+    const upsert = this.db.prepare(
+      `INSERT INTO token_index(token, frequency) VALUES(?, 1)
+       ON CONFLICT(token) DO UPDATE SET frequency = frequency + 1`
+    );
+    const runAll = this.db.transaction((toks: string[]) => {
+      for (const tok of toks) {
+        upsert.run(tok);
+      }
+    });
+    runAll(tokens);
+  }
+
+  /**
+   * Find the closest known token to the input using Levenshtein distance.
+   * Queries candidates with length within 2 of the input, frequency >= minFrequency,
+   * and token != the input (exact matches don't need correction).
+   * Returns the best candidate with edit distance <= 2, or null.
+   */
+  findClosestToken(token: string, minFrequency: number = 3): string | null {
+    // Cap token length to avoid expensive DP on very long strings
+    if (token.length > 50) return null;
+
+    const minLen = Math.max(1, token.length - 2);
+    const maxLen = token.length + 2;
+
+    const rows = this.db.prepare(
+      `SELECT token FROM token_index
+       WHERE frequency >= ? AND length(token) BETWEEN ? AND ? AND token != ?
+       LIMIT 200`
+    ).all(minFrequency, minLen, maxLen, token) as Array<{ token: string }>;
+
+    let bestToken: string | null = null;
+    let bestDist = 3; // one beyond the acceptance threshold of 2
+
+    for (const row of rows) {
+      const dist = levenshtein(token, row.token);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestToken = row.token;
+      }
+    }
+
+    return bestToken;
   }
 
   close(): Promise<void> {
