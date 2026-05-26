@@ -51272,6 +51272,7 @@ var import_crypto6 = require("crypto");
 var import_os5 = require("os");
 var import_path6 = require("path");
 var import_fs6 = require("fs");
+var import_url2 = require("url");
 
 // node_modules/zod/v3/helpers/util.js
 var util;
@@ -60569,7 +60570,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.64" : "unknown"
+      version: true ? "0.8.65" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -63335,6 +63336,20 @@ function sanitizeContent(content) {
 }
 
 // src/server/http.ts
+var import_meta2 = {};
+var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
+var SERVER_VERSION = (() => {
+  if ("0.8.65")
+    return "0.8.65";
+  try {
+    const pkg = JSON.parse((0, import_fs6.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
+    if (typeof pkg.version === "string" && pkg.version)
+      return pkg.version;
+    throw new Error("version missing");
+  } catch {
+    return process.env["npm_package_version"] ?? "unknown";
+  }
+})();
 function abortableSleep(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -63530,7 +63545,7 @@ async function startHttpServer(options = {}) {
     }
   });
   fastify.get("/health", async (_request, reply) => {
-    await reply.send({ status: "ok", mode: "http-mcp" });
+    await reply.send({ status: "ok", mode: "http-mcp", version: SERVER_VERSION });
   });
   const SESSION_ID_MAX = 256;
   const PROJECT_MAX = 1024;

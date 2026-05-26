@@ -63556,7 +63556,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.64" : "unknown"
+      version: true ? "0.8.65" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -64529,8 +64529,9 @@ __export(http_exports, {
 });
 import { timingSafeEqual } from "crypto";
 import { homedir as homedir5 } from "os";
-import { join as join5 } from "path";
+import { join as join5, dirname as dirname2 } from "path";
 import { readFileSync as readFileSync4 } from "fs";
+import { fileURLToPath as fileURLToPath2 } from "url";
 function abortableSleep(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -64726,7 +64727,7 @@ async function startHttpServer(options = {}) {
     }
   });
   fastify.get("/health", async (_request, reply) => {
-    await reply.send({ status: "ok", mode: "http-mcp" });
+    await reply.send({ status: "ok", mode: "http-mcp", version: SERVER_VERSION });
   });
   const SESSION_ID_MAX = 256;
   const PROJECT_MAX = 1024;
@@ -64959,7 +64960,7 @@ async function startHttpServer(options = {}) {
     process.exit(1);
   }
 }
-var import_fastify, import_rate_limit, import_cors;
+var import_fastify, import_rate_limit, import_cors, __serverDir, SERVER_VERSION;
 var init_http = __esm({
   "src/server/http.ts"() {
     "use strict";
@@ -64974,6 +64975,19 @@ var init_http = __esm({
     init_memory();
     init_service();
     init_enrichment();
+    __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
+    SERVER_VERSION = (() => {
+      if ("0.8.65")
+        return "0.8.65";
+      try {
+        const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
+        if (typeof pkg.version === "string" && pkg.version)
+          return pkg.version;
+        throw new Error("version missing");
+      } catch {
+        return process.env["npm_package_version"] ?? "unknown";
+      }
+    })();
   }
 });
 

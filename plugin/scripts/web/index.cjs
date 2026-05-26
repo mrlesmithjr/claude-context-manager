@@ -32924,7 +32924,7 @@ var require_light_my_request = __commonJS({
 var require_fastify = __commonJS({
   "node_modules/fastify/fastify.js"(exports2, module2) {
     "use strict";
-    var VERSION = "5.6.2";
+    var VERSION2 = "5.6.2";
     var Avvio = require_boot();
     var http = require("node:http");
     var diagnostics = require("node:diagnostics_channel");
@@ -33227,7 +33227,7 @@ var require_fastify = __commonJS({
         version: {
           configurable: true,
           get() {
-            return VERSION;
+            return VERSION2;
           }
         },
         errorHandler: {
@@ -49442,6 +49442,18 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 // web/server/index.ts
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
+var VERSION = (() => {
+  if ("0.8.65")
+    return "0.8.65";
+  try {
+    const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
+    if (typeof pkg.version === "string" && pkg.version)
+      return pkg.version;
+    throw new Error("version missing");
+  } catch {
+    return process.env["npm_package_version"] ?? "unknown";
+  }
+})();
 var PORT = parseInt(process.env.CONTEXT_MANAGER_PORT || "3847", 10);
 var HOST = process.env.CONTEXT_MANAGER_HOST || "localhost";
 var DB_PATH = process.env.CONTEXT_MANAGER_DB || (0, import_path2.join)((0, import_os2.homedir)(), ".claude-context", "context.db");
@@ -49523,7 +49535,7 @@ async function main() {
   fastify.get("/api/health", async (request, reply) => {
     reply.send({
       status: "ok",
-      version: process.env.npm_package_version || "unknown"
+      version: VERSION
     });
   });
   try {

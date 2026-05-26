@@ -16,8 +16,9 @@ import fastifyCors from '@fastify/cors';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { timingSafeEqual } from 'crypto';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { createContextManagerServer } from '../mcp/create-server.js';
 import { SQLiteStorage } from '../storage/sqlite.js';
 import { loadPathPrefixMap, normalizePath } from '../utils/path-map.js';
@@ -25,6 +26,26 @@ import { sanitizeContent } from '../utils/sanitize.js';
 import { exportToAutoMemory, resolveMemoryDir } from '../export/memory.js';
 import { getEmbeddingService } from '../embedding/service.js';
 import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
+
+// Read version at startup. Three sources in priority order:
+//   1. PLUGIN_VERSION -- injected as a string literal by esbuild define in build-hooks.js;
+//      present in plugin bundles (plugin/scripts/mcp-http/index.cjs) where no filesystem read is safe
+//   2. package.json -- works in the dist/ dev path (dist/server/http.js -> ../../package.json)
+//   3. npm_package_version -- only set when launched via `npm`; launchd does not set it
+declare const PLUGIN_VERSION: string | undefined;
+const __serverDir = typeof __dirname !== 'undefined'
+  ? __dirname
+  : dirname(fileURLToPath(import.meta.url));
+const SERVER_VERSION: string = (() => {
+  if (typeof PLUGIN_VERSION !== 'undefined' && PLUGIN_VERSION) return PLUGIN_VERSION;
+  try {
+    const pkg = JSON.parse(readFileSync(join(__serverDir, '../../package.json'), 'utf-8')) as { version?: unknown };
+    if (typeof pkg.version === 'string' && pkg.version) return pkg.version;
+    throw new Error('version missing');
+  } catch {
+    return process.env['npm_package_version'] ?? 'unknown';
+  }
+})();
 
 // --- Background Embedding ---
 
@@ -307,7 +328,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
 
   // Health check (no auth required)
   fastify.get('/health', async (_request, reply) => {
-    await reply.send({ status: 'ok', mode: 'http-mcp' });
+    await reply.send({ status: 'ok', mode: 'http-mcp', version: SERVER_VERSION });
   });
 
   // --- Write endpoints: hooks in proxy mode POST here when CONTEXT_MANAGER_URL is set ---

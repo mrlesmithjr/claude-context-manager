@@ -31,6 +31,23 @@ const __scriptDir = typeof __dirname !== 'undefined'
   ? __dirname
   : dirname(fileURLToPath(import.meta.url));
 
+// Read version at startup. Three sources in priority order:
+//   1. PLUGIN_VERSION -- injected as a string literal by esbuild define in build-hooks.js;
+//      present in plugin bundles (plugin/scripts/web/index.cjs) where no filesystem read is safe
+//   2. package.json -- works in the dist/ dev path (dist/web/server.js -> ../../package.json)
+//   3. npm_package_version -- only set when launched via `npm`; launchd does not set it
+declare const PLUGIN_VERSION: string | undefined;
+const VERSION: string = (() => {
+  if (typeof PLUGIN_VERSION !== 'undefined' && PLUGIN_VERSION) return PLUGIN_VERSION;
+  try {
+    const pkg = JSON.parse(readFileSync(join(__scriptDir, '../../package.json'), 'utf-8')) as { version?: unknown };
+    if (typeof pkg.version === 'string' && pkg.version) return pkg.version;
+    throw new Error('version missing');
+  } catch {
+    return process.env['npm_package_version'] ?? 'unknown';
+  }
+})();
+
 // Configuration from environment
 const PORT = parseInt(process.env.CONTEXT_MANAGER_PORT || '3847', 10);
 const HOST = process.env.CONTEXT_MANAGER_HOST || 'localhost';
@@ -159,7 +176,7 @@ async function main() {
   fastify.get('/api/health', async (request, reply) => {
     reply.send({
       status: 'ok',
-      version: process.env.npm_package_version || 'unknown',
+      version: VERSION,
     });
   });
 
