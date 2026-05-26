@@ -70,6 +70,7 @@ Runs the HTTP capture server as a persistent launchd agent. The server starts au
 - Plugin already installed (Mode 1 steps above)
 - The repo cloned locally (for `make` commands): `git clone https://github.com/mrlesmithjr/claude-context-manager`
 - Node.js 18+
+- Xcode Command Line Tools (macOS): `xcode-select --install` (required to build native modules `better-sqlite3` and `sqlite-vec` during `npm install`)
 - `npm install && npm run build` run once from the repo root
 
 ### Install
@@ -125,7 +126,9 @@ Runs both the capture server and web dashboard in Docker containers. Data lives 
 
 - Plugin already installed (Mode 1 steps above)
 - The repo cloned locally
-- Node.js 18+ and `npm install && npm run build` run once
+- Node.js 18+
+- Xcode Command Line Tools (macOS): `xcode-select --install` (required to build native modules during `npm install`)
+- `npm install && npm run build` run once from the repo root
 - Docker and Docker Compose v2 installed and running
 
 ### Install
@@ -250,6 +253,20 @@ Restart Claude Code to apply the update.
 ---
 
 ## Troubleshooting
+
+**`npm install` fails with build errors or `node-gyp` errors**
+
+The native modules (`better-sqlite3`, `sqlite-vec`) require C++ build tools. On macOS, install Xcode Command Line Tools:
+
+```bash
+xcode-select --install
+```
+
+Then re-run `npm install`. If Xcode CLT is already installed but the error persists, try:
+
+```bash
+npm rebuild better-sqlite3
+```
 
 **Hooks are not capturing anything**
 
