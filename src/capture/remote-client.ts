@@ -202,6 +202,37 @@ export async function remoteSaveDecision(
 }
 
 /**
+ * Fetch the next sequential decision number for a project from the remote server.
+ *
+ * Used by the Stop hook in remote mode so decisions are numbered globally rather
+ * than always starting from 1 per session.
+ *
+ * Returns 1 as a safe fallback on any fetch or parse error. Decision numbering
+ * is informational only and should never abort session-end.
+ */
+export async function remoteGetNextDecisionNumber(
+  client: RemoteClient,
+  project: string,
+): Promise<number> {
+  try {
+    const response = await fetch(
+      `${client.url}/api/decisions/next-number?project=${encodeURIComponent(project)}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${client.token}`,
+        },
+      },
+    );
+    if (!response.ok) return 1;
+    const data = (await response.json()) as Record<string, unknown>;
+    const n = data['nextNumber'];
+    return typeof n === 'number' && Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+  } catch {
+    return 1;
+  }
+}
+
+/**
  * Trigger stale session GC on the remote server.
  *
  * Equivalent to the local closeStaleActiveSessions() call in context-inject's

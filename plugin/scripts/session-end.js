@@ -3151,6 +3151,25 @@ async function remoteSaveDecision(client, decision) {
     tags: decision.tags ?? null
   });
 }
+async function remoteGetNextDecisionNumber(client, project) {
+  try {
+    const response = await fetch(
+      `${client.url}/api/decisions/next-number?project=${encodeURIComponent(project)}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${client.token}`
+        }
+      }
+    );
+    if (!response.ok)
+      return 1;
+    const data = await response.json();
+    const n = data["nextNumber"];
+    return typeof n === "number" && Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+  } catch {
+    return 1;
+  }
+}
 
 // src/utils/env.ts
 import { readFileSync as readFileSync3 } from "node:fs";
@@ -3541,7 +3560,7 @@ async function main() {
           console.error("[context-manager] Conversation insight extraction failed:", insightError);
         }
         try {
-          let nextNum = 1;
+          let nextNum = await remoteGetNextDecisionNumber(client, input.cwd);
           const decisions = await extractDecisions(
             transcriptLines,
             input.session_id,

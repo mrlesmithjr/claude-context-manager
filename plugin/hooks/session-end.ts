@@ -35,6 +35,7 @@ import {
   remoteSaveObservation,
   remoteExportMemory,
   remoteSaveDecision,
+  remoteGetNextDecisionNumber,
 } from '../../src/capture/remote-client.js';
 import { loadDotEnv } from '../../src/utils/env.js';
 import {
@@ -514,12 +515,10 @@ async function main() {
 
         // Extract and forward decisions to the remote server
         try {
-          // In remote mode we use a simple incrementing counter seeded from 1.
-          // We do not have a cheap way to query the remote's current decision count
-          // from the hook without an extra MCP call, so we start from 1 and let the
-          // server-side insert handle any numbering conflicts (duplicate decision_number
-          // is non-unique — it is informational only).
-          let nextNum = 1;
+          // Fetch the server's current decision count so numbering is globally
+          // sequential rather than always starting from 1 per session.
+          // Falls back to 1 on any error; decision_number is informational only.
+          let nextNum = await remoteGetNextDecisionNumber(client, input.cwd);
           const decisions = await extractDecisions(
             transcriptLines,
             input.session_id,

@@ -6822,6 +6822,7 @@ __export(remote_client_exports, {
   remoteEndSession: () => remoteEndSession,
   remoteExportMemory: () => remoteExportMemory,
   remoteGetMemory: () => remoteGetMemory,
+  remoteGetNextDecisionNumber: () => remoteGetNextDecisionNumber,
   remoteHealthCheck: () => remoteHealthCheck,
   remoteMcpText: () => remoteMcpText,
   remoteSaveDecision: () => remoteSaveDecision,
@@ -6919,6 +6920,25 @@ async function remoteSaveDecision(client, decision) {
     importance_score: decision.importance_score ?? 0.7,
     tags: decision.tags ?? null
   });
+}
+async function remoteGetNextDecisionNumber(client, project) {
+  try {
+    const response = await fetch(
+      `${client.url}/api/decisions/next-number?project=${encodeURIComponent(project)}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${client.token}`
+        }
+      }
+    );
+    if (!response.ok)
+      return 1;
+    const data = await response.json();
+    const n = data["nextNumber"];
+    return typeof n === "number" && Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+  } catch {
+    return 1;
+  }
 }
 async function remoteCloseStale(client) {
   await post(client, "/capture/session/gc", {});
@@ -34385,7 +34405,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.89" : "unknown"
+      version: true ? "0.8.90" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."

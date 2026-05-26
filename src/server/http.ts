@@ -649,6 +649,28 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     }
   });
 
+  // GET /api/decisions/next-number: return the next sequential decision number for a project.
+  // Used by the Stop hook in remote mode to assign globally-correct decision numbers
+  // instead of always starting from 1 per session.
+  fastify.get('/api/decisions/next-number', async (request, reply) => {
+    try {
+      const query = request.query as Record<string, string>;
+      const project = query['project'];
+
+      if (!project || project.length === 0 || project.length > PROJECT_MAX) {
+        await reply.status(400).send({ error: 'project query parameter is required' });
+        return;
+      }
+
+      const normalizedProject = normalizePath(project, pathMap);
+      const nextNumber = await storage.getNextDecisionNumber(normalizedProject);
+      await reply.send({ nextNumber });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(500).send({ error: msg });
+    }
+  });
+
   // GET /memory — return the current memory export file content for a project.
   // Used by the SessionStart hook to fetch context from the server without
   // triggering a new export (read-only, no side effects).
