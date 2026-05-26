@@ -335,8 +335,8 @@ update:
 	@echo "[update] Installing dependencies..."
 	npm install
 	@echo ""
-	@echo "[update] Building..."
-	npm run build
+	@echo "[update] Building (including plugin preparation)..."
+	npm run build:plugin
 	@echo ""
 	@NATIVE_ON=$$(launchctl list 2>/dev/null | grep -c "$(LAUNCHD_LABEL)$$"); \
 	DOCKER_ON=$$(docker ps --filter "name=context-manager" --format "{{.Names}}" 2>/dev/null | grep -c .); \
