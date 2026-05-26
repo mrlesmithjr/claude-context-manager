@@ -2024,7 +2024,7 @@ function loadDotEnv() {
 }
 
 // plugin/hooks/context-inject.ts
-var NO_NATIVE_ERROR = "[context-manager] No server configured and native SQLite modules are not available.\nRun 'make server-quickstart' (macOS) or 'make server-start' (Docker) to set up a server,\nthen restart Claude Code.\nFor local SQLite mode: clone the repo, run 'npm install', and install locally with\n'/plugin marketplace add /path/to/repo'.\nNeed help? Ask Claude to walk you through the complete setup, or type /context-manager-setup.";
+var NO_NATIVE_ERROR = '[context-manager] No server configured. Observations are not being captured this session.\n\nTo set up the server, Claude can run these steps with you:\n\nmacOS (recommended):\n  git clone git@github.com:mrlesmithjr/claude-context-manager.git ~/claude-context-manager\n  cd ~/claude-context-manager && npm install\n  make server-quickstart          # creates token, installs launchd service, starts server\n  /plugin update context-manager  # run inside Claude Code, then restart Claude Code\n\nLinux / Docker:\n  git clone git@github.com:mrlesmithjr/claude-context-manager.git ~/claude-context-manager\n  cd ~/claude-context-manager && npm install\n  make server-init   # creates ~/.claude-context/.env with a token\n  make server-start  # starts Docker containers\n  /plugin update context-manager  # run inside Claude Code, then restart Claude Code\n\nSay "help me set up context-manager" and Claude will walk through each step.';
 async function readStdin() {
   return new Promise((resolve) => {
     let data = "";
@@ -2060,11 +2060,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.69") {
+    if (installedVersion !== "0.8.70") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.69"}
+   Source:    v${"0.8.70"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2114,8 +2114,13 @@ async function main() {
             additionalContext: [
               `[WARNING] context-manager server not responding at ${remoteUrl}.`,
               `Observations are not being captured this session.`,
-              `To diagnose an existing install: run 'make server-status' from the repo directory, then restart Claude Code.`,
-              `For first-time setup or to be walked through recovery: ask Claude for help setting up context-manager, or type /context-manager-setup.`
+              ``,
+              `If the server stopped:`,
+              `  cd ~/claude-context-manager && make server-restart`,
+              `  Then restart Claude Code.`,
+              ``,
+              `If this is a new machine and the server has never been set up, say`,
+              `"help me set up context-manager" and Claude will walk through the full setup.`
             ].join("\n")
           }
         });
@@ -2135,7 +2140,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.69"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.70"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats.");
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -2178,7 +2183,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.69"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.70"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

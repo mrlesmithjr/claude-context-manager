@@ -43,13 +43,28 @@ declare const __nativeModulesAvailable: boolean;
 // Duplicated in capture-tool.ts, capture-prompt.ts, and session-end.ts.
 // Plugin hooks are compiled independently by esbuild into single-file bundles;
 // there is no shared hook module to import from, so each file carries its own copy.
+// This message is returned as additionalContext at SessionStart so Claude sees it and can
+// guide the user through setup interactively. It is intentionally self-contained — new users
+// installing from the marketplace will not have any external skill files available.
 const NO_NATIVE_ERROR =
-  '[context-manager] No server configured and native SQLite modules are not available.\n' +
-  "Run 'make server-quickstart' (macOS) or 'make server-start' (Docker) to set up a server,\n" +
-  'then restart Claude Code.\n' +
-  "For local SQLite mode: clone the repo, run 'npm install', and install locally with\n" +
-  "'/plugin marketplace add /path/to/repo'.\n" +
-  'Need help? Ask Claude to walk you through the complete setup, or type /context-manager-setup.';
+  '[context-manager] No server configured. Observations are not being captured this session.\n' +
+  '\n' +
+  'To set up the server, Claude can run these steps with you:\n' +
+  '\n' +
+  'macOS (recommended):\n' +
+  '  git clone git@github.com:mrlesmithjr/claude-context-manager.git ~/claude-context-manager\n' +
+  '  cd ~/claude-context-manager && npm install\n' +
+  '  make server-quickstart          # creates token, installs launchd service, starts server\n' +
+  '  /plugin update context-manager  # run inside Claude Code, then restart Claude Code\n' +
+  '\n' +
+  'Linux / Docker:\n' +
+  '  git clone git@github.com:mrlesmithjr/claude-context-manager.git ~/claude-context-manager\n' +
+  '  cd ~/claude-context-manager && npm install\n' +
+  '  make server-init   # creates ~/.claude-context/.env with a token\n' +
+  '  make server-start  # starts Docker containers\n' +
+  '  /plugin update context-manager  # run inside Claude Code, then restart Claude Code\n' +
+  '\n' +
+  'Say "help me set up context-manager" and Claude will walk through each step.';
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -177,8 +192,13 @@ async function main() {
             additionalContext: [
               `[WARNING] context-manager server not responding at ${remoteUrl}.`,
               `Observations are not being captured this session.`,
-              `To diagnose an existing install: run 'make server-status' from the repo directory, then restart Claude Code.`,
-              `For first-time setup or to be walked through recovery: ask Claude for help setting up context-manager, or type /context-manager-setup.`,
+              ``,
+              `If the server stopped:`,
+              `  cd ~/claude-context-manager && make server-restart`,
+              `  Then restart Claude Code.`,
+              ``,
+              `If this is a new machine and the server has never been set up, say`,
+              `"help me set up context-manager" and Claude will walk through the full setup.`,
             ].join('\n'),
           },
         });
