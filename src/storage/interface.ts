@@ -36,6 +36,11 @@ export interface SearchOptions {
    * boost for the current branch is applied by the caller after results return.
    */
   branch?: string;
+  /**
+   * When true, include observations that have been superseded by newer
+   * contradictory stack preference facts. Default false (exclude superseded).
+   */
+  include_superseded?: boolean;
 }
 export type RelationshipType = 'same_file' | 'followed_by' | 'cross_project_same_file';
 export type ObservationTag =
@@ -82,6 +87,7 @@ export interface Observation {
   pinned?: number;        // 1 = exempt from decay, 0 = normal (default)
   access_count?: number;  // incremented each time observation is returned in search results
   branch?: string | null; // Git branch at capture time; null for pre-migration or non-git observations
+  superseded_by?: number | null; // ID of the newer observation that supersedes this one; null = authoritative
   created_at: string; // ISO 8601 timestamp
 }
 
@@ -216,8 +222,9 @@ export interface ContextStorage {
    * @param tag - Tag to filter by (auth, database, testing, etc.)
    * @param project - Project path (optional, for project-scoped search)
    * @param limit - Maximum results (default: 50)
+   * @param includeSuperseded - When true, include observations superseded by newer facts (default: false)
    */
-  searchByTag(tag: string, project?: string, limit?: number): Promise<Observation[]>;
+  searchByTag(tag: string, project?: string, limit?: number, includeSuperseded?: boolean): Promise<Observation[]>;
 
   /**
    * Get statistics for a project
@@ -691,6 +698,33 @@ export interface ContextStorage {
    * @param date - ISO date string to store
    */
   setLastReflectionDate(project: string, date: string): Promise<void>;
+
+  /**
+   * Find the most recent observation in the same project that mentions a fact value
+   * from the same category but NOT the newly detected value.
+   * Used to detect when a new stack preference contradicts an older one.
+   *
+   * @param project - Project path prefix (uses LIKE project%)
+   * @param categoryValues - All known values for the category (e.g. ['npm','pnpm','yarn','bun'])
+   * @param newValue - The newly detected value to exclude from the conflict search
+   * @param currentObservationId - The ID of the just-inserted observation to exclude (prevents self-match)
+   * @returns The ID of the conflicting observation, or null if none found
+   */
+  findConflictingFact(
+    project: string,
+    categoryValues: string[],
+    newValue: string,
+    currentObservationId?: number
+  ): Promise<number | null>;
+
+  /**
+   * Mark an observation as superseded by a newer one.
+   * Sets superseded_by = newId on the row with id = oldId.
+   *
+   * @param oldId - The observation being superseded
+   * @param newId - The newer observation that supersedes it
+   */
+  markSuperseded(oldId: number, newId: number): Promise<void>;
 
   /**
    * Close storage connection

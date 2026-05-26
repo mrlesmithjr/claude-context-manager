@@ -512,12 +512,20 @@ export function createContextManagerServer(
         .describe(
           'Filter by git branch. Omit for soft-rank boost on current branch. Use "*" to return results from all branches without boost.'
         ),
+      include_superseded: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'Include superseded observations (older contradicted stack preference facts). Default false.'
+        ),
     },
-    async ({ query, project, compact, branch }) => {
+    async ({ query, project, compact, branch, include_superseded }) => {
       const useCompact = compact !== false;
+      const includeSuperseded = include_superseded === true;
 
       if (isProxy) {
-        return proxyToolCall('context_search', { query, project: np(project), compact: useCompact, branch }, remoteUrl, remoteToken);
+        return proxyToolCall('context_search', { query, project: np(project), compact: useCompact, branch, include_superseded: includeSuperseded }, remoteUrl, remoteToken);
       }
 
       const db = await getDb();
@@ -562,11 +570,11 @@ export function createContextManagerServer(
       // Check for tag: prefix, routes to tag search, optionally combined with keyword
       const { tag, remainingQuery } = parseTagPrefix(query);
       if (tag) {
-        const tagObs = await db.searchByTag(tag, normalizedProject);
+        const tagObs = await db.searchByTag(tag, normalizedProject, 50, includeSuperseded);
         // If there's remaining query text, further filter via FTS5
         let results = tagObs;
         if (remainingQuery.length > 0) {
-          const ftsResults = await db.search(remainingQuery, normalizedProject);
+          const ftsResults = await db.search(remainingQuery, { project: normalizedProject, include_superseded: includeSuperseded });
           const ftsIds = new Set(ftsResults.map(o => o.id));
           results = tagObs.filter(o => ftsIds.has(o.id));
         }
@@ -577,11 +585,12 @@ export function createContextManagerServer(
           : `tag:${tag}`;
         const modeLabel = useCompact ? 'compact' : 'full';
         const temporalLabel = temporalMode !== 'neutral' ? ` | temporal: ${temporalMode}` : '';
+        const tagSupersededLabel = includeSuperseded ? ' | +superseded' : '';
         const formattedResults = useCompact
           ? results.map(o => formatObservationCompact(o)).join('\n')
           : formatObservations(results);
         const text = results.length > 0
-          ? `[search: ${label}${temporalLabel} | ${modeLabel}] ${results.length} results\n\n${formattedResults}`
+          ? `[search: ${label}${temporalLabel}${tagSupersededLabel} | ${modeLabel}] ${results.length} results\n\n${formattedResults}`
           : `No observations found for ${label}.`;
         return { content: [{ type: 'text' as const, text }] };
       }
@@ -598,6 +607,7 @@ export function createContextManagerServer(
       const searchOptions = {
         project: normalizedProject,
         temporalMode,
+        include_superseded: includeSuperseded,
         ...(branch !== undefined ? { branch } : {}),
       };
 
@@ -628,6 +638,10 @@ export function createContextManagerServer(
               if (branch !== undefined && branch !== '*') {
                 observations = observations.filter(o => o.branch === branch);
               }
+              // Enforce superseded filter on vector results (vectorSearch has no superseded param)
+              if (!includeSuperseded) {
+                observations = observations.filter(o => o.superseded_by == null);
+              }
             }
             searchMethod = 'semantic';
           } else {
@@ -655,6 +669,10 @@ export function createContextManagerServer(
             // Enforce branch filter on vector component — vectorSearch has no branch param
             if (branch !== undefined && branch !== '*') {
               observations = observations.filter(o => o.branch === branch);
+            }
+            // Enforce superseded filter on vector component — vectorSearch has no superseded param
+            if (!includeSuperseded) {
+              observations = observations.filter(o => o.superseded_by == null);
             }
             searchMethod = 'hybrid (RRF)';
           } else {
@@ -693,6 +711,8 @@ export function createContextManagerServer(
         : branch === '*'
           ? ' | branch: * (all)'
           : '';
+      // Append superseded label when caller requested superseded results
+      const supersededLabel = includeSuperseded ? ' | +superseded' : '';
 
       // Session-level results (from semantic strategy)
       if (sessionResults.length > 0) {
@@ -707,7 +727,7 @@ export function createContextManagerServer(
           lines.push(`  ${summaryPreview}`);
           lines.push('');
         }
-        sections.push(`[search: ${searchMethod}${temporalLabel}${branchLabel} | ${modeLabel}] ${sessionResults.length} sessions\n\n${lines.join('\n')}`);
+        sections.push(`[search: ${searchMethod}${temporalLabel}${branchLabel}${supersededLabel} | ${modeLabel}] ${sessionResults.length} sessions\n\n${lines.join('\n')}`);
       }
 
       // Observation results
@@ -715,7 +735,7 @@ export function createContextManagerServer(
         const formattedObs = useCompact
           ? observations.map(o => formatObservationCompact(o)).join('\n')
           : formatObservations(observations);
-        sections.push(`[search: ${searchMethod}${temporalLabel}${branchLabel} | ${modeLabel}] ${observations.length} results\n\n${formattedObs}`);
+        sections.push(`[search: ${searchMethod}${temporalLabel}${branchLabel}${supersededLabel} | ${modeLabel}] ${observations.length} results\n\n${formattedObs}`);
 
         if (!useCompact) {
           // Enrich top 3 results with related observations (full mode only)
@@ -972,7 +992,8 @@ export function createContextManagerServer(
             ? ` (${obs.files_touched.map(f => f.split('/').pop()).join(', ')})`
             : '';
           const branchTag = obs.branch ? ` [${obs.branch}]` : '';
-          lines.push(`  [HIGH] ${obs.tool_name}:${branchTag} ${obs.summary.substring(0, 80)}${fileInfo}`);
+          const supersededTag = obs.superseded_by != null ? ` [superseded by #${obs.superseded_by}]` : '';
+          lines.push(`  [HIGH]${supersededTag} ${obs.tool_name}:${branchTag} ${obs.summary.substring(0, 80)}${fileInfo}`);
         }
         if (highObs.length > 5) {
           lines.push(`  ... +${highObs.length - 5} more high-importance`);

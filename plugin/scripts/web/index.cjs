@@ -47200,6 +47200,58 @@ function l2DistanceToCosine(l2Distance) {
   return Math.max(0, Math.min(1, 1 - l2Distance * l2Distance / 2));
 }
 
+// src/utils/facts.ts
+var FACT_CATEGORIES = [
+  {
+    name: "package_manager",
+    values: ["npm", "pnpm", "yarn", "bun"],
+    patterns: [
+      /\b(use|using|switched?\s+to|running|with)\s+(npm|pnpm|yarn|bun)\b/i,
+      /\b(npm|pnpm|yarn|bun)\s+(install|run|exec|workspace)\b/i
+    ]
+  },
+  {
+    name: "test_runner",
+    values: ["jest", "vitest", "mocha", "pytest", "jasmine"],
+    patterns: [
+      /\b(use|using|switched?\s+to|running)\s+(jest|vitest|mocha|pytest|jasmine)\b/i,
+      /\b(jest|vitest|mocha|pytest|jasmine)\s+(test|suite|config|run)\b/i
+    ]
+  },
+  {
+    name: "build_tool",
+    values: ["webpack", "vite", "esbuild", "rollup", "parcel", "turbopack"],
+    patterns: [
+      /\b(use|using|switched?\s+to|building with)\s+(webpack|vite|esbuild|rollup|parcel|turbopack)\b/i,
+      /\b(webpack|vite|esbuild|rollup|parcel|turbopack)\s+(config|build|bundle)\b/i
+    ]
+  },
+  {
+    name: "framework",
+    values: ["express", "fastify", "hono", "koa", "nestjs", "next", "nuxt"],
+    patterns: [
+      /\b(use|using|switched?\s+to|built with)\s+(express|fastify|hono|koa|nestjs|next\.?js|nuxt)\b/i
+    ]
+  }
+];
+function detectFactType(summary) {
+  if (!summary)
+    return null;
+  const lower = summary.toLowerCase();
+  for (const cat of FACT_CATEGORIES) {
+    for (const pattern of cat.patterns) {
+      const match = pattern.exec(lower);
+      if (match) {
+        const capturedValue = match.slice(1).find((g) => g && cat.values.includes(g));
+        if (capturedValue) {
+          return { category: cat.name, value: capturedValue };
+        }
+      }
+    }
+  }
+  return null;
+}
+
 // src/storage/sqlite.ts
 var DEFAULT_DB_PATH = import_path.default.join((0, import_os.homedir)(), ".claude-context", "context.db");
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
@@ -47391,6 +47443,7 @@ var SQLiteStorage = class {
     this.migrateAddPinnedAndAccessCount();
     this.migrateAddMetaTable();
     this.migrateAddBranchColumn();
+    this.migrateAddSupersededBy();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -47465,6 +47518,7 @@ var SQLiteStorage = class {
       pinned: row.pinned ?? 0,
       access_count: row.access_count ?? 0,
       branch: row.branch ?? null,
+      superseded_by: row.superseded_by != null ? row.superseded_by : null,
       created_at: row.created_at
     };
   }
@@ -47556,6 +47610,24 @@ ${storedOutput}`;
           OR lesson_type IS NOT NULL
         )
     `).run(insertedId);
+    try {
+      const fact = detectFactType(observation.summary ?? "");
+      if (fact) {
+        const cat = FACT_CATEGORIES.find((c) => c.name === fact.category);
+        if (cat) {
+          const conflictId = await this.findConflictingFact(
+            observation.project,
+            cat.values,
+            fact.value,
+            insertedId
+          );
+          if (conflictId !== null) {
+            await this.markSuperseded(conflictId, insertedId);
+          }
+        }
+      }
+    } catch {
+    }
     return insertedId;
   }
   async getRecent(project, limit) {
@@ -47594,15 +47666,17 @@ ${storedOutput}`;
     const temporalMode = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.temporalMode ?? "neutral" : "neutral";
     const skipDecay = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.skipDecay ?? false : false;
     const branchFilter = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.branch : void 0;
+    const includeSuperseded = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.include_superseded ?? false : false;
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     const hasBranchFilter = branchFilter !== void 0 && branchFilter !== "*";
+    const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     if (project && hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${supersededClause}
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
@@ -47611,7 +47685,7 @@ ${storedOutput}`;
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ?
+        WHERE observations_fts MATCH ? AND o.project LIKE ?${supersededClause}
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
@@ -47620,7 +47694,7 @@ ${storedOutput}`;
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.branch = ?
+        WHERE observations_fts MATCH ? AND o.branch = ?${supersededClause}
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
@@ -47629,7 +47703,7 @@ ${storedOutput}`;
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ?
+        WHERE observations_fts MATCH ?${supersededClause}
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
@@ -47667,14 +47741,15 @@ ${storedOutput}`;
     }
     return results;
   }
-  async searchByTag(tag, project, limit = 50) {
+  async searchByTag(tag, project, limit = 50, includeSuperseded = false) {
     const likePattern = `%,${tag},%`;
+    const supersededClause = includeSuperseded ? "" : " AND superseded_by IS NULL";
     let sql;
     let params;
     if (project) {
       sql = `
         SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?${supersededClause}
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -47682,7 +47757,7 @@ ${storedOutput}`;
     } else {
       sql = `
         SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?${supersededClause}
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -49458,6 +49533,7 @@ ${storedOutput}`;
         AND importance_score >= ?
         AND created_at >= ?
         AND is_compacted = 0
+        AND superseded_by IS NULL
       ORDER BY importance_score DESC, created_at DESC
       LIMIT 500
     `).all(project, minImportance, since);
@@ -49483,6 +49559,65 @@ ${storedOutput}`;
       `INSERT INTO meta (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`
     ).run(key, date);
+  }
+  /**
+   * Migration: add superseded_by column for fact supersession detection.
+   * Guards the ALTER TABLE with PRAGMA table_info — safe to run on every startup.
+   * The partial index uses CREATE INDEX IF NOT EXISTS (idempotent).
+   */
+  migrateAddSupersededBy() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("superseded_by")) {
+      this.db.exec(
+        `ALTER TABLE observations ADD COLUMN superseded_by INTEGER REFERENCES observations(id) ON DELETE SET NULL`
+      );
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_superseded
+      ON observations(superseded_by) WHERE superseded_by IS NOT NULL
+    `);
+  }
+  /**
+   * Find the most recent non-superseded observation in the same project that mentions
+   * a value from the same fact category but NOT the newly detected value.
+   * Used to detect when a new stack preference contradicts an older one.
+   *
+   * Returns at most one row (the most recent conflict). Parameterized — no SQL
+   * injection risk; value strings are sourced from the static FACT_CATEGORIES
+   * array, not user input.
+   */
+  async findConflictingFact(project, categoryValues, newValue, currentObservationId) {
+    if (categoryValues.length === 0)
+      return null;
+    const likeClauses = categoryValues.map(() => `summary LIKE ?`).join(" OR ");
+    const selfExclusion = currentObservationId != null ? "AND id != ?" : "";
+    const sql = `
+      SELECT id FROM observations
+      WHERE project LIKE ? || '%'
+        AND superseded_by IS NULL
+        AND (${likeClauses})
+        AND summary NOT LIKE ?
+        ${selfExclusion}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+    const likeParams = categoryValues.map((v) => `%${v}%`);
+    const excludeParam = `%${newValue}%`;
+    const params = [project, ...likeParams, excludeParam];
+    if (currentObservationId != null)
+      params.push(currentObservationId);
+    const rows = this.db.prepare(sql).all(...params);
+    return rows[0]?.id ?? null;
+  }
+  /**
+   * Mark an observation as superseded by a newer one.
+   * Sets superseded_by = newId on the row with id = oldId.
+   */
+  async markSuperseded(oldId, newId) {
+    this.db.prepare(
+      `UPDATE observations SET superseded_by = ? WHERE id = ?`
+    ).run(newId, oldId);
   }
   close() {
     this.db.close();
@@ -49921,8 +50056,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.86")
-    return "0.8.86";
+  if ("0.8.87")
+    return "0.8.87";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

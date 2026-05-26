@@ -15,6 +15,7 @@ import path from 'path';
 import { mkdirSync } from 'fs';
 import * as sqliteVec from 'sqlite-vec';
 import { sha256, l2DistanceToCosine } from '../utils/hash.js';
+import { detectFactType, FACT_CATEGORIES } from '../utils/facts.js';
 import type {
   ContextStorage,
   Decision,
@@ -329,6 +330,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add branch column to observations and sessions for git branch-aware capture
     this.migrateAddBranchColumn();
+
+    // Migration: add superseded_by column for fact supersession detection
+    this.migrateAddSupersededBy();
   }
 
   /**
@@ -418,6 +422,7 @@ export class SQLiteStorage implements ContextStorage {
       pinned: (row.pinned as number) ?? 0,
       access_count: (row.access_count as number) ?? 0,
       branch: (row.branch as string | null) ?? null,
+      superseded_by: row.superseded_by != null ? (row.superseded_by as number) : null,
       created_at: row.created_at as string,
     };
   }
@@ -551,6 +556,28 @@ export class SQLiteStorage implements ContextStorage {
         )
     `).run(insertedId);
 
+    // Check for superseded facts (stack preference detection). Wrapped in
+    // try/catch so a detection failure does not abort the save.
+    try {
+      const fact = detectFactType(observation.summary ?? '');
+      if (fact) {
+        const cat = FACT_CATEGORIES.find(c => c.name === fact.category);
+        if (cat) {
+          const conflictId = await this.findConflictingFact(
+            observation.project,
+            cat.values,
+            fact.value,
+            insertedId
+          );
+          if (conflictId !== null) {
+            await this.markSuperseded(conflictId, insertedId);
+          }
+        }
+      }
+    } catch {
+      // Fact detection is best-effort. The observation was already saved.
+    }
+
     return insertedId;
   }
 
@@ -618,6 +645,10 @@ export class SQLiteStorage implements ContextStorage {
     const branchFilter = typeof projectOrOptions === 'object' && projectOrOptions !== null
       ? projectOrOptions.branch
       : undefined;
+    // include_superseded: when false (default), exclude observations with a non-null superseded_by
+    const includeSuperseded = typeof projectOrOptions === 'object' && projectOrOptions !== null
+      ? (projectOrOptions.include_superseded ?? false)
+      : false;
 
     let sql: string;
     let params: unknown[];
@@ -632,12 +663,14 @@ export class SQLiteStorage implements ContextStorage {
 
     // Exact branch filter clause (only when branchFilter is defined and not '*')
     const hasBranchFilter = branchFilter !== undefined && branchFilter !== '*';
+    // Superseded exclusion clause added to all search paths when include_superseded is false
+    const supersededClause = includeSuperseded ? '' : ' AND o.superseded_by IS NULL';
 
     if (project && hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${supersededClause}
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
@@ -648,7 +681,7 @@ export class SQLiteStorage implements ContextStorage {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ?
+        WHERE observations_fts MATCH ? AND o.project LIKE ?${supersededClause}
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
@@ -657,7 +690,7 @@ export class SQLiteStorage implements ContextStorage {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.branch = ?
+        WHERE observations_fts MATCH ? AND o.branch = ?${supersededClause}
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
@@ -666,7 +699,7 @@ export class SQLiteStorage implements ContextStorage {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ?
+        WHERE observations_fts MATCH ?${supersededClause}
         ORDER BY o.created_at DESC
         LIMIT 50
       `;
@@ -729,19 +762,20 @@ export class SQLiteStorage implements ContextStorage {
     return results;
   }
 
-  async searchByTag(tag: string, project?: string, limit: number = 50): Promise<Observation[]> {
+  async searchByTag(tag: string, project?: string, limit: number = 50, includeSuperseded: boolean = false): Promise<Observation[]> {
     // Use delimiter-anchored matching to avoid substring collisions (e.g. "auth"
     // matching a future "authentication" tag) and to make the intent explicit.
-    // Tags are stored as "auth,api,config"; wrapping with commas in SQL lets us
-    // match exact tag values: WHERE ',' || tags || ',' LIKE '%,auth,%'
+    // Tags are stored as JSON arrays; wrapping with commas matches exact tag values.
     const likePattern = `%,${tag},%`;
+    // Superseded exclusion clause applied by default
+    const supersededClause = includeSuperseded ? '' : ' AND superseded_by IS NULL';
     let sql: string;
     let params: unknown[];
 
     if (project) {
       sql = `
         SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ? AND project LIKE ?${supersededClause}
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -749,7 +783,7 @@ export class SQLiteStorage implements ContextStorage {
     } else {
       sql = `
         SELECT * FROM observations
-        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?
+        WHERE tags IS NOT NULL AND ',' || tags || ',' LIKE ?${supersededClause}
         ORDER BY created_at DESC
         LIMIT ?
       `;
@@ -3113,6 +3147,7 @@ export class SQLiteStorage implements ContextStorage {
         AND importance_score >= ?
         AND created_at >= ?
         AND is_compacted = 0
+        AND superseded_by IS NULL
       ORDER BY importance_score DESC, created_at DESC
       LIMIT 500
     `).all(project, minImportance, since) as Array<Record<string, unknown>>;
@@ -3141,6 +3176,87 @@ export class SQLiteStorage implements ContextStorage {
       `INSERT INTO meta (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`
     ).run(key, date);
+  }
+
+  /**
+   * Migration: add superseded_by column for fact supersession detection.
+   * Guards the ALTER TABLE with PRAGMA table_info — safe to run on every startup.
+   * The partial index uses CREATE INDEX IF NOT EXISTS (idempotent).
+   */
+  private migrateAddSupersededBy(): void {
+    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('superseded_by')) {
+      this.db.exec(
+        `ALTER TABLE observations ADD COLUMN superseded_by INTEGER REFERENCES observations(id) ON DELETE SET NULL`
+      );
+    }
+
+    // Partial index: only index rows that have been superseded (sparse, no wasted space on the majority)
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_superseded
+      ON observations(superseded_by) WHERE superseded_by IS NOT NULL
+    `);
+  }
+
+  /**
+   * Find the most recent non-superseded observation in the same project that mentions
+   * a value from the same fact category but NOT the newly detected value.
+   * Used to detect when a new stack preference contradicts an older one.
+   *
+   * Returns at most one row (the most recent conflict). Parameterized — no SQL
+   * injection risk; value strings are sourced from the static FACT_CATEGORIES
+   * array, not user input.
+   */
+  async findConflictingFact(
+    project: string,
+    categoryValues: string[],
+    newValue: string,
+    currentObservationId?: number
+  ): Promise<number | null> {
+    if (categoryValues.length === 0) return null;
+
+    // Build LIKE clauses for all category values
+    const likeClauses = categoryValues
+      .map(() => `summary LIKE ?`)
+      .join(' OR ');
+
+    // Exclude the new value and, when provided, the current observation to avoid self-match
+    const selfExclusion = currentObservationId != null ? 'AND id != ?' : '';
+
+    const sql = `
+      SELECT id FROM observations
+      WHERE project LIKE ? || '%'
+        AND superseded_by IS NULL
+        AND (${likeClauses})
+        AND summary NOT LIKE ?
+        ${selfExclusion}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+
+    // Params: project, one '%value%' per category value, exclusion pattern for newValue,
+    // optional self-exclusion id
+    const likeParams = categoryValues.map(v => `%${v}%`);
+    const excludeParam = `%${newValue}%`;
+    const params: unknown[] = [project, ...likeParams, excludeParam];
+    if (currentObservationId != null) params.push(currentObservationId);
+
+    const rows = this.db.prepare(sql).all(...params) as Array<{ id: number }>;
+
+    // Return the most recent conflicting observation ID, or null
+    return rows[0]?.id ?? null;
+  }
+
+  /**
+   * Mark an observation as superseded by a newer one.
+   * Sets superseded_by = newId on the row with id = oldId.
+   */
+  async markSuperseded(oldId: number, newId: number): Promise<void> {
+    this.db.prepare(
+      `UPDATE observations SET superseded_by = ? WHERE id = ?`
+    ).run(newId, oldId);
   }
 
   close(): Promise<void> {
