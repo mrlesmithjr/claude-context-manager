@@ -279,6 +279,7 @@ var init_sqlite = __esm({
         this.migrateAddLessonType();
         this.migrateAddDecisionsTable();
         this.migrateAddPinnedAndAccessCount();
+        this.migrateAddMetaTable();
       }
       /**
        * Add importance and compaction columns if they don't exist.
@@ -2276,6 +2277,57 @@ ${storedOutput}`;
     `).get(project);
         return row?.next_num ?? 1;
       }
+      /**
+       * Migration: add meta table for lightweight key-value persistence.
+       * Idempotent, uses CREATE TABLE IF NOT EXISTS.
+       */
+      migrateAddMetaTable() {
+        this.db.exec(`
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+      }
+      /**
+       * Get observations suitable for reflection analysis.
+       * Returns high-importance observations from the lookback window ordered by
+       * importance descending then recency descending, capped at 500.
+       */
+      async getObservationsForReflection(project, lookbackDays, minImportance) {
+        const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1e3).toISOString();
+        const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? || '%'
+        AND importance_score >= ?
+        AND created_at >= ?
+        AND is_compacted = 0
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT 500
+    `).all(project, minImportance, since);
+        return rows.map((row) => this.mapRow(row));
+      }
+      /**
+       * Get the ISO date string of the last reflection run for a project.
+       * Returns null when no reflection has been run yet.
+       */
+      async getLastReflectionDate(project) {
+        const key = `reflection:${project}`;
+        const row = this.db.prepare(
+          `SELECT value FROM meta WHERE key = ?`
+        ).get(key);
+        return row?.value ?? null;
+      }
+      /**
+       * Store the ISO date string of a completed reflection run for a project.
+       */
+      async setLastReflectionDate(project, date5) {
+        const key = `reflection:${project}`;
+        this.db.prepare(
+          `INSERT INTO meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+        ).run(key, date5);
+      }
       close() {
         this.db.close();
         return Promise.resolve();
@@ -2721,6 +2773,142 @@ var init_memory = __esm({
     TOPIC_FILE = "context-manager-activity.md";
     DEFAULT_MAX_LINES = 150;
     MAX_ITEMS_PER_SESSION = 6;
+  }
+});
+
+// src/utils/reflect.ts
+function extractSignificantWords(text) {
+  return text.toLowerCase().replace(/[^a-z0-9\s_-]/g, " ").split(/\s+/).filter((w) => w.length >= 4 && !STOPWORDS.has(w));
+}
+function topFrequentWords(summaries, topN) {
+  const freq = /* @__PURE__ */ new Map();
+  for (const summary of summaries) {
+    const words = extractSignificantWords(summary);
+    const seen = /* @__PURE__ */ new Set();
+    for (const word of words) {
+      if (!seen.has(word)) {
+        freq.set(word, (freq.get(word) ?? 0) + 1);
+        seen.add(word);
+      }
+    }
+  }
+  return [...freq.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, topN).map(([word]) => word);
+}
+function deriveRule(tag, observations) {
+  const summaries = observations.map((o) => o.summary);
+  const terms = topFrequentWords(summaries, 5);
+  const hasLesson = observations.some((o) => o.lesson_type != null && o.lesson_type !== "");
+  const termList = terms.length > 0 ? terms.join(", ") : tag;
+  if (hasLesson) {
+    return `Avoid: recurring ${tag} issues include ${termList}.`;
+  }
+  return `Check ${tag} context before changes: recurring themes include ${termList}.`;
+}
+function buildReflection(project, observations, lookbackDays) {
+  const reflectionDate = (/* @__PURE__ */ new Date()).toISOString().substring(0, 10);
+  const groupMap = /* @__PURE__ */ new Map();
+  for (const obs of observations) {
+    const tag = obs.tags && obs.tags.length > 0 ? obs.tags[0] : "general";
+    const existing = groupMap.get(tag);
+    if (existing) {
+      existing.push(obs);
+    } else {
+      groupMap.set(tag, [obs]);
+    }
+  }
+  const tagGroups = [];
+  for (const [tag, obs] of groupMap.entries()) {
+    if (obs.length < 3)
+      continue;
+    const sessionIds = new Set(obs.map((o) => o.session_id));
+    tagGroups.push({
+      tag,
+      observations: obs,
+      sessionCount: sessionIds.size,
+      suggestedRule: deriveRule(tag, obs)
+    });
+  }
+  tagGroups.sort((a, b) => b.observations.length - a.observations.length);
+  return {
+    project,
+    lookbackDays,
+    totalObservations: observations.length,
+    tagGroups,
+    reflectionDate
+  };
+}
+function formatReflection(result) {
+  if (result.tagGroups.length === 0) {
+    return `No recurring patterns found in the last ${result.lookbackDays} days. Either too few observations or patterns are already well-addressed.`;
+  }
+  const lines = [];
+  lines.push(`## Reflection: ${result.project} (last ${result.lookbackDays} days)`);
+  lines.push("");
+  lines.push(`${result.totalObservations} observations analyzed, ${result.reflectionDate}`);
+  lines.push("");
+  lines.push("### Recurring Patterns");
+  lines.push("");
+  for (const group of result.tagGroups) {
+    const summaries = group.observations.map((o) => o.summary);
+    const terms = topFrequentWords(summaries, 5);
+    const termList = terms.length > 0 ? terms.join(", ") : group.tag;
+    lines.push(
+      `**${group.tag}** (${group.observations.length} observations, ${group.sessionCount} session${group.sessionCount === 1 ? "" : "s"})`
+    );
+    lines.push(`- Recurring themes: ${termList}`);
+    lines.push(`- Suggested CLAUDE.md addition: "${group.suggestedRule}"`);
+    lines.push("");
+  }
+  lines.push("### Proposed Additions to CLAUDE.md");
+  lines.push("");
+  lines.push("Copy the following into CLAUDE.md as new rules:");
+  lines.push("");
+  for (const group of result.tagGroups) {
+    lines.push(`- ${group.suggestedRule}`);
+  }
+  lines.push("");
+  lines.push("---");
+  lines.push("Run context_reflect again after addressing these patterns to track improvement.");
+  return lines.join("\n");
+}
+var STOPWORDS;
+var init_reflect = __esm({
+  "src/utils/reflect.ts"() {
+    "use strict";
+    STOPWORDS = /* @__PURE__ */ new Set([
+      "the",
+      "and",
+      "for",
+      "that",
+      "this",
+      "with",
+      "from",
+      "have",
+      "been",
+      "were",
+      "will",
+      "when",
+      "what",
+      "which",
+      "into",
+      "then",
+      "than",
+      "also",
+      "about",
+      "added",
+      "updated",
+      "changed",
+      "fixed",
+      "edit",
+      "read",
+      "file",
+      "line",
+      "code",
+      "null",
+      "true",
+      "false",
+      "undefined"
+    ]);
   }
 });
 
@@ -64114,7 +64302,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.84" : "unknown"
+      version: true ? "0.8.85" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -65187,6 +65375,40 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
       }
     }
   );
+  server.tool(
+    "context_reflect",
+    "Analyze accumulated observations for a project and identify recurring patterns. Groups high-importance observations by tag, finds themes appearing across 3 or more observations, and produces proposed CLAUDE.md additions. No LLM inference -- deterministic pattern matching only.",
+    {
+      project: external_exports.string().optional(),
+      lookback_days: external_exports.number().int().min(1).max(365).default(30).optional(),
+      min_importance: external_exports.number().min(0).max(1).default(0.65).optional()
+    },
+    async ({ project, lookback_days, min_importance }) => {
+      if (isProxy) {
+        return proxyToolCall(
+          "context_reflect",
+          { project: np(project), lookback_days, min_importance },
+          remoteUrl,
+          remoteToken
+        );
+      }
+      const db = await getDb();
+      const normalizedProject = np(project) ?? project ?? process.cwd();
+      const days = lookback_days ?? 30;
+      const minScore = min_importance ?? 0.65;
+      const observations = await db.getObservationsForReflection(
+        normalizedProject,
+        days,
+        minScore
+      );
+      const result = buildReflection(normalizedProject, observations, days);
+      const text = formatReflection(result);
+      if (result.tagGroups.length > 0) {
+        await db.setLastReflectionDate(normalizedProject, (/* @__PURE__ */ new Date()).toISOString());
+      }
+      return { content: [{ type: "text", text }] };
+    }
+  );
   return server;
 }
 var SEARCH_MIN_SCORE, ALLOWED_OBSERVATION_TAGS;
@@ -65204,6 +65426,7 @@ var init_create_server = __esm({
     init_classify();
     init_temporal();
     init_path_map();
+    init_reflect();
     SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
     ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
       // Developer / code tags
@@ -65812,8 +66035,8 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.84")
-        return "0.8.84";
+      if ("0.8.85")
+        return "0.8.85";
       try {
         const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version)
@@ -65829,6 +66052,7 @@ var init_http = __esm({
 // cli/index.ts
 init_sqlite();
 init_memory();
+init_reflect();
 var storage = new SQLiteStorage();
 async function main() {
   const args = process.argv.slice(2);
@@ -65854,6 +66078,9 @@ async function main() {
         break;
       case "export":
         await exportCommand(args.slice(1));
+        break;
+      case "reflect":
+        await reflectCommand(args.slice(1));
         break;
       case "help":
       case "--help":
@@ -66083,6 +66310,35 @@ Exported ${result.exported} observations to auto-memory.`);
     console.log(`Topic file: ${result.filePath}`);
   }
 }
+async function reflectCommand(args) {
+  const projectIndex = args.indexOf("--project");
+  let project;
+  if (projectIndex !== -1) {
+    const providedPath = args[projectIndex + 1];
+    if (!providedPath || providedPath.startsWith("-")) {
+      console.error("Error: --project requires a path argument");
+      process.exit(1);
+    }
+    project = providedPath;
+  } else {
+    project = process.cwd();
+  }
+  const daysIndex = args.indexOf("--days");
+  const rawDays = daysIndex !== -1 ? parseInt(args[daysIndex + 1] ?? "30", 10) : 30;
+  if (isNaN(rawDays) || rawDays < 1) {
+    console.error("Error: --days requires a positive integer");
+    process.exit(1);
+  }
+  const minImportanceIndex = args.indexOf("--min-importance");
+  const rawMin = minImportanceIndex !== -1 ? parseFloat(args[minImportanceIndex + 1] ?? "0.65") : 0.65;
+  if (isNaN(rawMin) || rawMin < 0 || rawMin > 1) {
+    console.error("Error: --min-importance requires a float between 0.0 and 1.0");
+    process.exit(1);
+  }
+  const observations = await storage.getObservationsForReflection(project, rawDays, rawMin);
+  const result = buildReflection(project, observations, rawDays);
+  console.log(formatReflection(result));
+}
 async function serveCommand(args) {
   const portIndex = args.indexOf("--port");
   const hostIndex = args.indexOf("--host");
@@ -66119,6 +66375,11 @@ Commands:
   export [--project PATH] [--dry-run]
     Export high-importance observations to auto-memory topic file
 
+  reflect [--project PATH] [--days N] [--min-importance F]
+    Analyze observations for recurring patterns and suggest CLAUDE.md additions
+    --days: lookback window in days (default: 30)
+    --min-importance: minimum importance score 0.0-1.0 (default: 0.65)
+
   serve [--port N] [--host ADDR] [--token SECRET] [--db PATH]
     Start an HTTP MCP server at /mcp (default port 4666)
     Requires CONTEXT_MANAGER_TOKEN env var or --token flag
@@ -66132,6 +66393,7 @@ Examples:
   context-manager stats --project ~/Projects/my-app
   context-manager vacuum --days 30
   context-manager export --dry-run
+  context-manager reflect --days 30 --project ~/Projects/my-app
 `);
 }
 main();

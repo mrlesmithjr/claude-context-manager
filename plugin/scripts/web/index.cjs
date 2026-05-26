@@ -47389,6 +47389,7 @@ var SQLiteStorage = class {
     this.migrateAddLessonType();
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
+    this.migrateAddMetaTable();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -49386,6 +49387,57 @@ ${storedOutput}`;
     `).get(project);
     return row?.next_num ?? 1;
   }
+  /**
+   * Migration: add meta table for lightweight key-value persistence.
+   * Idempotent, uses CREATE TABLE IF NOT EXISTS.
+   */
+  migrateAddMetaTable() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+  }
+  /**
+   * Get observations suitable for reflection analysis.
+   * Returns high-importance observations from the lookback window ordered by
+   * importance descending then recency descending, capped at 500.
+   */
+  async getObservationsForReflection(project, lookbackDays, minImportance) {
+    const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1e3).toISOString();
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? || '%'
+        AND importance_score >= ?
+        AND created_at >= ?
+        AND is_compacted = 0
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT 500
+    `).all(project, minImportance, since);
+    return rows.map((row) => this.mapRow(row));
+  }
+  /**
+   * Get the ISO date string of the last reflection run for a project.
+   * Returns null when no reflection has been run yet.
+   */
+  async getLastReflectionDate(project) {
+    const key = `reflection:${project}`;
+    const row = this.db.prepare(
+      `SELECT value FROM meta WHERE key = ?`
+    ).get(key);
+    return row?.value ?? null;
+  }
+  /**
+   * Store the ISO date string of a completed reflection run for a project.
+   */
+  async setLastReflectionDate(project, date) {
+    const key = `reflection:${project}`;
+    this.db.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(key, date);
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -49823,8 +49875,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.84")
-    return "0.8.84";
+  if ("0.8.85")
+    return "0.8.85";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

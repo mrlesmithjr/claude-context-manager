@@ -221,6 +221,7 @@ var SQLiteStorage = class {
     this.migrateAddLessonType();
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
+    this.migrateAddMetaTable();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -2218,6 +2219,57 @@ ${storedOutput}`;
     `).get(project);
     return row?.next_num ?? 1;
   }
+  /**
+   * Migration: add meta table for lightweight key-value persistence.
+   * Idempotent, uses CREATE TABLE IF NOT EXISTS.
+   */
+  migrateAddMetaTable() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+  }
+  /**
+   * Get observations suitable for reflection analysis.
+   * Returns high-importance observations from the lookback window ordered by
+   * importance descending then recency descending, capped at 500.
+   */
+  async getObservationsForReflection(project, lookbackDays, minImportance) {
+    const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1e3).toISOString();
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? || '%'
+        AND importance_score >= ?
+        AND created_at >= ?
+        AND is_compacted = 0
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT 500
+    `).all(project, minImportance, since);
+    return rows.map((row) => this.mapRow(row));
+  }
+  /**
+   * Get the ISO date string of the last reflection run for a project.
+   * Returns null when no reflection has been run yet.
+   */
+  async getLastReflectionDate(project) {
+    const key = `reflection:${project}`;
+    const row = this.db.prepare(
+      `SELECT value FROM meta WHERE key = ?`
+    ).get(key);
+    return row?.value ?? null;
+  }
+  /**
+   * Store the ISO date string of a completed reflection run for a project.
+   */
+  async setLastReflectionDate(project, date) {
+    const key = `reflection:${project}`;
+    this.db.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(key, date);
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -2443,11 +2495,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.84") {
+    if (installedVersion !== "0.8.85") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.84"}
+   Source:    v${"0.8.85"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2527,7 +2579,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.84"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.85"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -2617,7 +2669,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.84"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.85"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

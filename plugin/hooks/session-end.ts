@@ -650,6 +650,36 @@ async function main() {
       console.error('[context-manager] Auto-memory export failed:', exportError);
     }
 
+    // Reflection reminder: suggest running context_reflect when enough high-importance
+    // observations have accumulated since the last reflection.
+    try {
+      const lastReflection = await storage.getLastReflectionDate(input.cwd);
+      const daysSinceReflection = lastReflection
+        ? (Date.now() - new Date(lastReflection).getTime()) / (1000 * 60 * 60 * 24)
+        : Infinity;
+
+      if (daysSinceReflection >= 7) {
+        // Look back only to the last reflection date when available, so the count
+        // accurately reflects observations since the last reflection ran rather than
+        // a fixed 30-day window.
+        const daysSince = lastReflection
+          ? (Date.now() - new Date(lastReflection).getTime()) / (1000 * 60 * 60 * 24)
+          : 30;
+        const recentHighImportance = await storage.getObservationsForReflection(
+          input.cwd,
+          Math.ceil(daysSince),
+          0.65
+        );
+        if (recentHighImportance.length >= 10) {
+          console.error(
+            `[context-manager] ${recentHighImportance.length} high-importance observations accumulated since last reflection. Consider running context_reflect.`
+          );
+        }
+      }
+    } catch {
+      // Reflection reminder is non-critical; never block session end
+    }
+
     await writeResponse({ status: 'complete' });
   } catch (error) {
     debugLog('SESSION_END_ERROR', { error: String(error) });

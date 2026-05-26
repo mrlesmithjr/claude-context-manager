@@ -22551,6 +22551,7 @@ var SQLiteStorage = class {
     this.migrateAddLessonType();
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
+    this.migrateAddMetaTable();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -24547,6 +24548,57 @@ ${storedOutput}`;
       WHERE project LIKE ? || '%'
     `).get(project);
     return row?.next_num ?? 1;
+  }
+  /**
+   * Migration: add meta table for lightweight key-value persistence.
+   * Idempotent, uses CREATE TABLE IF NOT EXISTS.
+   */
+  migrateAddMetaTable() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+  }
+  /**
+   * Get observations suitable for reflection analysis.
+   * Returns high-importance observations from the lookback window ordered by
+   * importance descending then recency descending, capped at 500.
+   */
+  async getObservationsForReflection(project, lookbackDays, minImportance) {
+    const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1e3).toISOString();
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? || '%'
+        AND importance_score >= ?
+        AND created_at >= ?
+        AND is_compacted = 0
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT 500
+    `).all(project, minImportance, since);
+    return rows.map((row) => this.mapRow(row));
+  }
+  /**
+   * Get the ISO date string of the last reflection run for a project.
+   * Returns null when no reflection has been run yet.
+   */
+  async getLastReflectionDate(project) {
+    const key = `reflection:${project}`;
+    const row = this.db.prepare(
+      `SELECT value FROM meta WHERE key = ?`
+    ).get(key);
+    return row?.value ?? null;
+  }
+  /**
+   * Store the ISO date string of a completed reflection run for a project.
+   */
+  async setLastReflectionDate(project, date5) {
+    const key = `reflection:${project}`;
+    this.db.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(key, date5);
   }
   close() {
     this.db.close();
@@ -33732,6 +33784,136 @@ function normalizePath(p, map2) {
   return p;
 }
 
+// src/utils/reflect.ts
+var STOPWORDS = /* @__PURE__ */ new Set([
+  "the",
+  "and",
+  "for",
+  "that",
+  "this",
+  "with",
+  "from",
+  "have",
+  "been",
+  "were",
+  "will",
+  "when",
+  "what",
+  "which",
+  "into",
+  "then",
+  "than",
+  "also",
+  "about",
+  "added",
+  "updated",
+  "changed",
+  "fixed",
+  "edit",
+  "read",
+  "file",
+  "line",
+  "code",
+  "null",
+  "true",
+  "false",
+  "undefined"
+]);
+function extractSignificantWords(text) {
+  return text.toLowerCase().replace(/[^a-z0-9\s_-]/g, " ").split(/\s+/).filter((w) => w.length >= 4 && !STOPWORDS.has(w));
+}
+function topFrequentWords(summaries, topN) {
+  const freq = /* @__PURE__ */ new Map();
+  for (const summary of summaries) {
+    const words = extractSignificantWords(summary);
+    const seen = /* @__PURE__ */ new Set();
+    for (const word of words) {
+      if (!seen.has(word)) {
+        freq.set(word, (freq.get(word) ?? 0) + 1);
+        seen.add(word);
+      }
+    }
+  }
+  return [...freq.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, topN).map(([word]) => word);
+}
+function deriveRule(tag, observations) {
+  const summaries = observations.map((o) => o.summary);
+  const terms = topFrequentWords(summaries, 5);
+  const hasLesson = observations.some((o) => o.lesson_type != null && o.lesson_type !== "");
+  const termList = terms.length > 0 ? terms.join(", ") : tag;
+  if (hasLesson) {
+    return `Avoid: recurring ${tag} issues include ${termList}.`;
+  }
+  return `Check ${tag} context before changes: recurring themes include ${termList}.`;
+}
+function buildReflection(project, observations, lookbackDays) {
+  const reflectionDate = (/* @__PURE__ */ new Date()).toISOString().substring(0, 10);
+  const groupMap = /* @__PURE__ */ new Map();
+  for (const obs of observations) {
+    const tag = obs.tags && obs.tags.length > 0 ? obs.tags[0] : "general";
+    const existing = groupMap.get(tag);
+    if (existing) {
+      existing.push(obs);
+    } else {
+      groupMap.set(tag, [obs]);
+    }
+  }
+  const tagGroups = [];
+  for (const [tag, obs] of groupMap.entries()) {
+    if (obs.length < 3)
+      continue;
+    const sessionIds = new Set(obs.map((o) => o.session_id));
+    tagGroups.push({
+      tag,
+      observations: obs,
+      sessionCount: sessionIds.size,
+      suggestedRule: deriveRule(tag, obs)
+    });
+  }
+  tagGroups.sort((a, b) => b.observations.length - a.observations.length);
+  return {
+    project,
+    lookbackDays,
+    totalObservations: observations.length,
+    tagGroups,
+    reflectionDate
+  };
+}
+function formatReflection(result) {
+  if (result.tagGroups.length === 0) {
+    return `No recurring patterns found in the last ${result.lookbackDays} days. Either too few observations or patterns are already well-addressed.`;
+  }
+  const lines = [];
+  lines.push(`## Reflection: ${result.project} (last ${result.lookbackDays} days)`);
+  lines.push("");
+  lines.push(`${result.totalObservations} observations analyzed, ${result.reflectionDate}`);
+  lines.push("");
+  lines.push("### Recurring Patterns");
+  lines.push("");
+  for (const group of result.tagGroups) {
+    const summaries = group.observations.map((o) => o.summary);
+    const terms = topFrequentWords(summaries, 5);
+    const termList = terms.length > 0 ? terms.join(", ") : group.tag;
+    lines.push(
+      `**${group.tag}** (${group.observations.length} observations, ${group.sessionCount} session${group.sessionCount === 1 ? "" : "s"})`
+    );
+    lines.push(`- Recurring themes: ${termList}`);
+    lines.push(`- Suggested CLAUDE.md addition: "${group.suggestedRule}"`);
+    lines.push("");
+  }
+  lines.push("### Proposed Additions to CLAUDE.md");
+  lines.push("");
+  lines.push("Copy the following into CLAUDE.md as new rules:");
+  lines.push("");
+  for (const group of result.tagGroups) {
+    lines.push(`- ${group.suggestedRule}`);
+  }
+  lines.push("");
+  lines.push("---");
+  lines.push("Run context_reflect again after addressing these patterns to track improvement.");
+  return lines.join("\n");
+}
+
 // src/mcp/create-server.ts
 var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
 var ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
@@ -34002,7 +34184,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.84" : "unknown"
+      version: true ? "0.8.85" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -35073,6 +35255,40 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           ]
         };
       }
+    }
+  );
+  server.tool(
+    "context_reflect",
+    "Analyze accumulated observations for a project and identify recurring patterns. Groups high-importance observations by tag, finds themes appearing across 3 or more observations, and produces proposed CLAUDE.md additions. No LLM inference -- deterministic pattern matching only.",
+    {
+      project: external_exports.string().optional(),
+      lookback_days: external_exports.number().int().min(1).max(365).default(30).optional(),
+      min_importance: external_exports.number().min(0).max(1).default(0.65).optional()
+    },
+    async ({ project, lookback_days, min_importance }) => {
+      if (isProxy) {
+        return proxyToolCall(
+          "context_reflect",
+          { project: np(project), lookback_days, min_importance },
+          remoteUrl,
+          remoteToken
+        );
+      }
+      const db = await getDb();
+      const normalizedProject = np(project) ?? project ?? process.cwd();
+      const days = lookback_days ?? 30;
+      const minScore = min_importance ?? 0.65;
+      const observations = await db.getObservationsForReflection(
+        normalizedProject,
+        days,
+        minScore
+      );
+      const result = buildReflection(normalizedProject, observations, days);
+      const text = formatReflection(result);
+      if (result.tagGroups.length > 0) {
+        await db.setLastReflectionDate(normalizedProject, (/* @__PURE__ */ new Date()).toISOString());
+      }
+      return { content: [{ type: "text", text }] };
     }
   );
   return server;

@@ -650,6 +650,37 @@ export interface ContextStorage {
   getNextDecisionNumber(project: string): Promise<number>;
 
   /**
+   * Get observations suitable for reflection analysis.
+   * Returns high-importance, non-superseded observations from the lookback window,
+   * ordered by importance descending then recency descending, capped at 500.
+   *
+   * @param project - Project path prefix
+   * @param lookbackDays - Number of days to look back from now
+   * @param minImportance - Minimum importance_score threshold (0.0-1.0)
+   */
+  getObservationsForReflection(
+    project: string,
+    lookbackDays: number,
+    minImportance: number
+  ): Promise<Observation[]>;
+
+  /**
+   * Get the ISO date string of the last reflection run for a project.
+   * Returns null when no reflection has been run yet.
+   *
+   * @param project - Project path
+   */
+  getLastReflectionDate(project: string): Promise<string | null>;
+
+  /**
+   * Store the ISO date string of a completed reflection run for a project.
+   *
+   * @param project - Project path
+   * @param date - ISO date string to store
+   */
+  setLastReflectionDate(project: string, date: string): Promise<void>;
+
+  /**
    * Close storage connection
    */
   close(): Promise<void>;

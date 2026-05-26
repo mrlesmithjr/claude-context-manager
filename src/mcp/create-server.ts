@@ -30,6 +30,7 @@ import {
 import { classifyQuery, type QueryStrategy } from '../utils/classify.js';
 import { classifyTemporalIntent, type TemporalMode } from '../utils/temporal.js';
 import { normalizePath, type PathPrefixEntry } from '../utils/path-map.js';
+import { buildReflection, formatReflection } from '../utils/reflect.js';
 
 // Minimum cosine similarity score for semantic/hybrid search results.
 // Results below this threshold are suppressed to avoid returning low-signal noise.
@@ -1822,6 +1823,46 @@ export function createContextManagerServer(
           ],
         };
       }
+    }
+  );
+
+  server.tool(
+    'context_reflect',
+    'Analyze accumulated observations for a project and identify recurring patterns. Groups high-importance observations by tag, finds themes appearing across 3 or more observations, and produces proposed CLAUDE.md additions. No LLM inference -- deterministic pattern matching only.',
+    {
+      project: z.string().optional(),
+      lookback_days: z.number().int().min(1).max(365).default(30).optional(),
+      min_importance: z.number().min(0).max(1).default(0.65).optional(),
+    },
+    async ({ project, lookback_days, min_importance }) => {
+      if (isProxy) {
+        return proxyToolCall(
+          'context_reflect',
+          { project: np(project), lookback_days, min_importance },
+          remoteUrl,
+          remoteToken
+        );
+      }
+
+      const db = await getDb();
+      const normalizedProject = np(project) ?? project ?? process.cwd();
+      const days = lookback_days ?? 30;
+      const minScore = min_importance ?? 0.65;
+
+      const observations = await db.getObservationsForReflection(
+        normalizedProject,
+        days,
+        minScore
+      );
+      const result = buildReflection(normalizedProject, observations, days);
+      const text = formatReflection(result);
+
+      // Only record the date when a meaningful reflection ran
+      if (result.tagGroups.length > 0) {
+        await db.setLastReflectionDate(normalizedProject, new Date().toISOString());
+      }
+
+      return { content: [{ type: 'text' as const, text }] };
     }
   );
 

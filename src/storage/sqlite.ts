@@ -323,6 +323,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add pinned and access_count columns for decay-exempt observations and retrieval frequency
     this.migrateAddPinnedAndAccessCount();
+
+    // Migration: add meta table for lightweight key-value persistence (e.g. last reflection date)
+    this.migrateAddMetaTable();
   }
 
   /**
@@ -3016,6 +3019,67 @@ export class SQLiteStorage implements ContextStorage {
       WHERE project LIKE ? || '%'
     `).get(project) as { next_num: number } | undefined;
     return row?.next_num ?? 1;
+  }
+
+  /**
+   * Migration: add meta table for lightweight key-value persistence.
+   * Idempotent, uses CREATE TABLE IF NOT EXISTS.
+   */
+  private migrateAddMetaTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+  }
+
+  /**
+   * Get observations suitable for reflection analysis.
+   * Returns high-importance observations from the lookback window ordered by
+   * importance descending then recency descending, capped at 500.
+   */
+  async getObservationsForReflection(
+    project: string,
+    lookbackDays: number,
+    minImportance: number
+  ): Promise<Observation[]> {
+    const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
+
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? || '%'
+        AND importance_score >= ?
+        AND created_at >= ?
+        AND is_compacted = 0
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT 500
+    `).all(project, minImportance, since) as Array<Record<string, unknown>>;
+
+    return rows.map(row => this.mapRow(row));
+  }
+
+  /**
+   * Get the ISO date string of the last reflection run for a project.
+   * Returns null when no reflection has been run yet.
+   */
+  async getLastReflectionDate(project: string): Promise<string | null> {
+    const key = `reflection:${project}`;
+    const row = this.db.prepare(
+      `SELECT value FROM meta WHERE key = ?`
+    ).get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  /**
+   * Store the ISO date string of a completed reflection run for a project.
+   */
+  async setLastReflectionDate(project: string, date: string): Promise<void> {
+    const key = `reflection:${project}`;
+    this.db.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(key, date);
   }
 
   close(): Promise<void> {

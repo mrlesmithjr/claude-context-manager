@@ -10,6 +10,7 @@
 
 import { SQLiteStorage } from '../src/storage/sqlite.js';
 import { exportToAutoMemory, resolveMemoryDir, formatObservationsForMemory } from '../src/export/memory.js';
+import { buildReflection, formatReflection } from '../src/utils/reflect.js';
 import { homedir } from 'os';
 import path from 'path';
 
@@ -48,6 +49,10 @@ async function main() {
 
       case 'export':
         await exportCommand(args.slice(1));
+        break;
+
+      case 'reflect':
+        await reflectCommand(args.slice(1));
         break;
 
       case 'help':
@@ -327,6 +332,42 @@ async function exportCommand(args: string[]) {
   }
 }
 
+async function reflectCommand(args: string[]) {
+  const projectIndex = args.indexOf('--project');
+  let project: string;
+
+  if (projectIndex !== -1) {
+    const providedPath = args[projectIndex + 1];
+    if (!providedPath || providedPath.startsWith('-')) {
+      console.error('Error: --project requires a path argument');
+      process.exit(1);
+    }
+    project = providedPath;
+  } else {
+    project = process.cwd();
+  }
+
+  const daysIndex = args.indexOf('--days');
+  const rawDays = daysIndex !== -1 ? parseInt(args[daysIndex + 1] ?? '30', 10) : 30;
+  if (isNaN(rawDays) || rawDays < 1) {
+    console.error('Error: --days requires a positive integer');
+    process.exit(1);
+  }
+
+  const minImportanceIndex = args.indexOf('--min-importance');
+  const rawMin = minImportanceIndex !== -1
+    ? parseFloat(args[minImportanceIndex + 1] ?? '0.65')
+    : 0.65;
+  if (isNaN(rawMin) || rawMin < 0 || rawMin > 1) {
+    console.error('Error: --min-importance requires a float between 0.0 and 1.0');
+    process.exit(1);
+  }
+
+  const observations = await storage.getObservationsForReflection(project, rawDays, rawMin);
+  const result = buildReflection(project, observations, rawDays);
+  console.log(formatReflection(result));
+}
+
 async function serveCommand(args: string[]) {
   const portIndex = args.indexOf('--port');
   const hostIndex = args.indexOf('--host');
@@ -367,6 +408,11 @@ Commands:
   export [--project PATH] [--dry-run]
     Export high-importance observations to auto-memory topic file
 
+  reflect [--project PATH] [--days N] [--min-importance F]
+    Analyze observations for recurring patterns and suggest CLAUDE.md additions
+    --days: lookback window in days (default: 30)
+    --min-importance: minimum importance score 0.0-1.0 (default: 0.65)
+
   serve [--port N] [--host ADDR] [--token SECRET] [--db PATH]
     Start an HTTP MCP server at /mcp (default port 4666)
     Requires CONTEXT_MANAGER_TOKEN env var or --token flag
@@ -380,6 +426,7 @@ Examples:
   context-manager stats --project ~/Projects/my-app
   context-manager vacuum --days 30
   context-manager export --dry-run
+  context-manager reflect --days 30 --project ~/Projects/my-app
 `);
 }
 
