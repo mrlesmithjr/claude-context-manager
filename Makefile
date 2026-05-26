@@ -338,6 +338,22 @@ update:
 	@echo "[update] Building (including plugin preparation)..."
 	npm run build:plugin
 	@echo ""
+	@echo "[update] Committing built plugin artifacts..."
+	@VERSION=$$(node -p "require('./package.json').version"); \
+	if [ -n "$$(git status --porcelain)" ]; then \
+		git add plugin/scripts/ plugin/.claude-plugin/plugin.json .claude-plugin/marketplace.json && \
+		git commit -m "chore: rebuild plugin scripts for v$$VERSION, refs #95" && \
+		BRANCH=$$(git branch --show-current) && \
+		echo "[update] Pushing branch $$BRANCH..." && \
+		if ! git push origin "$$BRANCH"; then \
+			echo "ERROR: git push failed. Check remote access and re-run 'git push origin $$BRANCH' manually."; \
+			exit 1; \
+		fi && \
+		echo "[update] Plugin artifacts committed and pushed (v$$VERSION)."; \
+	else \
+		echo "[update] No changes to commit -- plugin artifacts are already current."; \
+	fi
+	@echo ""
 	@NATIVE_ON=$$(launchctl list 2>/dev/null | grep -c "$(LAUNCHD_LABEL)$$"); \
 	DOCKER_ON=$$(docker ps --filter "name=context-manager" --format "{{.Names}}" 2>/dev/null | grep -c .); \
 	if [ "$$NATIVE_ON" -gt 0 ] || [ "$$DOCKER_ON" -gt 0 ]; then \
