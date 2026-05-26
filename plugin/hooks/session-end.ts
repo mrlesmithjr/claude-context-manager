@@ -42,6 +42,7 @@ import {
   pickBestNarrative,
   type TranscriptLine,
 } from '../../src/utils/transcript.js';
+import { getCurrentBranch } from '../../src/utils/git.js';
 
 // Injected by esbuild banner. True when plugin/node_modules/ native binaries are present.
 declare const __nativeModulesAvailable: boolean;
@@ -223,7 +224,8 @@ function compressAssistantBlock(text: string): string {
 function extractConversationInsights(
   lines: string[],
   sessionId: string,
-  project: string
+  project: string,
+  branch?: string | null
 ): Array<Omit<Observation, 'id'>> {
   const insights: Array<Omit<Observation, 'id'>> = [];
 
@@ -284,6 +286,7 @@ function extractConversationInsights(
           token_estimate: tokenEstimate,
           importance,
           importance_score: Math.round(score * 100) / 100,
+          branch: branch ?? null,
           created_at: new Date().toISOString(),
         });
       } catch {
@@ -441,6 +444,9 @@ async function main() {
     // Validate and sanitize input
     const input = validateStopInput(rawInput);
 
+    // Detect current git branch. Never throws; returns null on any failure.
+    const branch = getCurrentBranch(input.cwd);
+
     // Read and parse the transcript once — both summary extraction and insight
     // extraction need it, and reading a large file twice wastes Stop hook timeout.
     let transcriptLines: string[] | undefined;
@@ -488,7 +494,8 @@ async function main() {
           const insights = extractConversationInsights(
             transcriptLines,
             input.session_id,
-            input.cwd
+            input.cwd,
+            branch
           );
           for (const insight of insights) {
             try {
@@ -570,7 +577,8 @@ async function main() {
         const insights = extractConversationInsights(
           transcriptLines,
           input.session_id,
-          input.cwd
+          input.cwd,
+          branch
         );
         // Deduplicate: skip insights that already exist in this session
         // (Stop hook can fire multiple times for the same session on restart)

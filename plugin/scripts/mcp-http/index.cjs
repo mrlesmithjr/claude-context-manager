@@ -60607,6 +60607,24 @@ function formatReflection(result) {
   return lines.join("\n");
 }
 
+// src/utils/git.ts
+var import_child_process2 = require("child_process");
+function getCurrentBranch(cwd) {
+  try {
+    const result = (0, import_child_process2.spawnSync)("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 1e3
+    });
+    if (result.status !== 0 || result.error)
+      return null;
+    const branch = result.stdout.trim();
+    return branch && branch !== "HEAD" ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
 // src/mcp/create-server.ts
 var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
 var ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
@@ -60877,7 +60895,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.85" : "unknown"
+      version: true ? "0.8.86" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -60902,15 +60920,19 @@ function createContextManagerServer(storage, options = {}) {
       ),
       compact: external_exports.boolean().optional().default(true).describe(
         "When true (default), each result is one line: #<id> [date time] tool summary. Pass compact=false to get full observation text. Use context_get with the returned IDs to fetch full detail for specific results."
+      ),
+      branch: external_exports.string().optional().describe(
+        'Filter by git branch. Omit for soft-rank boost on current branch. Use "*" to return results from all branches without boost.'
       )
     },
-    async ({ query, project, compact }) => {
+    async ({ query, project, compact, branch }) => {
       const useCompact = compact !== false;
       if (isProxy) {
-        return proxyToolCall("context_search", { query, project: np(project), compact: useCompact }, remoteUrl, remoteToken);
+        return proxyToolCall("context_search", { query, project: np(project), compact: useCompact, branch }, remoteUrl, remoteToken);
       }
       const db = await getDb();
       const normalizedProject = np(project);
+      const currentBranch = branch === void 0 ? getCurrentBranch(normalizedProject ?? process.cwd()) : null;
       const temporalMode = classifyTemporalIntent(query);
       if (query.startsWith("lesson:")) {
         const VALID_LESSON_TYPES = /* @__PURE__ */ new Set(["error", "build_failure", "test_failure", "permission_denied"]);
@@ -60956,7 +60978,11 @@ ${formattedResults}` : `No observations found for ${label}.`;
       let observations = [];
       let searchMethod = "";
       let sessionResults = [];
-      const searchOptions = { project: normalizedProject, temporalMode };
+      const searchOptions = {
+        project: normalizedProject,
+        temporalMode,
+        ...branch !== void 0 ? { branch } : {}
+      };
       if (strategy === "keyword") {
         observations = await db.search(query, searchOptions);
         searchMethod = "keyword";
@@ -60976,6 +61002,9 @@ ${formattedResults}` : `No observations found for ${label}.`;
                 (o) => o.similarity_score == null || o.similarity_score >= SEARCH_MIN_SCORE
               );
               observations = applyTemporalAdjustment(filteredObs, temporalMode, "created_at");
+              if (branch !== void 0 && branch !== "*") {
+                observations = observations.filter((o) => o.branch === branch);
+              }
             }
             searchMethod = "semantic";
           } else {
@@ -60997,6 +61026,9 @@ ${formattedResults}` : `No observations found for ${label}.`;
             observations = mergeWithRRF(ftsResults, vecResults).filter(
               (o) => ftsIds.has(o.id) || (o.similarity_score == null || o.similarity_score >= SEARCH_MIN_SCORE)
             );
+            if (branch !== void 0 && branch !== "*") {
+              observations = observations.filter((o) => o.branch === branch);
+            }
             searchMethod = "hybrid (RRF)";
           } else {
             observations = ftsResults;
@@ -61008,9 +61040,15 @@ ${formattedResults}` : `No observations found for ${label}.`;
         }
       }
       const prompts = await db.searchPrompts(query, normalizedProject);
+      if (branch === void 0 && currentBranch !== null && temporalMode === "neutral" && observations.length > 0) {
+        observations = observations.map(
+          (o) => o.branch === currentBranch ? { ...o, importance_score: Math.min(1, Math.round(o.importance_score * 1.2 * 100) / 100) } : o
+        ).sort((a, b) => b.importance_score - a.importance_score);
+      }
       const sections = [];
       const modeLabel = useCompact ? "compact" : "full";
       const temporalLabel = temporalMode !== "neutral" ? ` | temporal: ${temporalMode}` : "";
+      const branchLabel = branch && branch !== "*" ? ` | branch: ${branch}` : branch === "*" ? " | branch: * (all)" : "";
       if (sessionResults.length > 0) {
         const lines = [];
         for (const session of sessionResults) {
@@ -61021,13 +61059,13 @@ ${formattedResults}` : `No observations found for ${label}.`;
           lines.push(`  ${summaryPreview}`);
           lines.push("");
         }
-        sections.push(`[search: ${searchMethod}${temporalLabel} | ${modeLabel}] ${sessionResults.length} sessions
+        sections.push(`[search: ${searchMethod}${temporalLabel}${branchLabel} | ${modeLabel}] ${sessionResults.length} sessions
 
 ${lines.join("\n")}`);
       }
       if (observations.length > 0) {
         const formattedObs = useCompact ? observations.map((o) => formatObservationCompact(o)).join("\n") : formatObservations(observations);
-        sections.push(`[search: ${searchMethod}${temporalLabel} | ${modeLabel}] ${observations.length} results
+        sections.push(`[search: ${searchMethod}${temporalLabel}${branchLabel} | ${modeLabel}] ${observations.length} results
 
 ${formattedObs}`);
         if (!useCompact) {
@@ -61228,7 +61266,8 @@ ${formatPrompts(prompts)}`);
         const highObs = observations.filter((o) => o.importance === "high" && o.tool_name !== "Conversation");
         for (const obs of highObs.slice(0, 5)) {
           const fileInfo = obs.files_touched.length > 0 ? ` (${obs.files_touched.map((f) => f.split("/").pop()).join(", ")})` : "";
-          lines.push(`  [HIGH] ${obs.tool_name}: ${obs.summary.substring(0, 80)}${fileInfo}`);
+          const branchTag = obs.branch ? ` [${obs.branch}]` : "";
+          lines.push(`  [HIGH] ${obs.tool_name}:${branchTag} ${obs.summary.substring(0, 80)}${fileInfo}`);
         }
         if (highObs.length > 5) {
           lines.push(`  ... +${highObs.length - 5} more high-importance`);
@@ -62199,6 +62238,7 @@ var SQLiteStorage = class {
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
     this.migrateAddMetaTable();
+    this.migrateAddBranchColumn();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -62272,6 +62312,7 @@ var SQLiteStorage = class {
       lesson_type: row.lesson_type ?? null,
       pinned: row.pinned ?? 0,
       access_count: row.access_count ?? 0,
+      branch: row.branch ?? null,
       created_at: row.created_at
     };
   }
@@ -62332,8 +62373,8 @@ ${storedOutput}`;
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, lesson_type, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, branch, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tagsValue = observation.tags && observation.tags.length > 0 ? JSON.stringify(observation.tags) : null;
     const info = stmt.run(
@@ -62350,6 +62391,7 @@ ${storedOutput}`;
       tagsValue,
       contentHash,
       observation.lesson_type ?? null,
+      observation.branch ?? null,
       observation.created_at
     );
     const insertedId = Number(info.lastInsertRowid);
@@ -62399,10 +62441,21 @@ ${storedOutput}`;
     const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
     const temporalMode = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.temporalMode ?? "neutral" : "neutral";
     const skipDecay = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.skipDecay ?? false : false;
+    const branchFilter = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.branch : void 0;
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
-    if (project) {
+    const hasBranchFilter = branchFilter !== void 0 && branchFilter !== "*";
+    if (project && hasBranchFilter) {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [ftsQuery, project + "%", branchFilter];
+    } else if (project) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
@@ -62411,6 +62464,15 @@ ${storedOutput}`;
         LIMIT 50
       `;
       params = [ftsQuery, project + "%"];
+    } else if (hasBranchFilter) {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ? AND o.branch = ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [ftsQuery, branchFilter];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -62613,13 +62675,13 @@ ${storedOutput}`;
       next_compaction_eligible: eligibleRow?.count || 0
     };
   }
-  async createSession(sessionId, project) {
+  async createSession(sessionId, project, branch) {
     const stmt = this.db.prepare(`
-      INSERT INTO sessions (id, project, started_at, status)
-      VALUES (?, ?, ?, 'active')
+      INSERT INTO sessions (id, project, started_at, status, branch)
+      VALUES (?, ?, ?, 'active', ?)
       ON CONFLICT(id) DO UPDATE SET project = excluded.project
     `);
-    stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
+    stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString(), branch ?? null);
   }
   async endSession(sessionId, summary, summaryExtended) {
     const stmt = this.db.prepare(`
@@ -62669,7 +62731,8 @@ ${storedOutput}`;
       ended_at: row.ended_at || void 0,
       summary: row.summary || void 0,
       summary_extended: row.summary_extended || void 0,
-      status: row.status
+      status: row.status,
+      branch: row.branch ?? null
     }));
   }
   async getRecentSessionsWithCounts(project, limit, offset, status) {
@@ -62677,7 +62740,7 @@ ${storedOutput}`;
     const sql = `
       SELECT
         s.id, s.project, s.started_at, s.ended_at,
-        s.summary, s.summary_extended, s.status,
+        s.summary, s.summary_extended, s.status, s.branch,
         COUNT(o.id) AS observation_count,
         COALESCE(SUM(o.token_estimate), 0) AS total_tokens
       FROM sessions s
@@ -62698,6 +62761,7 @@ ${storedOutput}`;
       summary: row.summary || void 0,
       summary_extended: row.summary_extended || void 0,
       status: row.status,
+      branch: row.branch ?? null,
       observation_count: row.observation_count,
       total_tokens: row.total_tokens
     }));
@@ -64209,6 +64273,27 @@ ${storedOutput}`;
     `);
   }
   /**
+   * Migration: add branch column to observations and sessions.
+   * Guards each ALTER TABLE with PRAGMA table_info to be idempotent.
+   * The partial index on observations is always idempotent via IF NOT EXISTS.
+   */
+  migrateAddBranchColumn() {
+    const obsColumns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const obsColumnNames = new Set(obsColumns.map((c) => c.name));
+    if (!obsColumnNames.has("branch")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN branch TEXT`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_branch
+      ON observations(project, branch) WHERE branch IS NOT NULL
+    `);
+    const sessColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const sessColumnNames = new Set(sessColumns.map((c) => c.name));
+    if (!sessColumnNames.has("branch")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN branch TEXT`);
+    }
+  }
+  /**
    * Get observations suitable for reflection analysis.
    * Returns high-importance observations from the lookback window ordered by
    * importance descending then recency descending, capped at 500.
@@ -64335,8 +64420,8 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.85")
-    return "0.8.85";
+  if ("0.8.86")
+    return "0.8.86";
   try {
     const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

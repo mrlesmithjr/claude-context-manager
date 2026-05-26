@@ -35,6 +35,7 @@ import {
   remoteMcpText,
 } from '../../src/capture/remote-client.js';
 import { loadDotEnv } from '../../src/utils/env.js';
+import { getCurrentBranch } from '../../src/utils/git.js';
 
 // Injected by esbuild --define during build
 declare const PLUGIN_VERSION: string;
@@ -344,8 +345,11 @@ async function main() {
     storage = new SQLiteStorage();
     await storage.initialize();
 
-    // Create session record
-    await storage.createSession(input.session_id, input.cwd);
+    // Detect current git branch. Never throws; returns null on any failure.
+    const branch = getCurrentBranch(input.cwd);
+
+    // Create session record (passes branch so sessions table tracks which branch was active)
+    await storage.createSession(input.session_id, input.cwd, branch);
 
     // Close any stale active sessions from previous runs that never fired Stop.
     // Silent — no logging, no effect on the hook response.
@@ -366,7 +370,8 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${PLUGIN_VERSION} active. ${count} observations tracked.`);
+    const branchHint = branch ? ` [branch: ${branch}]` : '';
+    lines.push(`context-manager v${PLUGIN_VERSION} active. ${count} observations tracked.${branchHint}`);
     lines.push('Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.');
 
     // Inject recent session summaries for project continuity

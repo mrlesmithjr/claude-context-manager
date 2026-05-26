@@ -222,6 +222,7 @@ var SQLiteStorage = class {
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
     this.migrateAddMetaTable();
+    this.migrateAddBranchColumn();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -295,6 +296,7 @@ var SQLiteStorage = class {
       lesson_type: row.lesson_type ?? null,
       pinned: row.pinned ?? 0,
       access_count: row.access_count ?? 0,
+      branch: row.branch ?? null,
       created_at: row.created_at
     };
   }
@@ -355,8 +357,8 @@ ${storedOutput}`;
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, lesson_type, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, branch, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tagsValue = observation.tags && observation.tags.length > 0 ? JSON.stringify(observation.tags) : null;
     const info = stmt.run(
@@ -373,6 +375,7 @@ ${storedOutput}`;
       tagsValue,
       contentHash,
       observation.lesson_type ?? null,
+      observation.branch ?? null,
       observation.created_at
     );
     const insertedId = Number(info.lastInsertRowid);
@@ -422,10 +425,21 @@ ${storedOutput}`;
     const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
     const temporalMode = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.temporalMode ?? "neutral" : "neutral";
     const skipDecay = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.skipDecay ?? false : false;
+    const branchFilter = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.branch : void 0;
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
-    if (project) {
+    const hasBranchFilter = branchFilter !== void 0 && branchFilter !== "*";
+    if (project && hasBranchFilter) {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [ftsQuery, project + "%", branchFilter];
+    } else if (project) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
@@ -434,6 +448,15 @@ ${storedOutput}`;
         LIMIT 50
       `;
       params = [ftsQuery, project + "%"];
+    } else if (hasBranchFilter) {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ? AND o.branch = ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [ftsQuery, branchFilter];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -636,13 +659,13 @@ ${storedOutput}`;
       next_compaction_eligible: eligibleRow?.count || 0
     };
   }
-  async createSession(sessionId, project) {
+  async createSession(sessionId, project, branch) {
     const stmt = this.db.prepare(`
-      INSERT INTO sessions (id, project, started_at, status)
-      VALUES (?, ?, ?, 'active')
+      INSERT INTO sessions (id, project, started_at, status, branch)
+      VALUES (?, ?, ?, 'active', ?)
       ON CONFLICT(id) DO UPDATE SET project = excluded.project
     `);
-    stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
+    stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString(), branch ?? null);
   }
   async endSession(sessionId, summary, summaryExtended) {
     const stmt = this.db.prepare(`
@@ -692,7 +715,8 @@ ${storedOutput}`;
       ended_at: row.ended_at || void 0,
       summary: row.summary || void 0,
       summary_extended: row.summary_extended || void 0,
-      status: row.status
+      status: row.status,
+      branch: row.branch ?? null
     }));
   }
   async getRecentSessionsWithCounts(project, limit, offset, status) {
@@ -700,7 +724,7 @@ ${storedOutput}`;
     const sql = `
       SELECT
         s.id, s.project, s.started_at, s.ended_at,
-        s.summary, s.summary_extended, s.status,
+        s.summary, s.summary_extended, s.status, s.branch,
         COUNT(o.id) AS observation_count,
         COALESCE(SUM(o.token_estimate), 0) AS total_tokens
       FROM sessions s
@@ -721,6 +745,7 @@ ${storedOutput}`;
       summary: row.summary || void 0,
       summary_extended: row.summary_extended || void 0,
       status: row.status,
+      branch: row.branch ?? null,
       observation_count: row.observation_count,
       total_tokens: row.total_tokens
     }));
@@ -2232,6 +2257,27 @@ ${storedOutput}`;
     `);
   }
   /**
+   * Migration: add branch column to observations and sessions.
+   * Guards each ALTER TABLE with PRAGMA table_info to be idempotent.
+   * The partial index on observations is always idempotent via IF NOT EXISTS.
+   */
+  migrateAddBranchColumn() {
+    const obsColumns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const obsColumnNames = new Set(obsColumns.map((c) => c.name));
+    if (!obsColumnNames.has("branch")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN branch TEXT`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_branch
+      ON observations(project, branch) WHERE branch IS NOT NULL
+    `);
+    const sessColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const sessColumnNames = new Set(sessColumns.map((c) => c.name));
+    if (!sessColumnNames.has("branch")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN branch TEXT`);
+    }
+  }
+  /**
    * Get observations suitable for reflection analysis.
    * Returns high-importance observations from the lookback window ordered by
    * importance descending then recency descending, capped at 500.
@@ -2458,6 +2504,24 @@ function loadDotEnv() {
   }
 }
 
+// src/utils/git.ts
+import { spawnSync } from "child_process";
+function getCurrentBranch(cwd) {
+  try {
+    const result = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 1e3
+    });
+    if (result.status !== 0 || result.error)
+      return null;
+    const branch = result.stdout.trim();
+    return branch && branch !== "HEAD" ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
 // plugin/hooks/context-inject.ts
 var NO_NATIVE_ERROR = '[context-manager] No server configured. Observations are not being captured this session.\n\nTo set up the server, Claude can run these steps with you:\n\nmacOS (recommended):\n  git clone git@github.com:mrlesmithjr/claude-context-manager.git ~/claude-context-manager\n  cd ~/claude-context-manager && npm install\n  make server-quickstart          # creates token, installs launchd service, starts server\n  /plugin update context-manager  # run inside Claude Code, then restart Claude Code\n\nLinux / Docker:\n  git clone git@github.com:mrlesmithjr/claude-context-manager.git ~/claude-context-manager\n  cd ~/claude-context-manager && npm install\n  make server-init   # creates ~/.claude-context/.env with a token\n  make server-start  # starts Docker containers\n  /plugin update context-manager  # run inside Claude Code, then restart Claude Code\n\nSay "help me set up context-manager" and Claude will walk through each step.';
 async function readStdin() {
@@ -2495,11 +2559,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.85") {
+    if (installedVersion !== "0.8.86") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.85"}
+   Source:    v${"0.8.86"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2579,7 +2643,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.85"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.86"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -2658,7 +2722,8 @@ async function main() {
     }
     storage = new SQLiteStorage();
     await storage.initialize();
-    await storage.createSession(input.session_id, input.cwd);
+    const branch = getCurrentBranch(input.cwd);
+    await storage.createSession(input.session_id, input.cwd, branch);
     try {
       await storage.closeStaleActiveSessions();
     } catch {
@@ -2669,7 +2734,8 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.85"} active. ${count} observations tracked.`);
+    const branchHint = branch ? ` [branch: ${branch}]` : "";
+    lines.push(`context-manager v${"0.8.86"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

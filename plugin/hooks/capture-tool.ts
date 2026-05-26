@@ -29,6 +29,7 @@ import { processToolCapture } from '../../src/capture/processor.js';
 import type { ProcessResult } from '../../src/capture/processor.js';
 import { remoteSaveObservation } from '../../src/capture/remote-client.js';
 import { loadDotEnv } from '../../src/utils/env.js';
+import { getCurrentBranch } from '../../src/utils/git.js';
 
 // Injected by esbuild banner. True when plugin/node_modules/ native binaries are present.
 declare const __nativeModulesAvailable: boolean;
@@ -133,6 +134,8 @@ async function main() {
         toolResponse = stderr ? `${stdout}\n[stderr]\n${stderr}` : stdout;
       }
 
+      const branch = getCurrentBranch(cwd);
+
       const result: ProcessResult = processToolCapture({
         session_id: sessionId,
         project: cwd,
@@ -146,8 +149,11 @@ async function main() {
         return;
       }
 
+      // Attach branch to the observation before sending
+      const observationWithBranch = { ...result, branch };
+
       try {
-        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, result);
+        await remoteSaveObservation({ url: remoteUrl, token: remoteToken }, observationWithBranch);
         await writeResponse({ status: 'captured' });
       } catch (error) {
         console.error('[context-manager] Remote capture error:', error);
@@ -180,7 +186,8 @@ async function main() {
       return;
     }
 
-    const observation = result;
+    const branch = getCurrentBranch(input.cwd);
+    const observation = { ...result, branch };
 
     if (!__nativeModulesAvailable) {
       console.error(NO_NATIVE_ERROR);

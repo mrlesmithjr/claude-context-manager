@@ -31,6 +31,7 @@ import { classifyQuery, type QueryStrategy } from '../utils/classify.js';
 import { classifyTemporalIntent, type TemporalMode } from '../utils/temporal.js';
 import { normalizePath, type PathPrefixEntry } from '../utils/path-map.js';
 import { buildReflection, formatReflection } from '../utils/reflect.js';
+import { getCurrentBranch } from '../utils/git.js';
 
 // Minimum cosine similarity score for semantic/hybrid search results.
 // Results below this threshold are suppressed to avoid returning low-signal noise.
@@ -505,16 +506,28 @@ export function createContextManagerServer(
         .describe(
           'When true (default), each result is one line: #<id> [date time] tool summary. Pass compact=false to get full observation text. Use context_get with the returned IDs to fetch full detail for specific results.'
         ),
+      branch: z
+        .string()
+        .optional()
+        .describe(
+          'Filter by git branch. Omit for soft-rank boost on current branch. Use "*" to return results from all branches without boost.'
+        ),
     },
-    async ({ query, project, compact }) => {
+    async ({ query, project, compact, branch }) => {
       const useCompact = compact !== false;
 
       if (isProxy) {
-        return proxyToolCall('context_search', { query, project: np(project), compact: useCompact }, remoteUrl, remoteToken);
+        return proxyToolCall('context_search', { query, project: np(project), compact: useCompact, branch }, remoteUrl, remoteToken);
       }
 
       const db = await getDb();
       const normalizedProject = np(project);
+
+      // Detect the current branch at query time for soft-rank or label display.
+      // Only used when branch param is omitted (soft-rank mode).
+      const currentBranch = branch === undefined
+        ? getCurrentBranch(normalizedProject ?? process.cwd())
+        : null;
 
       // Classify temporal intent before any branch so all paths can apply ordering.
       const temporalMode: TemporalMode = classifyTemporalIntent(query);
@@ -579,7 +592,14 @@ export function createContextManagerServer(
       let searchMethod = '';
       let sessionResults: Session[] = [];
 
-      const searchOptions = { project: normalizedProject, temporalMode };
+      // Pass branch to search for exact filtering when branch param was provided.
+      // When branch is undefined (soft-rank mode), omit it from searchOptions so
+      // search() returns all branches and we apply the 1.2x boost after.
+      const searchOptions = {
+        project: normalizedProject,
+        temporalMode,
+        ...(branch !== undefined ? { branch } : {}),
+      };
 
       if (strategy === 'keyword') {
         observations = await db.search(query, searchOptions);
@@ -604,6 +624,10 @@ export function createContextManagerServer(
               );
               // Apply temporal ordering to observation-level fallback
               observations = applyTemporalAdjustment(filteredObs, temporalMode, 'created_at');
+              // Enforce branch filter — vectorSearch has no branch param
+              if (branch !== undefined && branch !== '*') {
+                observations = observations.filter(o => o.branch === branch);
+              }
             }
             searchMethod = 'semantic';
           } else {
@@ -628,6 +652,10 @@ export function createContextManagerServer(
             observations = mergeWithRRF(ftsResults, vecResults).filter(
               o => ftsIds.has(o.id!) || (o.similarity_score == null || o.similarity_score >= SEARCH_MIN_SCORE)
             );
+            // Enforce branch filter on vector component — vectorSearch has no branch param
+            if (branch !== undefined && branch !== '*') {
+              observations = observations.filter(o => o.branch === branch);
+            }
             searchMethod = 'hybrid (RRF)';
           } else {
             observations = ftsResults;
@@ -642,11 +670,29 @@ export function createContextManagerServer(
       // Always search prompts (keyword-based, fast)
       const prompts = await db.searchPrompts(query, normalizedProject);
 
+      // Soft-rank: when branch was omitted (undefined), boost results on the current branch.
+      // Only applies when: branch param omitted, currentBranch is non-null, temporal mode is
+      // neutral (stacking with temporal adjustment would produce conflicting signals).
+      if (branch === undefined && currentBranch !== null && temporalMode === 'neutral' && observations.length > 0) {
+        observations = observations
+          .map(o => o.branch === currentBranch
+            ? { ...o, importance_score: Math.min(1.0, Math.round(o.importance_score * 1.2 * 100) / 100) }
+            : o
+          )
+          .sort((a, b) => b.importance_score - a.importance_score);
+      }
+
       // Build response sections
       const sections: string[] = [];
       const modeLabel = useCompact ? 'compact' : 'full';
       // Append temporal label to headers only when the mode is non-neutral
       const temporalLabel = temporalMode !== 'neutral' ? ` | temporal: ${temporalMode}` : '';
+      // Append branch label when branch filtering is explicitly active
+      const branchLabel = branch && branch !== '*'
+        ? ` | branch: ${branch}`
+        : branch === '*'
+          ? ' | branch: * (all)'
+          : '';
 
       // Session-level results (from semantic strategy)
       if (sessionResults.length > 0) {
@@ -661,7 +707,7 @@ export function createContextManagerServer(
           lines.push(`  ${summaryPreview}`);
           lines.push('');
         }
-        sections.push(`[search: ${searchMethod}${temporalLabel} | ${modeLabel}] ${sessionResults.length} sessions\n\n${lines.join('\n')}`);
+        sections.push(`[search: ${searchMethod}${temporalLabel}${branchLabel} | ${modeLabel}] ${sessionResults.length} sessions\n\n${lines.join('\n')}`);
       }
 
       // Observation results
@@ -669,7 +715,7 @@ export function createContextManagerServer(
         const formattedObs = useCompact
           ? observations.map(o => formatObservationCompact(o)).join('\n')
           : formatObservations(observations);
-        sections.push(`[search: ${searchMethod}${temporalLabel} | ${modeLabel}] ${observations.length} results\n\n${formattedObs}`);
+        sections.push(`[search: ${searchMethod}${temporalLabel}${branchLabel} | ${modeLabel}] ${observations.length} results\n\n${formattedObs}`);
 
         if (!useCompact) {
           // Enrich top 3 results with related observations (full mode only)
@@ -925,7 +971,8 @@ export function createContextManagerServer(
           const fileInfo = obs.files_touched.length > 0
             ? ` (${obs.files_touched.map(f => f.split('/').pop()).join(', ')})`
             : '';
-          lines.push(`  [HIGH] ${obs.tool_name}: ${obs.summary.substring(0, 80)}${fileInfo}`);
+          const branchTag = obs.branch ? ` [${obs.branch}]` : '';
+          lines.push(`  [HIGH] ${obs.tool_name}:${branchTag} ${obs.summary.substring(0, 80)}${fileInfo}`);
         }
         if (highObs.length > 5) {
           lines.push(`  ... +${highObs.length - 5} more high-importance`);

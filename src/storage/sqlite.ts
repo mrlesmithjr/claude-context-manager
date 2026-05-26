@@ -326,6 +326,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add meta table for lightweight key-value persistence (e.g. last reflection date)
     this.migrateAddMetaTable();
+
+    // Migration: add branch column to observations and sessions for git branch-aware capture
+    this.migrateAddBranchColumn();
   }
 
   /**
@@ -414,6 +417,7 @@ export class SQLiteStorage implements ContextStorage {
       lesson_type: (row.lesson_type as string | null) ?? null,
       pinned: (row.pinned as number) ?? 0,
       access_count: (row.access_count as number) ?? 0,
+      branch: (row.branch as string | null) ?? null,
       created_at: row.created_at as string,
     };
   }
@@ -504,8 +508,8 @@ export class SQLiteStorage implements ContextStorage {
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, lesson_type, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, branch, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const tagsValue = observation.tags && observation.tags.length > 0
@@ -526,6 +530,7 @@ export class SQLiteStorage implements ContextStorage {
       tagsValue,
       contentHash,
       observation.lesson_type ?? null,
+      observation.branch ?? null,
       observation.created_at
     );
 
@@ -609,6 +614,10 @@ export class SQLiteStorage implements ContextStorage {
     const skipDecay = typeof projectOrOptions === 'object' && projectOrOptions !== null
       ? (projectOrOptions.skipDecay ?? false)
       : false;
+    // branch: exact match filter when set and not '*'; '*' means no filter; undefined means no SQL filter
+    const branchFilter = typeof projectOrOptions === 'object' && projectOrOptions !== null
+      ? projectOrOptions.branch
+      : undefined;
 
     let sql: string;
     let params: unknown[];
@@ -621,7 +630,19 @@ export class SQLiteStorage implements ContextStorage {
       .map(t => `"${t}"`)
       .join(' ');
 
-    if (project) {
+    // Exact branch filter clause (only when branchFilter is defined and not '*')
+    const hasBranchFilter = branchFilter !== undefined && branchFilter !== '*';
+
+    if (project && hasBranchFilter) {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [ftsQuery, project + '%', branchFilter];
+    } else if (project) {
       // Use LIKE for prefix matching (parent directory sees children)
       // FTS5 requires full table name in MATCH clause (aliases don't work)
       sql = `
@@ -632,6 +653,15 @@ export class SQLiteStorage implements ContextStorage {
         LIMIT 50
       `;
       params = [ftsQuery, project + '%'];
+    } else if (hasBranchFilter) {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ? AND o.branch = ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [ftsQuery, branchFilter];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -929,7 +959,7 @@ export class SQLiteStorage implements ContextStorage {
     };
   }
 
-  async createSession(sessionId: string, project: string): Promise<void> {
+  async createSession(sessionId: string, project: string, branch?: string | null): Promise<void> {
     // Upsert: insert new session or update the project path if the session already
     // exists. The project update handles context-window overflow: Claude Code reuses
     // the same session_id when resuming a conversation after compaction, but the
@@ -938,12 +968,12 @@ export class SQLiteStorage implements ContextStorage {
     // All other columns (status, started_at, summary) are left unchanged so the
     // session's history is preserved.
     const stmt = this.db.prepare(`
-      INSERT INTO sessions (id, project, started_at, status)
-      VALUES (?, ?, ?, 'active')
+      INSERT INTO sessions (id, project, started_at, status, branch)
+      VALUES (?, ?, ?, 'active', ?)
       ON CONFLICT(id) DO UPDATE SET project = excluded.project
     `);
 
-    stmt.run(sessionId, project, new Date().toISOString());
+    stmt.run(sessionId, project, new Date().toISOString(), branch ?? null);
   }
 
   async endSession(sessionId: string, summary?: string, summaryExtended?: string): Promise<void> {
@@ -1007,6 +1037,7 @@ export class SQLiteStorage implements ContextStorage {
       summary: string | null;
       summary_extended: string | null;
       status: 'active' | 'complete';
+      branch: string | null;
     }>;
 
     return rows.map((row) => ({
@@ -1017,6 +1048,7 @@ export class SQLiteStorage implements ContextStorage {
       summary: row.summary || undefined,
       summary_extended: row.summary_extended || undefined,
       status: row.status,
+      branch: row.branch ?? null,
     }));
   }
 
@@ -1032,7 +1064,7 @@ export class SQLiteStorage implements ContextStorage {
     const sql = `
       SELECT
         s.id, s.project, s.started_at, s.ended_at,
-        s.summary, s.summary_extended, s.status,
+        s.summary, s.summary_extended, s.status, s.branch,
         COUNT(o.id) AS observation_count,
         COALESCE(SUM(o.token_estimate), 0) AS total_tokens
       FROM sessions s
@@ -1056,6 +1088,7 @@ export class SQLiteStorage implements ContextStorage {
       summary: string | null;
       summary_extended: string | null;
       status: 'active' | 'complete';
+      branch: string | null;
       observation_count: number;
       total_tokens: number;
     }>;
@@ -1068,6 +1101,7 @@ export class SQLiteStorage implements ContextStorage {
       summary: row.summary || undefined,
       summary_extended: row.summary_extended || undefined,
       status: row.status,
+      branch: row.branch ?? null,
       observation_count: row.observation_count,
       total_tokens: row.total_tokens,
     }));
@@ -3032,6 +3066,33 @@ export class SQLiteStorage implements ContextStorage {
         value TEXT NOT NULL
       )
     `);
+  }
+
+  /**
+   * Migration: add branch column to observations and sessions.
+   * Guards each ALTER TABLE with PRAGMA table_info to be idempotent.
+   * The partial index on observations is always idempotent via IF NOT EXISTS.
+   */
+  private migrateAddBranchColumn(): void {
+    const obsColumns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const obsColumnNames = new Set(obsColumns.map(c => c.name));
+
+    if (!obsColumnNames.has('branch')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN branch TEXT`);
+    }
+
+    // Partial index: only index rows where branch is non-null (sparse, no wasted space)
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_branch
+      ON observations(project, branch) WHERE branch IS NOT NULL
+    `);
+
+    const sessColumns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
+    const sessColumnNames = new Set(sessColumns.map(c => c.name));
+
+    if (!sessColumnNames.has('branch')) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN branch TEXT`);
+    }
   }
 
   /**

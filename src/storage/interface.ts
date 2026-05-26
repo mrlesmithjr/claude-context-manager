@@ -29,6 +29,13 @@ export interface SearchOptions {
    * to show raw importance scores for transparency.
    */
   skipDecay?: boolean;
+  /**
+   * Git branch filter. When provided and not '*', results are filtered to
+   * exact branch match (AND branch = ?). When '*', no branch filter is applied
+   * (all branches returned). When omitted, no SQL filter is applied; soft-rank
+   * boost for the current branch is applied by the caller after results return.
+   */
+  branch?: string;
 }
 export type RelationshipType = 'same_file' | 'followed_by' | 'cross_project_same_file';
 export type ObservationTag =
@@ -74,6 +81,7 @@ export interface Observation {
   lesson_type?: string | null; // Lesson classification: 'error' | 'build_failure' | 'test_failure' | 'permission_denied' | null
   pinned?: number;        // 1 = exempt from decay, 0 = normal (default)
   access_count?: number;  // incremented each time observation is returned in search results
+  branch?: string | null; // Git branch at capture time; null for pre-migration or non-git observations
   created_at: string; // ISO 8601 timestamp
 }
 
@@ -89,6 +97,7 @@ export interface Session {
   status: 'active' | 'complete';
   similarity_score?: number; // Cosine similarity [0,1], only present on vector search results
   last_checkpoint_at?: number; // Unix epoch ms of last checkpoint run; NULL means no checkpoint yet
+  branch?: string | null; // Git branch at session creation time; null for pre-migration or non-git sessions
 }
 
 export interface Decision {
@@ -218,8 +227,11 @@ export interface ContextStorage {
 
   /**
    * Create a new session
+   * @param sessionId - Session ID
+   * @param project - Project path
+   * @param branch - Git branch name at session start (optional)
    */
-  createSession(sessionId: string, project: string): Promise<void>;
+  createSession(sessionId: string, project: string, branch?: string | null): Promise<void>;
 
   /**
    * End a session with optional summary

@@ -222,6 +222,7 @@ var SQLiteStorage = class {
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
     this.migrateAddMetaTable();
+    this.migrateAddBranchColumn();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -295,6 +296,7 @@ var SQLiteStorage = class {
       lesson_type: row.lesson_type ?? null,
       pinned: row.pinned ?? 0,
       access_count: row.access_count ?? 0,
+      branch: row.branch ?? null,
       created_at: row.created_at
     };
   }
@@ -355,8 +357,8 @@ ${storedOutput}`;
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, lesson_type, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, branch, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tagsValue = observation.tags && observation.tags.length > 0 ? JSON.stringify(observation.tags) : null;
     const info = stmt.run(
@@ -373,6 +375,7 @@ ${storedOutput}`;
       tagsValue,
       contentHash,
       observation.lesson_type ?? null,
+      observation.branch ?? null,
       observation.created_at
     );
     const insertedId = Number(info.lastInsertRowid);
@@ -422,10 +425,21 @@ ${storedOutput}`;
     const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
     const temporalMode = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.temporalMode ?? "neutral" : "neutral";
     const skipDecay = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.skipDecay ?? false : false;
+    const branchFilter = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.branch : void 0;
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
-    if (project) {
+    const hasBranchFilter = branchFilter !== void 0 && branchFilter !== "*";
+    if (project && hasBranchFilter) {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [ftsQuery, project + "%", branchFilter];
+    } else if (project) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
@@ -434,6 +448,15 @@ ${storedOutput}`;
         LIMIT 50
       `;
       params = [ftsQuery, project + "%"];
+    } else if (hasBranchFilter) {
+      sql = `
+        SELECT o.* FROM observations o
+        INNER JOIN observations_fts ON o.id = observations_fts.rowid
+        WHERE observations_fts MATCH ? AND o.branch = ?
+        ORDER BY o.created_at DESC
+        LIMIT 50
+      `;
+      params = [ftsQuery, branchFilter];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -636,13 +659,13 @@ ${storedOutput}`;
       next_compaction_eligible: eligibleRow?.count || 0
     };
   }
-  async createSession(sessionId, project) {
+  async createSession(sessionId, project, branch) {
     const stmt = this.db.prepare(`
-      INSERT INTO sessions (id, project, started_at, status)
-      VALUES (?, ?, ?, 'active')
+      INSERT INTO sessions (id, project, started_at, status, branch)
+      VALUES (?, ?, ?, 'active', ?)
       ON CONFLICT(id) DO UPDATE SET project = excluded.project
     `);
-    stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString());
+    stmt.run(sessionId, project, (/* @__PURE__ */ new Date()).toISOString(), branch ?? null);
   }
   async endSession(sessionId, summary, summaryExtended) {
     const stmt = this.db.prepare(`
@@ -692,7 +715,8 @@ ${storedOutput}`;
       ended_at: row.ended_at || void 0,
       summary: row.summary || void 0,
       summary_extended: row.summary_extended || void 0,
-      status: row.status
+      status: row.status,
+      branch: row.branch ?? null
     }));
   }
   async getRecentSessionsWithCounts(project, limit, offset, status) {
@@ -700,7 +724,7 @@ ${storedOutput}`;
     const sql = `
       SELECT
         s.id, s.project, s.started_at, s.ended_at,
-        s.summary, s.summary_extended, s.status,
+        s.summary, s.summary_extended, s.status, s.branch,
         COUNT(o.id) AS observation_count,
         COALESCE(SUM(o.token_estimate), 0) AS total_tokens
       FROM sessions s
@@ -721,6 +745,7 @@ ${storedOutput}`;
       summary: row.summary || void 0,
       summary_extended: row.summary_extended || void 0,
       status: row.status,
+      branch: row.branch ?? null,
       observation_count: row.observation_count,
       total_tokens: row.total_tokens
     }));
@@ -2232,6 +2257,27 @@ ${storedOutput}`;
     `);
   }
   /**
+   * Migration: add branch column to observations and sessions.
+   * Guards each ALTER TABLE with PRAGMA table_info to be idempotent.
+   * The partial index on observations is always idempotent via IF NOT EXISTS.
+   */
+  migrateAddBranchColumn() {
+    const obsColumns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const obsColumnNames = new Set(obsColumns.map((c) => c.name));
+    if (!obsColumnNames.has("branch")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN branch TEXT`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_branch
+      ON observations(project, branch) WHERE branch IS NOT NULL
+    `);
+    const sessColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    const sessColumnNames = new Set(sessColumns.map((c) => c.name));
+    if (!sessColumnNames.has("branch")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN branch TEXT`);
+    }
+  }
+  /**
    * Get observations suitable for reflection analysis.
    * Returns high-importance observations from the lookback window ordered by
    * importance descending then recency descending, capped at 500.
@@ -3000,6 +3046,24 @@ function loadDotEnv() {
   }
 }
 
+// src/utils/git.ts
+import { spawnSync } from "child_process";
+function getCurrentBranch(cwd) {
+  try {
+    const result = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 1e3
+    });
+    if (result.status !== 0 || result.error)
+      return null;
+    const branch = result.stdout.trim();
+    return branch && branch !== "HEAD" ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
 // plugin/hooks/session-end.ts
 var NO_NATIVE_ERROR = "[context-manager] No server configured and native SQLite modules are not available.\nRun 'make server-quickstart' (macOS) or 'make server-start' (Docker) to set up a server,\nthen restart Claude Code.\nFor local SQLite mode: clone the repo, run 'npm install', and install locally with\n'/plugin marketplace add /path/to/repo'.";
 var debugLog = createDebugLogger("stop-hook-debug.log");
@@ -3125,7 +3189,7 @@ function compressAssistantBlock(text) {
   }
   return kept.join("\n");
 }
-function extractConversationInsights(lines, sessionId, project) {
+function extractConversationInsights(lines, sessionId, project, branch) {
   const insights = [];
   try {
     for (const line of lines) {
@@ -3178,6 +3242,7 @@ ${compressed}`);
           token_estimate: tokenEstimate,
           importance,
           importance_score: Math.round(score * 100) / 100,
+          branch: branch ?? null,
           created_at: (/* @__PURE__ */ new Date()).toISOString()
         });
       } catch {
@@ -3284,6 +3349,7 @@ async function main() {
       hasValue: typeof rawInput.transcript_path === "string" && rawInput.transcript_path.length > 0
     });
     const input = validateStopInput(rawInput);
+    const branch = getCurrentBranch(input.cwd);
     let transcriptLines;
     if (input.transcript_path) {
       try {
@@ -3320,7 +3386,8 @@ async function main() {
           const insights = extractConversationInsights(
             transcriptLines,
             input.session_id,
-            input.cwd
+            input.cwd,
+            branch
           );
           for (const insight of insights) {
             try {
@@ -3383,7 +3450,8 @@ async function main() {
         const insights = extractConversationInsights(
           transcriptLines,
           input.session_id,
-          input.cwd
+          input.cwd,
+          branch
         );
         const existingObs = await storage.getSessionObservations(input.session_id);
         const existingSummaries = new Set(
