@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 27, 2026 (v0.8.67)
+**Last Updated**: May 27, 2026 (v0.8.92)
 
 ---
 
@@ -43,6 +43,8 @@ This is a TypeScript Claude Code plugin. All code changes follow the mandatory m
 6. Restart Claude Code
 
 `make update` automates steps 2-4 (pull, install, build, commit, push, server restart). It does NOT bump the version. Run `npm version patch --no-git-tag-version` before `make update` if you want a version number change.
+
+**Note:** `/plugin update` refreshes the Claude Code side (hooks + proxy) but does NOT restart the HTTP server. After pushing, run `make update` in the repo to rebuild and restart the server so new MCP tools and fixes take effect in remote mode.
 
 **Issue tracking:**
 - Every code change must reference a GitHub issue in the commit (`fixes #N` or `refs #N`)
@@ -85,7 +87,8 @@ npm run import -- --source <path> --project <target> [--filter <text>] [--dry-ru
 
 **MCP Tools:**
 `context_add`, `context_stats`, `context_list`, `context_search`, `context_semantic_search`, `context_embed`,
-`context_vacuum`, `context_export`, `context_memory_audit`, `context_memory_consolidate`
+`context_vacuum`, `context_export`, `context_memory_audit`, `context_memory_consolidate`, `context_prune`,
+`context_get`, `context_timeline`, `context_lessons`, `context_decisions`, `context_reflect`
 
 ---
 
@@ -177,6 +180,11 @@ claude-context-manager/
 |   +-- utils/env.ts                # loadDotEnv() shared utility
 |   +-- utils/transcript.ts         # scoreForNarrative, pickBestNarrative
 |   +-- utils/sanitize.ts           # <private> tag stripping
+|   +-- utils/temporal.ts               # Temporal intent classifier (current/historical/neutral)
+|   +-- utils/git.ts                    # getCurrentBranch() helper
+|   +-- utils/reflect.ts                # buildReflection() / formatReflection() pure functions
+|   +-- utils/facts.ts                  # FACT_CATEGORIES + detectFactType() for supersession
+|   +-- utils/correct-tokens.ts         # correctTokens() fuzzy typo-correction pre-pass
 +-- web/                            # Fastify web dashboard
 +-- test/e2e/                       # Docker-based E2E scenarios (5 scenarios, 36 assertions)
 +-- docs/ARCHITECTURE.md            # Full design decision details
@@ -219,6 +227,17 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 26 | Continuous embedding loop | `backgroundEmbed(storage, signal)` accepts an `AbortSignal`; loops on `while (!signal.aborted)`; `abortableSleep()` throws on abort; `CONTEXT_MANAGER_EMBED_INTERVAL` controls sleep; errors caught per-iteration; NaN guard on env var |
 | 28 | Clean HTTP server shutdown | `abortController.abort()` signals the embed loop to stop; shutdown races `embedTask` against a 3s deadline before calling `fastify.close()` then `storage.close()`; `shuttingDown` flag prevents concurrent double-shutdown; startup failure path removes signal handlers before closing storage; both launchd plist templates include `ThrottleInterval: 30` to prevent rapid restart loops |
 | 27 | SQLite DB import | `POST /api/import` on web server; multipart upload; magic byte + PRAGMA schema pre-flight; ATTACH/INSERT OR IGNORE in single transaction; skips vec tables and observation_relationships |
+| 29 | Temporal query routing | `classifyTemporalIntent()` in `temporal.ts`; current/historical/neutral; applied before all search paths including tag: |
+| 30 | Branch-aware capture | `getCurrentBranch()` via `spawnSync`; branch stored on observations and sessions; soft-rank boost in search; filter on tag path |
+| 31 | Fact supersession | `FACT_CATEGORIES` in `facts.ts`; `superseded_by` column; `findConflictingFact()` marks old fact superseded on save; excluded from search by default; `include_superseded` param to opt in |
+| 32 | Memory decay | `applyDecay()`: 60% base_importance + 25% recency (23-day half-life) + 15% log-frequency; only in neutral temporal path; pinned/decision/lesson observations exempt |
+| 33 | Decisions entity | `decisions` table with FTS5 triggers; `extractDecisions()` in Stop hook; `context_decisions` tool; `decision:` prefix in `context_search` |
+| 34 | Error lessons | `lesson_type` column; `detectLessonType()` in processor; restricted to Write/Edit/NotebookEdit/MultiEdit + Bash errors; `context_lessons` tool; `lesson:` prefix in `context_search` |
+| 35 | context_reflect | `buildReflection()` / `formatReflection()` pure functions in `reflect.ts`; groups by first tag; 3+ obs threshold; lesson groups get "Avoid:" prefix; Stop hook reminder at 7+ days / 10+ high-importance obs |
+| 36 | Fuzzy search pre-pass | `token_index` table; `addTokens()` on every save (4+ char tokens, freq upsert); `findClosestToken()` Levenshtein DP <= 2 edit distance, freq >= 3; `correctTokens()` skips operator-prefixed tokens; `fuzzy` param (default true) on `context_search`; correction notice in response header |
+| 37 | Progressive disclosure | `context_search` (compact, default) + `context_get` (full detail by ID) + `context_timeline` (session context around IDs); 3-layer pattern |
+| 38 | Remote parity | `remoteCreateSession` forwards branch; `GET /api/decisions/next-number` for globally sequential decision numbering in remote mode |
+| 39 | searchByTag json_each | Tag matching uses `EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)` instead of LIKE; correct for JSON array storage |
 
 ---
 
@@ -278,3 +297,5 @@ Unclosed tags redact all remaining content. `old_string`/`new_string`/`content` 
 **Native module errors:** `npm rebuild better-sqlite3`
 
 **E2E server startup fails:** Ensure `npm run build` has run first (E2E uses tsc output, not the esbuild bundle — esbuild inlines fastify's `require()` calls which Node.js rejects as CJS/ESM conflict).
+
+**New tools return "Tool not found":** The HTTP server is running an older version. Run `make update` to rebuild and restart it. Check `curl http://localhost:4000/health` to confirm the version matches the plugin version.
