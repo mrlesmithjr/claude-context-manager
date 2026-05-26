@@ -2147,6 +2147,15 @@ function mergeSessionBlocks(existingBody, newContent) {
   for (const newBlock of newBlocks) {
     const existing = existingBlocks.find((b) => b.sessionId === newBlock.sessionId);
     if (existing) {
+      if (newBlock.heading !== existing.heading) {
+        const existingCountMatch = existing.heading.match(/(\d+)\s+actions/);
+        const newHasCount = /\d+\s+actions/.test(newBlock.heading);
+        if (existingCountMatch && !newHasCount) {
+          existing.heading = newBlock.heading.replace(/\)$/, `, ${existingCountMatch[0]})`);
+        } else {
+          existing.heading = newBlock.heading;
+        }
+      }
       if (!existing.narrative && newBlock.narrative) {
         existing.narrative = newBlock.narrative;
       }
@@ -2248,7 +2257,32 @@ async function exportToAutoMemory(storage2, projectPath, sessionId) {
     sessionId
   );
   if (observations.length === 0) {
-    return { exported: 0, filePath: null };
+    if (!sessionId) {
+      return { exported: 0, filePath: null };
+    }
+    const sessions2 = await storage2.getRecentSessions(projectPath, 50);
+    const session = sessions2.find((s) => s.id === sessionId);
+    if (!session) {
+      console.error(`[context-manager] exportToAutoMemory: session ${sessionId.substring(0, 8)} not found in recent sessions; heading update skipped`);
+      return { exported: 0, filePath: null };
+    }
+    if (session.status !== "complete") {
+      return { exported: 0, filePath: null };
+    }
+    const shortId = sessionId.substring(0, 8);
+    const duration3 = computeSessionDuration(session);
+    const heading = `### Session ${shortId} (${duration3})`;
+    const narrative = extractSessionNarrative(session.summary);
+    const parts = [heading];
+    if (narrative)
+      parts.push(narrative);
+    const headingBlock = parts.join("\n");
+    const date5 = (session.ended_at ?? session.started_at).split("T")[0] ?? "unknown";
+    const newContent = `## ${date5}
+
+${headingBlock}`;
+    const { filePath: filePath2 } = writeActivityToMemory(projectPath, newContent);
+    return { exported: 0, filePath: filePath2 };
   }
   const sessionIds = [...new Set(observations.map((o) => o.session_id))];
   const sessions = await storage2.getRecentSessions(projectPath, 50);
@@ -63492,7 +63526,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.56" : "unknown"
+      version: true ? "0.8.57" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
