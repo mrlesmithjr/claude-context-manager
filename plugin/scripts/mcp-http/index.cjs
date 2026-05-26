@@ -51288,7 +51288,7 @@ var StreamableHTTPServerTransport = class {
 var import_crypto6 = require("crypto");
 var import_os5 = require("os");
 var import_path6 = require("path");
-var import_fs6 = require("fs");
+var import_fs7 = require("fs");
 var import_url2 = require("url");
 
 // node_modules/zod/v3/helpers/util.js
@@ -59206,6 +59206,7 @@ var EMPTY_COMPLETION_RESULT = {
 
 // src/mcp/create-server.ts
 var import_crypto3 = require("crypto");
+var import_fs5 = require("fs");
 
 // src/export/memory.ts
 var import_fs = require("fs");
@@ -60587,7 +60588,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.75" : "unknown"
+      version: true ? "0.8.76" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -60821,7 +60822,7 @@ ${lines.join("\n")}`
   );
   server.tool(
     "context_add",
-    "Write a manual observation into the context store. Use this to save notes, decisions, or insights from any MCP client (Claude Desktop, etc.) \u2014 not just Claude Code sessions. Observations are stored with the project scope and become searchable via context_search.",
+    "Write a manual observation into the context store. Use this to save notes, decisions, or insights from any MCP client (Claude Desktop, etc.), not just Claude Code sessions. Observations are stored with the project scope and become searchable via context_search.",
     {
       text: external_exports.string().min(1).describe("The observation content to store"),
       project: external_exports.string().optional().describe("Project path to scope the observation. Omit to use the server default project."),
@@ -60836,6 +60837,11 @@ ${lines.join("\n")}`
         };
       }
       const resolvedProject = np(project) ?? project ?? process.cwd();
+      let pathWarning = "";
+      if (resolvedProject && !(0, import_fs5.existsSync)(resolvedProject)) {
+        pathWarning = `
+Note: project path '${resolvedProject}' does not exist on disk. Observations will only be visible when searching from this exact path.`;
+      }
       let importanceScore = 0.6;
       let importanceWarning = "";
       if (importance !== void 0) {
@@ -60911,7 +60917,7 @@ ${lines.join("\n")}`
           content: [
             {
               type: "text",
-              text: `Saved: "${preview2}" (importance: ${importanceLabel}, session: ${sessionId2 ?? "unknown"})${importanceWarning}${tagNote}`
+              text: `Saved: "${preview2}" (importance: ${importanceLabel}, session: ${sessionId2 ?? "unknown"})${importanceWarning}${tagNote}${pathWarning}`
             }
           ]
         };
@@ -60931,9 +60937,35 @@ ${lines.join("\n")}`
         content: [
           {
             type: "text",
-            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${importanceWarning}${dedupNote}${tagNote}`
+            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${importanceWarning}${dedupNote}${tagNote}${pathWarning}`
           }
         ]
+      };
+    }
+  );
+  server.tool(
+    "context_list_projects",
+    "List all project paths that have observations, with observation counts and last activity. Useful for discovering existing project scopes before writing with context_add.",
+    {},
+    async () => {
+      if (isProxy) {
+        return proxyToolCall("context_list_projects", {}, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const projects = await db.getProjects();
+      if (projects.length === 0) {
+        return {
+          content: [{ type: "text", text: "No projects found. Use context_add to write the first observation." }]
+        };
+      }
+      const lines = projects.map((p) => {
+        const date5 = new Date(p.last_activity).toLocaleDateString();
+        return `${p.path}  (${p.observation_count} obs, last: ${date5})`;
+      });
+      return {
+        content: [{ type: "text", text: `${projects.length} project(s):
+
+${lines.join("\n")}` }]
       };
     }
   );
@@ -61447,7 +61479,7 @@ var better_sqlite3_default = __betterSqlite3;
 var import_os4 = require("os");
 var import_crypto5 = require("crypto");
 var import_path5 = __toESM(require("path"), 1);
-var import_fs5 = require("fs");
+var import_fs6 = require("fs");
 
 // shim:sqlite-vec
 var load = __sqliteVec?.load;
@@ -61469,7 +61501,7 @@ var SQLiteStorage = class {
   vecEnabled = false;
   constructor(dbPath = DEFAULT_DB_PATH) {
     const dir = import_path5.default.dirname(dbPath);
-    (0, import_fs5.mkdirSync)(dir, { recursive: true });
+    (0, import_fs6.mkdirSync)(dir, { recursive: true });
     this.db = new better_sqlite3_default(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
@@ -63359,10 +63391,10 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.75")
-    return "0.8.75";
+  if ("0.8.76")
+    return "0.8.76";
   try {
-    const pkg = JSON.parse((0, import_fs6.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
+    const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)
       return pkg.version;
     throw new Error("version missing");
@@ -63717,7 +63749,7 @@ async function startHttpServer(options = {}) {
       let content = "";
       const memFile = (0, import_path6.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       try {
-        content = (0, import_fs6.readFileSync)(memFile, "utf-8");
+        content = (0, import_fs7.readFileSync)(memFile, "utf-8");
       } catch {
       }
       await reply.send({ status: "ok", exported: result.exported, content });
@@ -63738,7 +63770,7 @@ async function startHttpServer(options = {}) {
       const memFile = (0, import_path6.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       let content = "";
       try {
-        content = (0, import_fs6.readFileSync)(memFile, "utf-8");
+        content = (0, import_fs7.readFileSync)(memFile, "utf-8");
       } catch {
       }
       await reply.send({ content });

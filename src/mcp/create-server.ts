@@ -9,6 +9,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
+import { existsSync } from 'fs';
 import { SQLiteStorage } from '../storage/sqlite.js';
 import {
   exportToAutoMemory,
@@ -19,7 +20,7 @@ import { getEmbeddingService } from '../embedding/service.js';
 import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
 import { auditMemoryDirectories, formatAuditReport } from '../memory/audit.js';
 import { consolidateMemories, formatConsolidationReport } from '../memory/consolidate.js';
-import type { ImportanceLevel, Observation, ObservationTag, Session, Stats, UserPrompt } from '../storage/interface.js';
+import type { ImportanceLevel, Observation, ObservationTag, ProjectEntry, Session, Stats, UserPrompt } from '../storage/interface.js';
 import {
   computeSessionDuration,
   extractSessionNarrative,
@@ -618,7 +619,7 @@ export function createContextManagerServer(
 
   server.tool(
     'context_add',
-    'Write a manual observation into the context store. Use this to save notes, decisions, or insights from any MCP client (Claude Desktop, etc.) — not just Claude Code sessions. Observations are stored with the project scope and become searchable via context_search.',
+    'Write a manual observation into the context store. Use this to save notes, decisions, or insights from any MCP client (Claude Desktop, etc.), not just Claude Code sessions. Observations are stored with the project scope and become searchable via context_search.',
     {
       text: z.string().min(1).describe('The observation content to store'),
       project: z
@@ -645,6 +646,14 @@ export function createContextManagerServer(
 
       // Resolve the project path: explicit param > server-configured default
       const resolvedProject = np(project) ?? project ?? process.cwd();
+
+      // Warn if the resolved project path does not exist on disk.
+      // This runs on the client machine in both local and proxy modes, helping
+      // callers catch typos before observations are silently mis-scoped.
+      let pathWarning = '';
+      if (resolvedProject && !existsSync(resolvedProject)) {
+        pathWarning = `\nNote: project path '${resolvedProject}' does not exist on disk. Observations will only be visible when searching from this exact path.`;
+      }
 
       // Fix #82: Resolve importance score with clamping warning and error on unrecognized string
       let importanceScore = 0.60; // default: medium
@@ -723,7 +732,7 @@ export function createContextManagerServer(
           content: [
             {
               type: 'text' as const,
-              text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId ?? 'unknown'})${importanceWarning}${tagNote}`,
+              text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId ?? 'unknown'})${importanceWarning}${tagNote}${pathWarning}`,
             },
           ],
         };
@@ -745,9 +754,38 @@ export function createContextManagerServer(
         content: [
           {
             type: 'text' as const,
-            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${importanceWarning}${dedupNote}${tagNote}`,
+            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${importanceWarning}${dedupNote}${tagNote}${pathWarning}`,
           },
         ],
+      };
+    }
+  );
+
+  server.tool(
+    'context_list_projects',
+    'List all project paths that have observations, with observation counts and last activity. Useful for discovering existing project scopes before writing with context_add.',
+    {},
+    async () => {
+      if (isProxy) {
+        return proxyToolCall('context_list_projects', {}, remoteUrl, remoteToken);
+      }
+
+      const db = await getDb();
+      const projects: ProjectEntry[] = await db.getProjects();
+
+      if (projects.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: 'No projects found. Use context_add to write the first observation.' }],
+        };
+      }
+
+      const lines = projects.map(p => {
+        const date = new Date(p.last_activity).toLocaleDateString();
+        return `${p.path}  (${p.observation_count} obs, last: ${date})`;
+      });
+
+      return {
+        content: [{ type: 'text' as const, text: `${projects.length} project(s):\n\n${lines.join('\n')}` }],
       };
     }
   );

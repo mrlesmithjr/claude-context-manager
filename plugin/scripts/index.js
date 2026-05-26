@@ -63413,6 +63413,7 @@ var init_remote_client = __esm({
 
 // src/mcp/create-server.ts
 import { randomUUID as randomUUID3 } from "crypto";
+import { existsSync as existsSync5 } from "fs";
 function formatObservations(observations) {
   if (observations.length === 0) {
     return "No observations found.";
@@ -63582,7 +63583,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.75" : "unknown"
+      version: true ? "0.8.76" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -63816,7 +63817,7 @@ ${lines.join("\n")}`
   );
   server.tool(
     "context_add",
-    "Write a manual observation into the context store. Use this to save notes, decisions, or insights from any MCP client (Claude Desktop, etc.) \u2014 not just Claude Code sessions. Observations are stored with the project scope and become searchable via context_search.",
+    "Write a manual observation into the context store. Use this to save notes, decisions, or insights from any MCP client (Claude Desktop, etc.), not just Claude Code sessions. Observations are stored with the project scope and become searchable via context_search.",
     {
       text: external_exports.string().min(1).describe("The observation content to store"),
       project: external_exports.string().optional().describe("Project path to scope the observation. Omit to use the server default project."),
@@ -63831,6 +63832,11 @@ ${lines.join("\n")}`
         };
       }
       const resolvedProject = np(project) ?? project ?? process.cwd();
+      let pathWarning = "";
+      if (resolvedProject && !existsSync5(resolvedProject)) {
+        pathWarning = `
+Note: project path '${resolvedProject}' does not exist on disk. Observations will only be visible when searching from this exact path.`;
+      }
       let importanceScore = 0.6;
       let importanceWarning = "";
       if (importance !== void 0) {
@@ -63906,7 +63912,7 @@ ${lines.join("\n")}`
           content: [
             {
               type: "text",
-              text: `Saved: "${preview2}" (importance: ${importanceLabel}, session: ${sessionId2 ?? "unknown"})${importanceWarning}${tagNote}`
+              text: `Saved: "${preview2}" (importance: ${importanceLabel}, session: ${sessionId2 ?? "unknown"})${importanceWarning}${tagNote}${pathWarning}`
             }
           ]
         };
@@ -63926,9 +63932,35 @@ ${lines.join("\n")}`
         content: [
           {
             type: "text",
-            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${importanceWarning}${dedupNote}${tagNote}`
+            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${importanceWarning}${dedupNote}${tagNote}${pathWarning}`
           }
         ]
+      };
+    }
+  );
+  server.tool(
+    "context_list_projects",
+    "List all project paths that have observations, with observation counts and last activity. Useful for discovering existing project scopes before writing with context_add.",
+    {},
+    async () => {
+      if (isProxy) {
+        return proxyToolCall("context_list_projects", {}, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const projects = await db.getProjects();
+      if (projects.length === 0) {
+        return {
+          content: [{ type: "text", text: "No projects found. Use context_add to write the first observation." }]
+        };
+      }
+      const lines = projects.map((p) => {
+        const date5 = new Date(p.last_activity).toLocaleDateString();
+        return `${p.path}  (${p.observation_count} obs, last: ${date5})`;
+      });
+      return {
+        content: [{ type: "text", text: `${projects.length} project(s):
+
+${lines.join("\n")}` }]
       };
     }
   );
@@ -65012,8 +65044,8 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.75")
-        return "0.8.75";
+      if ("0.8.76")
+        return "0.8.76";
       try {
         const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version)
