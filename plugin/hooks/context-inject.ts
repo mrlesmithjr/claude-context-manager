@@ -271,6 +271,40 @@ async function main() {
         // Non-critical — skip if lessons call fails in remote mode
       }
 
+      // Recent decisions hint via remote context_decisions call
+      try {
+        const decisionsText = await remoteMcpText(client, 'context_decisions', {
+          project: input.cwd,
+          limit: 3,
+        });
+        if (decisionsText && decisionsText.trim().length > 0 && !decisionsText.startsWith('No decisions')) {
+          // Each decision block starts with "#N [Month Day, Year] text"
+          const blocks = decisionsText.split('\n\n').filter(b => b.trim().length > 0);
+          if (blocks.length > 0) {
+            const items = blocks.slice(0, 3).map(block => {
+              const firstLine = block.split('\n')[0] ?? '';
+              // Extract #N
+              const numMatch = firstLine.match(/^(#\d+)/);
+              // Extract [Month Day, Year]
+              const dateMatch = firstLine.match(/\[([^\]]+)\]/);
+              const dateLabel = dateMatch?.[1] ?? '';
+              // Extract decision text after the date bracket
+              const afterDate = dateMatch
+                ? firstLine.slice(firstLine.indexOf(']') + 1).trim()
+                : firstLine;
+              const fragment = afterDate.length > 40 ? afterDate.substring(0, 40) : afterDate;
+              const numLabel = numMatch?.[1] ?? '';
+              return numLabel
+                ? `${numLabel} ${fragment} (${dateLabel})`
+                : `${fragment} (${dateLabel})`;
+            });
+            lines.push(`Recent decisions: ${items.join(' · ')}`);
+          }
+        }
+      } catch {
+        // Non-critical — skip if decisions call fails in remote mode
+      }
+
       // Fetch memory content exported by the previous session's Stop hook.
       // remoteGetMemory never throws; it returns '' on any error.
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -383,6 +417,27 @@ async function main() {
       }
     } catch {
       // Non-critical — skip if lessons query fails
+    }
+
+    // Recent decisions hint: query the last 3 decisions for this project
+    try {
+      const recentDecisions = await storage.searchDecisions(input.cwd, undefined, 3);
+      if (recentDecisions.length > 0) {
+        const items = recentDecisions.map(d => {
+          const date = new Date(d.captured_at);
+          const dateLabel = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const numLabel = d.decision_number != null ? `#${d.decision_number}` : '';
+          const fragment = d.decision_text.length > 40
+            ? d.decision_text.substring(0, 40)
+            : d.decision_text;
+          return numLabel
+            ? `${numLabel} ${fragment} (${dateLabel})`
+            : `${fragment} (${dateLabel})`;
+        });
+        lines.push(`Recent decisions: ${items.join(' · ')}`);
+      }
+    } catch {
+      // Non-critical — skip if decisions query fails
     }
 
     const context = lines.join('\n');

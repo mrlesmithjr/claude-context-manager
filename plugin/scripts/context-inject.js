@@ -208,6 +208,7 @@ var SQLiteStorage = class {
     this.migrateAddSessionSource();
     this.migrateTagsToJson();
     this.migrateAddLessonType();
+    this.migrateAddDecisionsTable();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -2015,6 +2016,127 @@ ${storedOutput}`;
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
   }
+  /**
+   * Migration: add decisions table for first-class decision tracking.
+   * Uses CREATE TABLE IF NOT EXISTS (idempotent on every startup).
+   * Also creates the FTS5 virtual table and the project index.
+   */
+  migrateAddDecisionsTable() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        project TEXT NOT NULL,
+        decision_text TEXT NOT NULL,
+        context TEXT,
+        decision_number INTEGER,
+        captured_at TEXT NOT NULL,
+        importance_score REAL DEFAULT 0.7,
+        tags TEXT
+      )
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_decisions_project
+      ON decisions(project, captured_at DESC)
+    `);
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+        decision_text,
+        context,
+        content='decisions',
+        content_rowid='id'
+      )
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_ai AFTER INSERT ON decisions BEGIN
+        INSERT INTO decisions_fts(rowid, decision_text, context)
+        VALUES (new.id, COALESCE(new.decision_text, ''), COALESCE(new.context, ''));
+      END
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_ad AFTER DELETE ON decisions BEGIN
+        INSERT INTO decisions_fts(decisions_fts, rowid, decision_text, context)
+        VALUES('delete', old.id, COALESCE(old.decision_text, ''), COALESCE(old.context, ''));
+      END
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_au AFTER UPDATE ON decisions BEGIN
+        INSERT INTO decisions_fts(decisions_fts, rowid, decision_text, context)
+        VALUES('delete', old.id, COALESCE(old.decision_text, ''), COALESCE(old.context, ''));
+        INSERT INTO decisions_fts(rowid, decision_text, context)
+        VALUES (new.id, COALESCE(new.decision_text, ''), COALESCE(new.context, ''));
+      END
+    `);
+  }
+  /**
+   * Save a decision and update the FTS5 index.
+   */
+  async saveDecision(decision) {
+    const info = this.db.prepare(`
+      INSERT INTO decisions (
+        session_id, project, decision_text, context,
+        decision_number, captured_at, importance_score, tags
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      decision.session_id,
+      decision.project,
+      decision.decision_text,
+      decision.context ?? null,
+      decision.decision_number ?? null,
+      decision.captured_at,
+      decision.importance_score ?? 0.7,
+      decision.tags ?? null
+    );
+  }
+  /**
+   * Search decisions for a project. Without a query, returns recent decisions ordered
+   * by captured_at DESC. With a query, uses FTS5 to filter.
+   */
+  async searchDecisions(project, query, limit = 20) {
+    const effectiveLimit = Math.max(1, Math.min(50, limit));
+    let rows;
+    if (query && query.trim().length > 0) {
+      const ftsQuery = query.trim().replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
+      rows = this.db.prepare(`
+        SELECT d.* FROM decisions d
+        JOIN decisions_fts f ON d.id = f.rowid
+        WHERE d.project LIKE ? || '%'
+          AND decisions_fts MATCH ?
+        ORDER BY d.captured_at DESC
+        LIMIT ?
+      `).all(project, ftsQuery, effectiveLimit);
+    } else {
+      rows = this.db.prepare(`
+        SELECT * FROM decisions
+        WHERE project LIKE ? || '%'
+        ORDER BY captured_at DESC
+        LIMIT ?
+      `).all(project, effectiveLimit);
+    }
+    return rows.map((row) => ({
+      id: row["id"],
+      session_id: row["session_id"],
+      project: row["project"],
+      decision_text: row["decision_text"],
+      context: row["context"] ?? null,
+      decision_number: row["decision_number"] ?? null,
+      captured_at: row["captured_at"],
+      importance_score: row["importance_score"] ?? 0.7,
+      tags: row["tags"] ?? null
+    }));
+  }
+  /**
+   * Get the next sequential decision number for a project.
+   * Returns 1 when no decisions exist yet for the project.
+   */
+  async getNextDecisionNumber(project) {
+    const row = this.db.prepare(`
+      SELECT COALESCE(MAX(decision_number), 0) + 1 AS next_num
+      FROM decisions
+      WHERE project LIKE ? || '%'
+    `).get(project);
+    return row?.next_num ?? 1;
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -2240,11 +2362,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.82") {
+    if (installedVersion !== "0.8.83") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.82"}
+   Source:    v${"0.8.83"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2324,7 +2446,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.82"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.83"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -2347,6 +2469,29 @@ async function main() {
               return dateLabel ? `${fragment} (${typeLabel}, ${dateLabel})` : `${fragment} (${typeLabel})`;
             });
             lines2.push(`Recent failures (${items.length}): ${items.join(" \xB7 ")}`);
+          }
+        }
+      } catch {
+      }
+      try {
+        const decisionsText = await remoteMcpText(client, "context_decisions", {
+          project: input.cwd,
+          limit: 3
+        });
+        if (decisionsText && decisionsText.trim().length > 0 && !decisionsText.startsWith("No decisions")) {
+          const blocks = decisionsText.split("\n\n").filter((b) => b.trim().length > 0);
+          if (blocks.length > 0) {
+            const items = blocks.slice(0, 3).map((block) => {
+              const firstLine = block.split("\n")[0] ?? "";
+              const numMatch = firstLine.match(/^(#\d+)/);
+              const dateMatch = firstLine.match(/\[([^\]]+)\]/);
+              const dateLabel = dateMatch?.[1] ?? "";
+              const afterDate = dateMatch ? firstLine.slice(firstLine.indexOf("]") + 1).trim() : firstLine;
+              const fragment = afterDate.length > 40 ? afterDate.substring(0, 40) : afterDate;
+              const numLabel = numMatch?.[1] ?? "";
+              return numLabel ? `${numLabel} ${fragment} (${dateLabel})` : `${fragment} (${dateLabel})`;
+            });
+            lines2.push(`Recent decisions: ${items.join(" \xB7 ")}`);
           }
         }
       } catch {
@@ -2391,7 +2536,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.82"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.83"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
@@ -2430,6 +2575,20 @@ async function main() {
           return `${fragment} (${dateLabel})`;
         });
         lines.push(`Recent failures (${recentLessons.length}): ${items.join(" \xB7 ")}`);
+      }
+    } catch {
+    }
+    try {
+      const recentDecisions = await storage.searchDecisions(input.cwd, void 0, 3);
+      if (recentDecisions.length > 0) {
+        const items = recentDecisions.map((d) => {
+          const date = new Date(d.captured_at);
+          const dateLabel = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          const numLabel = d.decision_number != null ? `#${d.decision_number}` : "";
+          const fragment = d.decision_text.length > 40 ? d.decision_text.substring(0, 40) : d.decision_text;
+          return numLabel ? `${numLabel} ${fragment} (${dateLabel})` : `${fragment} (${dateLabel})`;
+        });
+        lines.push(`Recent decisions: ${items.join(" \xB7 ")}`);
       }
     } catch {
     }

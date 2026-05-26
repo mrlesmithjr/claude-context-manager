@@ -84,6 +84,18 @@ export interface Session {
   last_checkpoint_at?: number; // Unix epoch ms of last checkpoint run; NULL means no checkpoint yet
 }
 
+export interface Decision {
+  id?: number;
+  session_id: string;
+  project: string;
+  decision_text: string;
+  context?: string | null;
+  decision_number?: number | null;
+  captured_at: string;
+  importance_score?: number;
+  tags?: string | null;
+}
+
 export interface UserPrompt {
   id?: number;
   session_id: string;
@@ -609,6 +621,26 @@ export interface ContextStorage {
    * @param since - ISO 8601 date string; only return observations on or after this date (optional)
    */
   getLessons(project?: string, query?: string, lessonType?: string, limit?: number, since?: string): Promise<Observation[]>;
+
+  /**
+   * Save a decision to the decisions table with FTS5 index update.
+   * @param decision - Decision object (id is auto-assigned)
+   */
+  saveDecision(decision: Decision): Promise<void>;
+
+  /**
+   * Search decisions for a project, optionally filtered by keyword query.
+   * @param project - Project path prefix
+   * @param query - Optional keyword filter applied against decision_text and context via FTS5
+   * @param limit - Maximum results (default: 20)
+   */
+  searchDecisions(project: string, query?: string, limit?: number): Promise<Decision[]>;
+
+  /**
+   * Get the next sequential decision number for a project.
+   * @param project - Project path prefix
+   */
+  getNextDecisionNumber(project: string): Promise<number>;
 
   /**
    * Close storage connection

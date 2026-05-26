@@ -208,6 +208,7 @@ var SQLiteStorage = class {
     this.migrateAddSessionSource();
     this.migrateTagsToJson();
     this.migrateAddLessonType();
+    this.migrateAddDecisionsTable();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -2015,6 +2016,127 @@ ${storedOutput}`;
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
   }
+  /**
+   * Migration: add decisions table for first-class decision tracking.
+   * Uses CREATE TABLE IF NOT EXISTS (idempotent on every startup).
+   * Also creates the FTS5 virtual table and the project index.
+   */
+  migrateAddDecisionsTable() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        project TEXT NOT NULL,
+        decision_text TEXT NOT NULL,
+        context TEXT,
+        decision_number INTEGER,
+        captured_at TEXT NOT NULL,
+        importance_score REAL DEFAULT 0.7,
+        tags TEXT
+      )
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_decisions_project
+      ON decisions(project, captured_at DESC)
+    `);
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+        decision_text,
+        context,
+        content='decisions',
+        content_rowid='id'
+      )
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_ai AFTER INSERT ON decisions BEGIN
+        INSERT INTO decisions_fts(rowid, decision_text, context)
+        VALUES (new.id, COALESCE(new.decision_text, ''), COALESCE(new.context, ''));
+      END
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_ad AFTER DELETE ON decisions BEGIN
+        INSERT INTO decisions_fts(decisions_fts, rowid, decision_text, context)
+        VALUES('delete', old.id, COALESCE(old.decision_text, ''), COALESCE(old.context, ''));
+      END
+    `);
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_au AFTER UPDATE ON decisions BEGIN
+        INSERT INTO decisions_fts(decisions_fts, rowid, decision_text, context)
+        VALUES('delete', old.id, COALESCE(old.decision_text, ''), COALESCE(old.context, ''));
+        INSERT INTO decisions_fts(rowid, decision_text, context)
+        VALUES (new.id, COALESCE(new.decision_text, ''), COALESCE(new.context, ''));
+      END
+    `);
+  }
+  /**
+   * Save a decision and update the FTS5 index.
+   */
+  async saveDecision(decision) {
+    const info = this.db.prepare(`
+      INSERT INTO decisions (
+        session_id, project, decision_text, context,
+        decision_number, captured_at, importance_score, tags
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      decision.session_id,
+      decision.project,
+      decision.decision_text,
+      decision.context ?? null,
+      decision.decision_number ?? null,
+      decision.captured_at,
+      decision.importance_score ?? 0.7,
+      decision.tags ?? null
+    );
+  }
+  /**
+   * Search decisions for a project. Without a query, returns recent decisions ordered
+   * by captured_at DESC. With a query, uses FTS5 to filter.
+   */
+  async searchDecisions(project, query, limit = 20) {
+    const effectiveLimit = Math.max(1, Math.min(50, limit));
+    let rows;
+    if (query && query.trim().length > 0) {
+      const ftsQuery = query.trim().replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
+      rows = this.db.prepare(`
+        SELECT d.* FROM decisions d
+        JOIN decisions_fts f ON d.id = f.rowid
+        WHERE d.project LIKE ? || '%'
+          AND decisions_fts MATCH ?
+        ORDER BY d.captured_at DESC
+        LIMIT ?
+      `).all(project, ftsQuery, effectiveLimit);
+    } else {
+      rows = this.db.prepare(`
+        SELECT * FROM decisions
+        WHERE project LIKE ? || '%'
+        ORDER BY captured_at DESC
+        LIMIT ?
+      `).all(project, effectiveLimit);
+    }
+    return rows.map((row) => ({
+      id: row["id"],
+      session_id: row["session_id"],
+      project: row["project"],
+      decision_text: row["decision_text"],
+      context: row["context"] ?? null,
+      decision_number: row["decision_number"] ?? null,
+      captured_at: row["captured_at"],
+      importance_score: row["importance_score"] ?? 0.7,
+      tags: row["tags"] ?? null
+    }));
+  }
+  /**
+   * Get the next sequential decision number for a project.
+   * Returns 1 when no decisions exist yet for the project.
+   */
+  async getNextDecisionNumber(project) {
+    const row = this.db.prepare(`
+      SELECT COALESCE(MAX(decision_number), 0) + 1 AS next_num
+      FROM decisions
+      WHERE project LIKE ? || '%'
+    `).get(project);
+    return row?.next_num ?? 1;
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -2701,6 +2823,18 @@ async function remoteExportMemory(client, project, sessionId) {
     return "";
   }
 }
+async function remoteSaveDecision(client, decision) {
+  await post(client, "/capture/decision", {
+    session_id: decision.session_id,
+    project: decision.project,
+    decision_text: decision.decision_text,
+    context: decision.context ?? null,
+    decision_number: decision.decision_number ?? null,
+    captured_at: decision.captured_at,
+    importance_score: decision.importance_score ?? 0.7,
+    tags: decision.tags ?? null
+  });
+}
 
 // src/utils/env.ts
 import { readFileSync as readFileSync3 } from "node:fs";
@@ -2924,6 +3058,60 @@ ${compressed}`);
     return [];
   }
 }
+var DECISION_PATTERNS = [
+  /\bdecided?\s+to\b/i,
+  /\bwe\s+will\b/i,
+  /\bgoing\s+with\b/i,
+  /\bchosen?\s+approach\b/i,
+  /\bwon'?t\b.*\binstead\b/i,
+  /\b(?:use|using|chose|choosing|selected?|picked?)\s+\w+\s+(?:over|instead\s+of|rather\s+than)\b/i,
+  /\bapproach\s+is\b/i,
+  /\bsolution\s+is\b/i
+];
+async function extractDecisions(lines, sessionId, project, getNextNum) {
+  const decisions = [];
+  const seenPrefixes = /* @__PURE__ */ new Set();
+  for (const line of lines) {
+    try {
+      const msg = JSON.parse(line);
+      if (msg.type !== "assistant" || msg.message?.role !== "assistant")
+        continue;
+      const text = extractTextFromTranscriptLine(msg);
+      if (!text || text.length < 50)
+        continue;
+      const sentences = text.split(/(?<=[.!?])\s+/);
+      for (let i = 0; i < sentences.length; i++) {
+        const sentence = sentences[i];
+        if (!sentence)
+          continue;
+        const matched = DECISION_PATTERNS.some((p) => p.test(sentence));
+        if (!matched)
+          continue;
+        const prev = sentences[i - 1];
+        const raw = sentence.trim();
+        const decisionText = raw.length > 300 ? raw.substring(0, 300) : raw;
+        const prefix = decisionText.substring(0, 80);
+        if (seenPrefixes.has(prefix))
+          continue;
+        seenPrefixes.add(prefix);
+        const contextSentence = prev && prev.trim().length > 10 ? prev.trim() : null;
+        const decisionNumber = await getNextNum();
+        decisions.push({
+          session_id: sessionId,
+          project,
+          decision_text: decisionText,
+          context: contextSentence,
+          decision_number: decisionNumber,
+          captured_at: (/* @__PURE__ */ new Date()).toISOString(),
+          importance_score: 0.7,
+          tags: null
+        });
+      }
+    } catch {
+    }
+  }
+  return decisions.slice(0, 10);
+}
 async function readStdin() {
   return new Promise((resolve) => {
     let data = "";
@@ -3015,6 +3203,28 @@ async function main() {
         } catch (insightError) {
           console.error("[context-manager] Conversation insight extraction failed:", insightError);
         }
+        try {
+          let nextNum = 1;
+          const decisions = await extractDecisions(
+            transcriptLines,
+            input.session_id,
+            input.cwd,
+            async () => nextNum++
+          );
+          for (const decision of decisions) {
+            try {
+              await remoteSaveDecision(client, decision);
+            } catch (err) {
+              console.error("[context-manager] Remote decision save failed:", err);
+            }
+          }
+          if (decisions.length > 0) {
+            debugLog("DECISIONS_REMOTE", { count: decisions.length });
+            console.error(`[context-manager] Sent ${decisions.length} decisions to server`);
+          }
+        } catch (decisionError) {
+          console.error("[context-manager] Decision extraction failed:", decisionError);
+        }
       }
       try {
         await remoteEndSession(client, input.session_id, summary, summaryExtended);
@@ -3058,6 +3268,30 @@ async function main() {
       } catch (insightError) {
         debugLog("CONVERSATION_INSIGHT_ERROR", { error: String(insightError) });
         console.error("[context-manager] Conversation insight extraction failed:", insightError);
+      }
+    }
+    if (transcriptLines) {
+      try {
+        const decisions = await extractDecisions(
+          transcriptLines,
+          input.session_id,
+          input.cwd,
+          () => storage.getNextDecisionNumber(input.cwd)
+        );
+        for (const decision of decisions) {
+          try {
+            await storage.saveDecision(decision);
+          } catch (err) {
+            debugLog("DECISION_SAVE_ERROR", { error: String(err) });
+          }
+        }
+        if (decisions.length > 0) {
+          debugLog("DECISIONS_SAVED", { count: decisions.length });
+          console.error(`[context-manager] Saved ${decisions.length} decisions`);
+        }
+      } catch (decisionError) {
+        debugLog("DECISION_EXTRACT_ERROR", { error: String(decisionError) });
+        console.error("[context-manager] Decision extraction failed:", decisionError);
       }
     }
     if (narrativeBestScore < 0.2) {

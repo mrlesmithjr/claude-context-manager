@@ -20,7 +20,7 @@ import { getEmbeddingService } from '../embedding/service.js';
 import { buildSessionEmbeddingText } from '../embedding/enrichment.js';
 import { auditMemoryDirectories, formatAuditReport } from '../memory/audit.js';
 import { consolidateMemories, formatConsolidationReport } from '../memory/consolidate.js';
-import type { ImportanceLevel, Observation, ObservationTag, ProjectEntry, Session, Stats, UserPrompt } from '../storage/interface.js';
+import type { Decision, ImportanceLevel, Observation, ObservationTag, ProjectEntry, Session, Stats, UserPrompt } from '../storage/interface.js';
 import {
   computeSessionDuration,
   extractSessionNarrative,
@@ -240,6 +240,29 @@ function formatLessons(lessons: Observation[]): string {
     lines.push(`[${datePart} ${timePart}] ${lessonLabel} | ${obs.tool_name}`);
     lines.push(obs.summary);
     lines.push(`importance: ${obs.importance_score.toFixed(2)} | session: ${shortSessionId}...`);
+    lines.push('');
+  }
+  return lines.join('\n').trimEnd();
+}
+
+/**
+ * Format a list of decisions for tool output.
+ * Each decision renders as a numbered block with date, decision text, and optional context.
+ */
+function formatDecisions(decisions: Decision[]): string {
+  if (decisions.length === 0) {
+    return 'No decisions recorded for this project yet.';
+  }
+
+  const lines: string[] = [];
+  for (const d of decisions) {
+    const date = new Date(d.captured_at);
+    const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const numLabel = d.decision_number != null ? `#${d.decision_number}` : '#?';
+    lines.push(`${numLabel} [${dateStr}] ${d.decision_text}`);
+    if (d.context) {
+      lines.push(`    Context: ${d.context}`);
+    }
     lines.push('');
   }
   return lines.join('\n').trimEnd();
@@ -509,6 +532,16 @@ export function createContextManagerServer(
           20
         );
         const text = formatLessons(lessons);
+        return { content: [{ type: 'text' as const, text }] };
+      }
+
+      // Check for decision: prefix — routes to searchDecisions() and returns early.
+      // This is distinct from the 'decision' tag filter (tag:decision) which searches
+      // observations tagged with the 'decision' domain tag.
+      if (query.startsWith('decision:')) {
+        const decisionQuery = query.slice('decision:'.length).trim() || undefined;
+        const decisions = await db.searchDecisions(normalizedProject ?? '/', decisionQuery, 20);
+        const text = formatDecisions(decisions);
         return { content: [{ type: 'text' as const, text }] };
       }
 
@@ -1135,6 +1168,28 @@ export function createContextManagerServer(
         : undefined;
       const lessons = await db.getLessons(normalizedProject, query, lesson_type, limit ?? 20, since);
       const text = formatLessons(lessons);
+      return { content: [{ type: 'text' as const, text }] };
+    }
+  );
+
+  server.tool(
+    'context_decisions',
+    'List architectural decisions and approach choices made during prior sessions. Returns decisions in reverse chronological order with decision number, date, and decision text. Use to answer "what was decided about X?" without a full search.',
+    {
+      project: z.string().optional().describe('Project path to scope the results. Omit to search all projects.'),
+      query: z.string().optional().describe('Keyword filter against decision text'),
+      limit: z.number().int().min(1).max(50).default(20).optional().describe('Maximum results to return (default: 20, max: 50)'),
+    },
+    async ({ project, query, limit }) => {
+      if (isProxy) {
+        return proxyToolCall('context_decisions', { project: np(project), query, limit }, remoteUrl, remoteToken);
+      }
+
+      const db = await getDb();
+      // When no project is specified, use '/' to match all projects via LIKE '/%'
+      const normalizedProject = np(project) ?? '/';
+      const decisions = await db.searchDecisions(normalizedProject, query, limit ?? 20);
+      const text = formatDecisions(decisions);
       return { content: [{ type: 'text' as const, text }] };
     }
   );

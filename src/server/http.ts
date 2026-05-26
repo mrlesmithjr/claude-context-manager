@@ -561,6 +561,63 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     }
   });
 
+  // POST /capture/decision — save a decision captured by the Stop hook in proxy mode.
+  // Accepts the Decision fields and calls storage.saveDecision().
+  fastify.post('/capture/decision', async (request, reply) => {
+    try {
+      const body = request.body as Record<string, unknown>;
+
+      const sessionId = strBound(body['session_id'], SESSION_ID_MAX, 'session_id');
+      const project = strBound(body['project'], PROJECT_MAX, 'project');
+      const decisionText = strBound(body['decision_text'], OBS_SUMMARY_MAX, 'decision_text');
+
+      const context =
+        typeof body['context'] === 'string' && body['context'].length > 0
+          ? body['context'].substring(0, 1024)
+          : null;
+
+      const decisionNumber =
+        typeof body['decision_number'] === 'number'
+          ? Math.max(1, Math.floor(body['decision_number']))
+          : null;
+
+      const rawCapturedAt = body['captured_at'];
+      const capturedAt =
+        typeof rawCapturedAt === 'string' && !isNaN(Date.parse(rawCapturedAt))
+          ? rawCapturedAt
+          : new Date().toISOString();
+
+      const importanceScore =
+        typeof body['importance_score'] === 'number'
+          ? Math.max(0.0, Math.min(1.0, body['importance_score']))
+          : 0.7;
+
+      const rawTags = body['tags'];
+      const tags =
+        typeof rawTags === 'string' && rawTags.trim().length > 0
+          ? rawTags.substring(0, 256)
+          : null;
+
+      const normalizedProject = normalizePath(project, pathMap);
+
+      await storage.saveDecision({
+        session_id: sessionId,
+        project: normalizedProject,
+        decision_text: decisionText,
+        context,
+        decision_number: decisionNumber,
+        captured_at: capturedAt,
+        importance_score: importanceScore,
+        tags,
+      });
+
+      await reply.send({ status: 'ok' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(400).send({ error: msg });
+    }
+  });
+
   // POST /capture/export — trigger server-side memory export for a project.
   // The server runs exportToAutoMemory(), writes its local memory file,
   // and returns the full file content so the caller can inject it at SessionStart.

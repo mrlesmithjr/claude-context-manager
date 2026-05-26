@@ -266,6 +266,7 @@ var init_sqlite = __esm({
         this.migrateAddSessionSource();
         this.migrateTagsToJson();
         this.migrateAddLessonType();
+        this.migrateAddDecisionsTable();
       }
       /**
        * Add importance and compaction columns if they don't exist.
@@ -2072,6 +2073,127 @@ ${storedOutput}`;
         }
         const rows = this.db.prepare(sql).all(...params);
         return rows.map((row) => this.mapRow(row));
+      }
+      /**
+       * Migration: add decisions table for first-class decision tracking.
+       * Uses CREATE TABLE IF NOT EXISTS (idempotent on every startup).
+       * Also creates the FTS5 virtual table and the project index.
+       */
+      migrateAddDecisionsTable() {
+        this.db.exec(`
+      CREATE TABLE IF NOT EXISTS decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        project TEXT NOT NULL,
+        decision_text TEXT NOT NULL,
+        context TEXT,
+        decision_number INTEGER,
+        captured_at TEXT NOT NULL,
+        importance_score REAL DEFAULT 0.7,
+        tags TEXT
+      )
+    `);
+        this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_decisions_project
+      ON decisions(project, captured_at DESC)
+    `);
+        this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+        decision_text,
+        context,
+        content='decisions',
+        content_rowid='id'
+      )
+    `);
+        this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_ai AFTER INSERT ON decisions BEGIN
+        INSERT INTO decisions_fts(rowid, decision_text, context)
+        VALUES (new.id, COALESCE(new.decision_text, ''), COALESCE(new.context, ''));
+      END
+    `);
+        this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_ad AFTER DELETE ON decisions BEGIN
+        INSERT INTO decisions_fts(decisions_fts, rowid, decision_text, context)
+        VALUES('delete', old.id, COALESCE(old.decision_text, ''), COALESCE(old.context, ''));
+      END
+    `);
+        this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_au AFTER UPDATE ON decisions BEGIN
+        INSERT INTO decisions_fts(decisions_fts, rowid, decision_text, context)
+        VALUES('delete', old.id, COALESCE(old.decision_text, ''), COALESCE(old.context, ''));
+        INSERT INTO decisions_fts(rowid, decision_text, context)
+        VALUES (new.id, COALESCE(new.decision_text, ''), COALESCE(new.context, ''));
+      END
+    `);
+      }
+      /**
+       * Save a decision and update the FTS5 index.
+       */
+      async saveDecision(decision) {
+        const info = this.db.prepare(`
+      INSERT INTO decisions (
+        session_id, project, decision_text, context,
+        decision_number, captured_at, importance_score, tags
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+          decision.session_id,
+          decision.project,
+          decision.decision_text,
+          decision.context ?? null,
+          decision.decision_number ?? null,
+          decision.captured_at,
+          decision.importance_score ?? 0.7,
+          decision.tags ?? null
+        );
+      }
+      /**
+       * Search decisions for a project. Without a query, returns recent decisions ordered
+       * by captured_at DESC. With a query, uses FTS5 to filter.
+       */
+      async searchDecisions(project, query, limit = 20) {
+        const effectiveLimit = Math.max(1, Math.min(50, limit));
+        let rows;
+        if (query && query.trim().length > 0) {
+          const ftsQuery = query.trim().replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
+          rows = this.db.prepare(`
+        SELECT d.* FROM decisions d
+        JOIN decisions_fts f ON d.id = f.rowid
+        WHERE d.project LIKE ? || '%'
+          AND decisions_fts MATCH ?
+        ORDER BY d.captured_at DESC
+        LIMIT ?
+      `).all(project, ftsQuery, effectiveLimit);
+        } else {
+          rows = this.db.prepare(`
+        SELECT * FROM decisions
+        WHERE project LIKE ? || '%'
+        ORDER BY captured_at DESC
+        LIMIT ?
+      `).all(project, effectiveLimit);
+        }
+        return rows.map((row) => ({
+          id: row["id"],
+          session_id: row["session_id"],
+          project: row["project"],
+          decision_text: row["decision_text"],
+          context: row["context"] ?? null,
+          decision_number: row["decision_number"] ?? null,
+          captured_at: row["captured_at"],
+          importance_score: row["importance_score"] ?? 0.7,
+          tags: row["tags"] ?? null
+        }));
+      }
+      /**
+       * Get the next sequential decision number for a project.
+       * Returns 1 when no decisions exist yet for the project.
+       */
+      async getNextDecisionNumber(project) {
+        const row = this.db.prepare(`
+      SELECT COALESCE(MAX(decision_number), 0) + 1 AS next_num
+      FROM decisions
+      WHERE project LIKE ? || '%'
+    `).get(project);
+        return row?.next_num ?? 1;
       }
       close() {
         this.db.close();
@@ -63522,6 +63644,7 @@ __export(remote_client_exports, {
   remoteGetMemory: () => remoteGetMemory,
   remoteHealthCheck: () => remoteHealthCheck,
   remoteMcpText: () => remoteMcpText,
+  remoteSaveDecision: () => remoteSaveDecision,
   remoteSaveObservation: () => remoteSaveObservation,
   remoteSavePrompt: () => remoteSavePrompt
 });
@@ -63604,6 +63727,18 @@ async function remoteAddObservation(client, params) {
   } catch {
     return void 0;
   }
+}
+async function remoteSaveDecision(client, decision) {
+  await post(client, "/capture/decision", {
+    session_id: decision.session_id,
+    project: decision.project,
+    decision_text: decision.decision_text,
+    context: decision.context ?? null,
+    decision_number: decision.decision_number ?? null,
+    captured_at: decision.captured_at,
+    importance_score: decision.importance_score ?? 0.7,
+    tags: decision.tags ?? null
+  });
 }
 async function remoteCloseStale(client) {
   await post(client, "/capture/session/gc", {});
@@ -63787,6 +63922,23 @@ function formatLessons(lessons) {
   }
   return lines.join("\n").trimEnd();
 }
+function formatDecisions(decisions) {
+  if (decisions.length === 0) {
+    return "No decisions recorded for this project yet.";
+  }
+  const lines = [];
+  for (const d of decisions) {
+    const date5 = new Date(d.captured_at);
+    const dateStr = date5.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    const numLabel = d.decision_number != null ? `#${d.decision_number}` : "#?";
+    lines.push(`${numLabel} [${dateStr}] ${d.decision_text}`);
+    if (d.context) {
+      lines.push(`    Context: ${d.context}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
 function mergeWithRRF(ftsResults, vecResults, k = 60) {
   const scores = /* @__PURE__ */ new Map();
   const obsMap = /* @__PURE__ */ new Map();
@@ -63881,7 +64033,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.82" : "unknown"
+      version: true ? "0.8.83" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -63929,6 +64081,12 @@ function createContextManagerServer(storage2, options = {}) {
           20
         );
         const text = formatLessons(lessons);
+        return { content: [{ type: "text", text }] };
+      }
+      if (query.startsWith("decision:")) {
+        const decisionQuery = query.slice("decision:".length).trim() || void 0;
+        const decisions = await db.searchDecisions(normalizedProject ?? "/", decisionQuery, 20);
+        const text = formatDecisions(decisions);
         return { content: [{ type: "text", text }] };
       }
       const { tag, remainingQuery } = parseTagPrefix(query);
@@ -64426,6 +64584,25 @@ ${lines.join("\n")}` }]
       const since = days !== void 0 ? new Date(Date.now() - days * 24 * 60 * 60 * 1e3).toISOString() : void 0;
       const lessons = await db.getLessons(normalizedProject, query, lesson_type, limit ?? 20, since);
       const text = formatLessons(lessons);
+      return { content: [{ type: "text", text }] };
+    }
+  );
+  server.tool(
+    "context_decisions",
+    'List architectural decisions and approach choices made during prior sessions. Returns decisions in reverse chronological order with decision number, date, and decision text. Use to answer "what was decided about X?" without a full search.',
+    {
+      project: external_exports.string().optional().describe("Project path to scope the results. Omit to search all projects."),
+      query: external_exports.string().optional().describe("Keyword filter against decision text"),
+      limit: external_exports.number().int().min(1).max(50).default(20).optional().describe("Maximum results to return (default: 20, max: 50)")
+    },
+    async ({ project, query, limit }) => {
+      if (isProxy) {
+        return proxyToolCall("context_decisions", { project: np(project), query, limit }, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const normalizedProject = np(project) ?? "/";
+      const decisions = await db.searchDecisions(normalizedProject, query, limit ?? 20);
+      const text = formatDecisions(decisions);
       return { content: [{ type: "text", text }] };
     }
   );
@@ -65407,6 +65584,36 @@ async function startHttpServer(options = {}) {
       await reply.status(400).send({ error: msg });
     }
   });
+  fastify.post("/capture/decision", async (request, reply) => {
+    try {
+      const body = request.body;
+      const sessionId = strBound(body["session_id"], SESSION_ID_MAX, "session_id");
+      const project = strBound(body["project"], PROJECT_MAX, "project");
+      const decisionText = strBound(body["decision_text"], OBS_SUMMARY_MAX, "decision_text");
+      const context = typeof body["context"] === "string" && body["context"].length > 0 ? body["context"].substring(0, 1024) : null;
+      const decisionNumber = typeof body["decision_number"] === "number" ? Math.max(1, Math.floor(body["decision_number"])) : null;
+      const rawCapturedAt = body["captured_at"];
+      const capturedAt = typeof rawCapturedAt === "string" && !isNaN(Date.parse(rawCapturedAt)) ? rawCapturedAt : (/* @__PURE__ */ new Date()).toISOString();
+      const importanceScore = typeof body["importance_score"] === "number" ? Math.max(0, Math.min(1, body["importance_score"])) : 0.7;
+      const rawTags = body["tags"];
+      const tags = typeof rawTags === "string" && rawTags.trim().length > 0 ? rawTags.substring(0, 256) : null;
+      const normalizedProject = normalizePath(project, pathMap);
+      await storage2.saveDecision({
+        session_id: sessionId,
+        project: normalizedProject,
+        decision_text: decisionText,
+        context,
+        decision_number: decisionNumber,
+        captured_at: capturedAt,
+        importance_score: importanceScore,
+        tags
+      });
+      await reply.send({ status: "ok" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await reply.status(400).send({ error: msg });
+    }
+  });
   fastify.post("/capture/export", async (request, reply) => {
     try {
       const body = request.body;
@@ -65524,8 +65731,8 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.82")
-        return "0.8.82";
+      if ("0.8.83")
+        return "0.8.83";
       try {
         const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version)

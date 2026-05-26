@@ -28,12 +28,13 @@ import { validateStopInput } from '../../src/utils/validation.js';
 import { createDebugLogger } from '../../src/utils/logger.js';
 import { exportToAutoMemory } from '../../src/export/memory.js';
 import { estimateTokens } from '../../src/utils/sanitize.js';
-import type { Observation, ImportanceLevel } from '../../src/storage/interface.js';
+import type { Observation, ImportanceLevel, Decision } from '../../src/storage/interface.js';
 import * as fs from 'fs';
 import {
   remoteEndSession,
   remoteSaveObservation,
   remoteExportMemory,
+  remoteSaveDecision,
 } from '../../src/capture/remote-client.js';
 import { loadDotEnv } from '../../src/utils/env.js';
 import {
@@ -301,6 +302,92 @@ function extractConversationInsights(
   }
 }
 
+/**
+ * Decision language patterns. A sentence matching any of these likely records an
+ * architectural or approach decision made during the session.
+ */
+const DECISION_PATTERNS = [
+  /\bdecided?\s+to\b/i,
+  /\bwe\s+will\b/i,
+  /\bgoing\s+with\b/i,
+  /\bchosen?\s+approach\b/i,
+  /\bwon'?t\b.*\binstead\b/i,
+  /\b(?:use|using|chose|choosing|selected?|picked?)\s+\w+\s+(?:over|instead\s+of|rather\s+than)\b/i,
+  /\bapproach\s+is\b/i,
+  /\bsolution\s+is\b/i,
+];
+
+/**
+ * Extract decisions from pre-parsed transcript lines.
+ * Scans all assistant message blocks for decision-language patterns and returns
+ * a compact representation of each match. Deduplicates within the same session
+ * by comparing the first 80 chars of decision_text.
+ *
+ * @param lines - Raw JSONL transcript lines (already split)
+ * @param sessionId - Current session ID
+ * @param project - Project path
+ * @param getNextNum - Async getter for next sequential decision number
+ */
+async function extractDecisions(
+  lines: string[],
+  sessionId: string,
+  project: string,
+  getNextNum: () => Promise<number>
+): Promise<Decision[]> {
+  const decisions: Decision[] = [];
+  const seenPrefixes = new Set<string>();
+
+  for (const line of lines) {
+    try {
+      const msg = JSON.parse(line) as TranscriptMessage;
+      if (msg.type !== 'assistant' || msg.message?.role !== 'assistant') continue;
+
+      const text = extractTextFromTranscriptLine(msg);
+      if (!text || text.length < 50) continue;
+
+      const sentences = text.split(/(?<=[.!?])\s+/);
+      for (let i = 0; i < sentences.length; i++) {
+        const sentence = sentences[i];
+        if (!sentence) continue;
+        const matched = DECISION_PATTERNS.some(p => p.test(sentence));
+        if (!matched) continue;
+
+        const prev = sentences[i - 1];
+
+        // decision_text: only the matched sentence, capped at 300 chars
+        const raw = sentence.trim();
+        const decisionText = raw.length > 300 ? raw.substring(0, 300) : raw;
+
+        // Dedup: skip if same prefix already seen in this session
+        const prefix = decisionText.substring(0, 80);
+        if (seenPrefixes.has(prefix)) continue;
+        seenPrefixes.add(prefix);
+
+        // context: the sentence before the match (background only, not repeated in decision_text)
+        const contextSentence = prev && prev.trim().length > 10 ? prev.trim() : null;
+
+        const decisionNumber = await getNextNum();
+
+        decisions.push({
+          session_id: sessionId,
+          project,
+          decision_text: decisionText,
+          context: contextSentence,
+          decision_number: decisionNumber,
+          captured_at: new Date().toISOString(),
+          importance_score: 0.7,
+          tags: null,
+        });
+      }
+    } catch {
+      // Skip malformed lines
+    }
+  }
+
+  // Cap at 10 decisions per session
+  return decisions.slice(0, 10);
+}
+
 async function readStdin(): Promise<string> {
   return new Promise((resolve) => {
     let data = '';
@@ -417,6 +504,35 @@ async function main() {
         } catch (insightError) {
           console.error('[context-manager] Conversation insight extraction failed:', insightError);
         }
+
+        // Extract and forward decisions to the remote server
+        try {
+          // In remote mode we use a simple incrementing counter seeded from 1.
+          // We do not have a cheap way to query the remote's current decision count
+          // from the hook without an extra MCP call, so we start from 1 and let the
+          // server-side insert handle any numbering conflicts (duplicate decision_number
+          // is non-unique — it is informational only).
+          let nextNum = 1;
+          const decisions = await extractDecisions(
+            transcriptLines,
+            input.session_id,
+            input.cwd,
+            async () => nextNum++
+          );
+          for (const decision of decisions) {
+            try {
+              await remoteSaveDecision(client, decision);
+            } catch (err) {
+              console.error('[context-manager] Remote decision save failed:', err);
+            }
+          }
+          if (decisions.length > 0) {
+            debugLog('DECISIONS_REMOTE', { count: decisions.length });
+            console.error(`[context-manager] Sent ${decisions.length} decisions to server`);
+          }
+        } catch (decisionError) {
+          console.error('[context-manager] Decision extraction failed:', decisionError);
+        }
       }
 
       // End session on the remote server
@@ -476,6 +592,32 @@ async function main() {
       } catch (insightError) {
         debugLog('CONVERSATION_INSIGHT_ERROR', { error: String(insightError) });
         console.error('[context-manager] Conversation insight extraction failed:', insightError);
+      }
+    }
+
+    // Extract and save decisions from transcript
+    if (transcriptLines) {
+      try {
+        const decisions = await extractDecisions(
+          transcriptLines,
+          input.session_id,
+          input.cwd,
+          () => storage!.getNextDecisionNumber(input.cwd)
+        );
+        for (const decision of decisions) {
+          try {
+            await storage!.saveDecision(decision);
+          } catch (err) {
+            debugLog('DECISION_SAVE_ERROR', { error: String(err) });
+          }
+        }
+        if (decisions.length > 0) {
+          debugLog('DECISIONS_SAVED', { count: decisions.length });
+          console.error(`[context-manager] Saved ${decisions.length} decisions`);
+        }
+      } catch (decisionError) {
+        debugLog('DECISION_EXTRACT_ERROR', { error: String(decisionError) });
+        console.error('[context-manager] Decision extraction failed:', decisionError);
       }
     }
 

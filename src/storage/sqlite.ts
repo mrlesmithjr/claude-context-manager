@@ -17,6 +17,7 @@ import * as sqliteVec from 'sqlite-vec';
 import { sha256, l2DistanceToCosine } from '../utils/hash.js';
 import type {
   ContextStorage,
+  Decision,
   Observation,
   ImportanceLevel,
   RelationshipType,
@@ -282,6 +283,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add lesson_type column for error lesson classification
     this.migrateAddLessonType();
+
+    // Migration: add decisions table for first-class decision tracking
+    this.migrateAddDecisionsTable();
   }
 
   /**
@@ -2735,6 +2739,147 @@ export class SQLiteStorage implements ContextStorage {
 
     const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
     return rows.map(row => this.mapRow(row));
+  }
+
+  /**
+   * Migration: add decisions table for first-class decision tracking.
+   * Uses CREATE TABLE IF NOT EXISTS (idempotent on every startup).
+   * Also creates the FTS5 virtual table and the project index.
+   */
+  private migrateAddDecisionsTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        project TEXT NOT NULL,
+        decision_text TEXT NOT NULL,
+        context TEXT,
+        decision_number INTEGER,
+        captured_at TEXT NOT NULL,
+        importance_score REAL DEFAULT 0.7,
+        tags TEXT
+      )
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_decisions_project
+      ON decisions(project, captured_at DESC)
+    `);
+
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+        decision_text,
+        context,
+        content='decisions',
+        content_rowid='id'
+      )
+    `);
+
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_ai AFTER INSERT ON decisions BEGIN
+        INSERT INTO decisions_fts(rowid, decision_text, context)
+        VALUES (new.id, COALESCE(new.decision_text, ''), COALESCE(new.context, ''));
+      END
+    `);
+
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_ad AFTER DELETE ON decisions BEGIN
+        INSERT INTO decisions_fts(decisions_fts, rowid, decision_text, context)
+        VALUES('delete', old.id, COALESCE(old.decision_text, ''), COALESCE(old.context, ''));
+      END
+    `);
+
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS decisions_au AFTER UPDATE ON decisions BEGIN
+        INSERT INTO decisions_fts(decisions_fts, rowid, decision_text, context)
+        VALUES('delete', old.id, COALESCE(old.decision_text, ''), COALESCE(old.context, ''));
+        INSERT INTO decisions_fts(rowid, decision_text, context)
+        VALUES (new.id, COALESCE(new.decision_text, ''), COALESCE(new.context, ''));
+      END
+    `);
+  }
+
+  /**
+   * Save a decision and update the FTS5 index.
+   */
+  async saveDecision(decision: Decision): Promise<void> {
+    const info = this.db.prepare(`
+      INSERT INTO decisions (
+        session_id, project, decision_text, context,
+        decision_number, captured_at, importance_score, tags
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      decision.session_id,
+      decision.project,
+      decision.decision_text,
+      decision.context ?? null,
+      decision.decision_number ?? null,
+      decision.captured_at,
+      decision.importance_score ?? 0.7,
+      decision.tags ?? null
+    );
+
+    // FTS5 index is maintained automatically by the decisions_ai trigger.
+  }
+
+  /**
+   * Search decisions for a project. Without a query, returns recent decisions ordered
+   * by captured_at DESC. With a query, uses FTS5 to filter.
+   */
+  async searchDecisions(project: string, query?: string, limit: number = 20): Promise<Decision[]> {
+    const effectiveLimit = Math.max(1, Math.min(50, limit));
+
+    let rows: Array<Record<string, unknown>>;
+
+    if (query && query.trim().length > 0) {
+      // Escape FTS5 special characters using the same pattern as search()
+      const ftsQuery = query.trim().replace(/"/g, '""')
+        .split(/\s+/)
+        .filter(t => t.length > 0)
+        .map(t => `"${t}"`)
+        .join(' ');
+
+      rows = this.db.prepare(`
+        SELECT d.* FROM decisions d
+        JOIN decisions_fts f ON d.id = f.rowid
+        WHERE d.project LIKE ? || '%'
+          AND decisions_fts MATCH ?
+        ORDER BY d.captured_at DESC
+        LIMIT ?
+      `).all(project, ftsQuery, effectiveLimit) as Array<Record<string, unknown>>;
+    } else {
+      rows = this.db.prepare(`
+        SELECT * FROM decisions
+        WHERE project LIKE ? || '%'
+        ORDER BY captured_at DESC
+        LIMIT ?
+      `).all(project, effectiveLimit) as Array<Record<string, unknown>>;
+    }
+
+    return rows.map(row => ({
+      id: row['id'] as number,
+      session_id: row['session_id'] as string,
+      project: row['project'] as string,
+      decision_text: row['decision_text'] as string,
+      context: (row['context'] as string | null) ?? null,
+      decision_number: (row['decision_number'] as number | null) ?? null,
+      captured_at: row['captured_at'] as string,
+      importance_score: (row['importance_score'] as number) ?? 0.7,
+      tags: (row['tags'] as string | null) ?? null,
+    }));
+  }
+
+  /**
+   * Get the next sequential decision number for a project.
+   * Returns 1 when no decisions exist yet for the project.
+   */
+  async getNextDecisionNumber(project: string): Promise<number> {
+    const row = this.db.prepare(`
+      SELECT COALESCE(MAX(decision_number), 0) + 1 AS next_num
+      FROM decisions
+      WHERE project LIKE ? || '%'
+    `).get(project) as { next_num: number } | undefined;
+    return row?.next_num ?? 1;
   }
 
   close(): Promise<void> {

@@ -12,7 +12,7 @@
  * Node 18+ native fetch is required. All hooks already target node18+.
  */
 
-import type { Observation, UserPrompt } from '../storage/interface.js';
+import type { Decision, Observation, UserPrompt } from '../storage/interface.js';
 import { randomUUID } from 'crypto';
 
 export interface RemoteClient {
@@ -179,6 +179,26 @@ export async function remoteAddObservation(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Save a decision to the remote server's /capture/decision endpoint.
+ * Throws on error; caller catches and logs without blocking Claude Code.
+ */
+export async function remoteSaveDecision(
+  client: RemoteClient,
+  decision: Decision,
+): Promise<void> {
+  await post(client, '/capture/decision', {
+    session_id: decision.session_id,
+    project: decision.project,
+    decision_text: decision.decision_text,
+    context: decision.context ?? null,
+    decision_number: decision.decision_number ?? null,
+    captured_at: decision.captured_at,
+    importance_score: decision.importance_score ?? 0.7,
+    tags: decision.tags ?? null,
+  });
 }
 
 /**
