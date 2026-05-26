@@ -1,6 +1,6 @@
 {
   "name": "claude-context-manager",
-  "version": "0.8.61",
+  "version": "0.8.62",
   "description": "Persistent memory for Claude Code sessions",
   "type": "module",
   "main": "dist/cli.js",
@@ -26,7 +26,8 @@
     "cli": "node dist/cli.js",
     "import": "npx tsx scripts/import-transcripts.ts",
     "web": "node dist/web/server.js",
-    "web:dev": "npx tsx watch web/server/index.ts"
+    "web:dev": "npx tsx watch web/server/index.ts",
+    "dev": "nodemon --watch src --ext ts --exec \"npm run build && (launchctl list 2>/dev/null | grep -q 'com.mrlesmithjr.context-manager$' && make server-launchd-install || echo '[dev] Native server not running -- skipping restart. Rebuilt successfully.') && echo '[dev] Rebuilt. Restart Claude Code + /plugin update context-manager for hook changes to take effect.\""
   },
   "keywords": [
     "claude",
@@ -55,6 +56,7 @@
     "@types/node": "^20.10.0",
     "@vitest/coverage-v8": "^4.1.7",
     "esbuild": "^0.19.0",
+    "nodemon": "^3.1.0",
     "tailwindcss": "^3.4.19",
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",

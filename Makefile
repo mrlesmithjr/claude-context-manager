@@ -26,7 +26,7 @@ NODE_BIN         := $(shell which node)
 
 .PHONY: help build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
         server-build server-clean server-init server-start server-stop server-logs \
-        server-status server-env \
+        server-status server-env server-restart server-apply-env update \
         server-native-start server-native-stop server-native-status \
         server-launchd-install server-launchd-uninstall server-launchd-status \
         server-quickstart server-stop-native switch-to-docker switch-to-native \
@@ -68,9 +68,14 @@ help:
 	@echo ""
 	@echo "Server: shared"
 	@echo "  make server-status       Health check + deployment mode detection"
+	@echo "  make server-restart      Restart the active server (auto-detects mode)"
+	@echo "  make server-apply-env    Propagate .env changes to the running server"
 	@echo "  make server-env          Print remote mode env setup instructions"
 	@echo "  make switch-to-docker    Stop native, start Docker"
 	@echo "  make switch-to-native    Stop Docker, start native"
+	@echo ""
+	@echo "Development"
+	@echo "  make update              Pull, build, and restart server (then follow prompts)"
 	@echo ""
 	@echo "See docs/SETUP.md for a full setup walkthrough."
 
@@ -223,6 +228,132 @@ server-status:
 	elif [ "$$DOCKER_ON" -gt 0 ]; then \
 		echo "  [mode] docker"; \
 	fi
+
+# Restart the active server. Detects mode (launchd vs Docker) and restarts accordingly.
+# For launchd: runs server-launchd-install (regenerates plist, unloads/loads agent).
+# For Docker: stops and starts the compose stack.
+# Exits non-zero if no server is running or if both modes are active simultaneously.
+server-restart:
+	@NATIVE_ON=$$(launchctl list 2>/dev/null | grep -c "$(LAUNCHD_LABEL)$$"); \
+	DOCKER_ON=$$(docker ps --filter "name=context-manager" --format "{{.Names}}" 2>/dev/null | grep -c .); \
+	if [ "$$NATIVE_ON" -gt 0 ] && [ "$$DOCKER_ON" -gt 0 ]; then \
+		echo "ERROR: Both native (launchd) and Docker services appear active."; \
+		echo "  This is a conflict state. Run 'make server-status' to diagnose,"; \
+		echo "  then use 'make switch-to-docker' or 'make switch-to-native' to resolve."; \
+		exit 1; \
+	elif [ "$$NATIVE_ON" -gt 0 ]; then \
+		echo "[restart] Mode: native (launchd). Regenerating plist and reloading agent..."; \
+		$(MAKE) server-launchd-install; \
+		echo ""; \
+		echo "[restart] MCP server agent restarted."; \
+		echo "  Verify: make server-status"; \
+	elif [ "$$DOCKER_ON" -gt 0 ]; then \
+		echo "[restart] Mode: Docker. Stopping and starting compose stack..."; \
+		$(MAKE) server-stop; \
+		$(MAKE) server-start; \
+		echo ""; \
+		echo "[restart] Docker services restarted."; \
+		echo "  Verify: make server-status"; \
+	else \
+		echo "ERROR: No active server detected (neither launchd nor Docker)."; \
+		echo "  To start native:  make server-quickstart"; \
+		echo "  To start Docker:  make server-start"; \
+		exit 1; \
+	fi
+
+# Propagate ~/.claude-context/.env changes to the running server.
+#
+# Launchd agents read env vars from the plist, NOT from .env at runtime.
+# Editing .env alone has no effect on a running launchd agent.
+# This target regenerates the plist from the current .env and reloads the agent.
+#
+# Docker compose reads env vars from the shell environment at 'up' time.
+# This target re-sources .env and recreates the containers.
+#
+# For local SQLite mode (no server), .env changes take effect on the next
+# Claude Code tool call -- hooks re-read .env on every invocation.
+server-apply-env:
+	@if [ ! -f "$(SERVER_ENV)" ]; then \
+		echo "ERROR: $(SERVER_ENV) not found."; \
+		echo "  Run 'make server-init' to generate a token and create the file."; \
+		exit 1; \
+	fi
+	@NATIVE_ON=$$(launchctl list 2>/dev/null | grep -c "$(LAUNCHD_LABEL)$$"); \
+	DOCKER_ON=$$(docker ps --filter "name=context-manager" --format "{{.Names}}" 2>/dev/null | grep -c .); \
+	if [ "$$NATIVE_ON" -gt 0 ] && [ "$$DOCKER_ON" -gt 0 ]; then \
+		echo "ERROR: Both native (launchd) and Docker services appear active."; \
+		echo "  Run 'make server-status' to diagnose the conflict."; \
+		exit 1; \
+	elif [ "$$NATIVE_ON" -gt 0 ]; then \
+		echo "[apply-env] Mode: native (launchd). Regenerating plist from current .env..."; \
+		$(MAKE) server-launchd-install; \
+		WEB_ON=$$(launchctl list 2>/dev/null | grep -c "$(LAUNCHD_LABEL_WEB)"); \
+		if [ "$$WEB_ON" -gt 0 ]; then \
+			echo "[apply-env] Web agent is loaded. Regenerating web plist from current .env..."; \
+			$(MAKE) server-launchd-web-install; \
+		fi; \
+		echo ""; \
+		echo "[apply-env] Launchd agents updated with current .env values."; \
+		echo ""; \
+		echo "  Hooks pick up .env changes automatically on next tool call."; \
+		echo "  Server now has the updated configuration."; \
+	elif [ "$$DOCKER_ON" -gt 0 ]; then \
+		echo "[apply-env] Mode: Docker. Recreating containers with current .env values..."; \
+		set -a && . "$(SERVER_ENV)" && set +a && \
+		$(SERVER_COMPOSE) down && $(SERVER_COMPOSE) up -d; \
+		echo ""; \
+		echo "[apply-env] Docker containers restarted with current .env values."; \
+		echo ""; \
+		echo "  Hooks pick up .env changes automatically on next tool call."; \
+		echo "  Server now has the updated configuration."; \
+	else \
+		echo "[apply-env] Mode: local SQLite (no server running)."; \
+		echo "  .env changes take effect on the next Claude Code tool call."; \
+		echo "  No server restart needed."; \
+	fi
+	@if [ -f "$(SERVER_ENV)" ] && grep -q "CONTEXT_MANAGER_URL\|CONTEXT_MANAGER_TOKEN" "$(SERVER_ENV)" 2>/dev/null; then \
+		echo ""; \
+		echo "  NOTE: CONTEXT_MANAGER_URL or CONTEXT_MANAGER_TOKEN found in .env."; \
+		echo "  The MCP stdio server (Claude Code's MCP connection) reads these at"; \
+		echo "  startup. If MCP tool responses seem stale, restart Claude Code."; \
+	fi
+
+# Full update cycle: pull latest changes, rebuild, and restart the server if active.
+# After this completes, follow the manual steps printed at the end.
+update:
+	@echo "[update] Pulling latest changes..."
+	@PULL_OUT=$$(git pull 2>&1); PULL_EXIT=$$?; \
+	echo "$$PULL_OUT"; \
+	if [ "$$PULL_EXIT" -ne 0 ] && ! echo "$$PULL_OUT" | grep -q "Already up to date"; then \
+		echo "ERROR: git pull failed (exit $$PULL_EXIT). Resolve the issue and re-run make update."; \
+		exit 1; \
+	fi; \
+	if echo "$$PULL_OUT" | grep -q "Already up to date"; then \
+		echo "[update] Already up to date. Running build anyway (local changes may be present)."; \
+	fi
+	@echo ""
+	@echo "[update] Installing dependencies..."
+	npm install
+	@echo ""
+	@echo "[update] Building..."
+	npm run build
+	@echo ""
+	@NATIVE_ON=$$(launchctl list 2>/dev/null | grep -c "$(LAUNCHD_LABEL)$$"); \
+	DOCKER_ON=$$(docker ps --filter "name=context-manager" --format "{{.Names}}" 2>/dev/null | grep -c .); \
+	if [ "$$NATIVE_ON" -gt 0 ] || [ "$$DOCKER_ON" -gt 0 ]; then \
+		echo "[update] Server is active. Restarting..."; \
+		$(MAKE) server-restart; \
+	else \
+		echo "[update] No server running (local SQLite mode). Skipping server restart."; \
+	fi
+	@echo ""
+	@echo "================================================================"
+	@echo " Update complete."
+	@echo ""
+	@echo " Two manual steps remain:"
+	@echo "   1. Restart Claude Code  (Cmd+Q and reopen, or /exit in terminal mode)"
+	@echo "   2. /plugin update context-manager  (run inside Claude Code after restart)"
+	@echo "================================================================"
 
 # --- Native server (macOS recommended) ---
 #
