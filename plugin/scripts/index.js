@@ -1516,7 +1516,7 @@ ${storedOutput}`;
         return sessionId;
       }
       async addManualObservation(params) {
-        const { text: rawText, project, sessionId, importanceScore, tags } = params;
+        const { text: rawText, project, sessionId, importanceScore, tags, client } = params;
         const text = rawText.trim();
         if (!text)
           return void 0;
@@ -1530,6 +1530,7 @@ ${storedOutput}`;
         }
         const tokenEstimate = Math.ceil(text.length / 4);
         const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+        const toolName = client ? `Manual:${client}` : "Manual";
         const contentHash = sha256(`${text}
 []
 `);
@@ -1545,10 +1546,11 @@ ${storedOutput}`;
         session_id, project, tool_name, summary,
         files_touched, metadata, token_estimate,
         importance, importance_score, tags, content_hash, created_at
-      ) VALUES (?, ?, 'Manual', ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
     `).run(
           sessionId,
           project,
+          toolName,
           text,
           tokenEstimate,
           importance,
@@ -63375,7 +63377,8 @@ async function remoteAddObservation(client, params) {
       text: params.text,
       project: params.project,
       importance_score: params.importanceScore,
-      tags: params.tags
+      tags: params.tags,
+      client: params.sourceClient
     });
     return typeof data.session_id === "string" ? data.session_id : void 0;
   } catch {
@@ -63611,7 +63614,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.77" : "unknown"
+      version: true ? "0.8.78" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -63850,9 +63853,10 @@ ${lines.join("\n")}`
       text: external_exports.string().min(1).describe("The observation content to store"),
       project: external_exports.string().optional().describe("Project path to scope the observation. Omit to use the server default project."),
       importance: external_exports.union([external_exports.string(), external_exports.number()]).optional().describe('Importance level: "high" (0.80), "medium" (0.60, default), "low" (0.40), or a float 0.0\u20131.0'),
-      tags: external_exports.string().optional().describe("Comma-separated domain tags (auth, database, testing, infra, config, frontend, api, git, build, deps). If omitted, no tags are assigned.")
+      tags: external_exports.string().optional().describe("Comma-separated domain tags (auth, database, testing, infra, config, frontend, api, git, build, deps). If omitted, no tags are assigned."),
+      client: external_exports.string().optional().describe('Identifier for the calling client (e.g. "Desktop", "Script"). Stored as tool_name Manual:ClientName for filtering. Omit for generic Manual writes.')
     },
-    async ({ text, project, importance, tags }) => {
+    async ({ text, project, importance, tags, client }) => {
       const trimmedText = text.trim();
       if (!trimmedText) {
         return {
@@ -63926,6 +63930,8 @@ Note: project path '${resolvedProject}' does not exist on disk. Observations wil
           tagNote = ` [tags rejected (not in allowed set): ${rejected.join(", ")}]`;
         }
       }
+      const sanitizedClient = client ? client.replace(/[\x00-\x1f]/g, "").substring(0, 50) || void 0 : void 0;
+      const clientNote = sanitizedClient ? `, client: ${sanitizedClient}` : "";
       if (isProxy) {
         const { remoteAddObservation: remoteAddObservation2 } = await Promise.resolve().then(() => (init_remote_client(), remote_client_exports));
         const remoteClient = { url: remoteUrl, token: remoteToken };
@@ -63933,14 +63939,15 @@ Note: project path '${resolvedProject}' does not exist on disk. Observations wil
           text: trimmedText,
           project: resolvedProject,
           importanceScore,
-          tags: resolvedTags
+          tags: resolvedTags,
+          sourceClient: sanitizedClient
         });
         const preview2 = trimmedText.length > 60 ? trimmedText.substring(0, 60) + "..." : trimmedText;
         return {
           content: [
             {
               type: "text",
-              text: `Saved: "${preview2}" (importance: ${importanceLabel}, session: ${sessionId2 ?? "unknown"})${importanceWarning}${tagNote}${pathWarning}`
+              text: `Saved: "${preview2}" (importance: ${importanceLabel}, session: ${sessionId2 ?? "unknown"}${clientNote})${importanceWarning}${tagNote}${pathWarning}`
             }
           ]
         };
@@ -63952,7 +63959,8 @@ Note: project path '${resolvedProject}' does not exist on disk. Observations wil
         project: resolvedProject,
         sessionId,
         importanceScore,
-        tags: resolvedTags
+        tags: resolvedTags,
+        client: sanitizedClient
       });
       const preview = trimmedText.length > 60 ? trimmedText.substring(0, 60) + "..." : trimmedText;
       const dedupNote = obsId === void 0 ? " (duplicate, not stored)" : "";
@@ -63960,7 +63968,7 @@ Note: project path '${resolvedProject}' does not exist on disk. Observations wil
         content: [
           {
             type: "text",
-            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${importanceWarning}${dedupNote}${tagNote}${pathWarning}`
+            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId}${clientNote})${importanceWarning}${dedupNote}${tagNote}${pathWarning}`
           }
         ]
       };
@@ -64940,6 +64948,8 @@ async function startHttpServer(options = {}) {
       const importanceScore = typeof rawScore === "number" ? Math.max(0, Math.min(1, rawScore)) : 0.6;
       const rawTags = body["tags"];
       const tags = typeof rawTags === "string" && rawTags.trim().length > 0 ? rawTags.substring(0, 256) : void 0;
+      const rawClient = body["client"];
+      const client = typeof rawClient === "string" && rawClient.trim().length > 0 ? rawClient.trim().substring(0, 50) : void 0;
       const normalizedProject = normalizePath(project, pathMap);
       const sessionId = await storage2.getOrCreateManualSession(normalizedProject);
       const obsId = await storage2.addManualObservation({
@@ -64947,7 +64957,8 @@ async function startHttpServer(options = {}) {
         project: normalizedProject,
         sessionId,
         importanceScore,
-        tags
+        tags,
+        client
       });
       await reply.send({ status: "ok", session_id: sessionId, stored: obsId !== void 0 });
     } catch (err) {
@@ -65072,8 +65083,8 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.77")
-        return "0.8.77";
+      if ("0.8.78")
+        return "0.8.78";
       try {
         const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version)

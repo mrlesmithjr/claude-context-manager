@@ -164,6 +164,7 @@ export async function remoteAddObservation(
     project: string;
     importanceScore: number;
     tags: string | undefined;
+    sourceClient?: string;
   },
 ): Promise<string | undefined> {
   try {
@@ -172,6 +173,7 @@ export async function remoteAddObservation(
       project: params.project,
       importance_score: params.importanceScore,
       tags: params.tags,
+      client: params.sourceClient,
     })) as Record<string, unknown>;
     return typeof data.session_id === 'string' ? data.session_id : undefined;
   } catch {

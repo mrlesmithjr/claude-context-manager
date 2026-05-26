@@ -646,8 +646,12 @@ export function createContextManagerServer(
         .string()
         .optional()
         .describe('Comma-separated domain tags (auth, database, testing, infra, config, frontend, api, git, build, deps). If omitted, no tags are assigned.'),
+      client: z
+        .string()
+        .optional()
+        .describe('Identifier for the calling client (e.g. "Desktop", "Script"). Stored as tool_name Manual:ClientName for filtering. Omit for generic Manual writes.'),
     },
-    async ({ text, project, importance, tags }) => {
+    async ({ text, project, importance, tags, client }) => {
       // Fix #81: Reject whitespace-only text
       const trimmedText = text.trim();
       if (!trimmedText) {
@@ -728,6 +732,14 @@ export function createContextManagerServer(
         }
       }
 
+      // Sanitize client: strip control characters and cap length to match the server's guard.
+      // Prevents newline injection into tool_name and keeps both local and proxy paths consistent.
+      const sanitizedClient = client
+        ? (client.replace(/[\x00-\x1f]/g, '').substring(0, 50) || undefined)
+        : undefined;
+
+      const clientNote = sanitizedClient ? `, client: ${sanitizedClient}` : '';
+
       if (isProxy) {
         // Forward to the remote server's /capture/add endpoint
         const { remoteAddObservation } = await import('../capture/remote-client.js');
@@ -737,6 +749,7 @@ export function createContextManagerServer(
           project: resolvedProject,
           importanceScore,
           tags: resolvedTags,
+          sourceClient: sanitizedClient,
         });
 
         const preview = trimmedText.length > 60 ? trimmedText.substring(0, 60) + '...' : trimmedText;
@@ -744,7 +757,7 @@ export function createContextManagerServer(
           content: [
             {
               type: 'text' as const,
-              text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId ?? 'unknown'})${importanceWarning}${tagNote}${pathWarning}`,
+              text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId ?? 'unknown'}${clientNote})${importanceWarning}${tagNote}${pathWarning}`,
             },
           ],
         };
@@ -758,6 +771,7 @@ export function createContextManagerServer(
         sessionId,
         importanceScore,
         tags: resolvedTags,
+        client: sanitizedClient,
       });
 
       const preview = trimmedText.length > 60 ? trimmedText.substring(0, 60) + '...' : trimmedText;
@@ -766,7 +780,7 @@ export function createContextManagerServer(
         content: [
           {
             type: 'text' as const,
-            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId})${importanceWarning}${dedupNote}${tagNote}${pathWarning}`,
+            text: `Saved: "${preview}" (importance: ${importanceLabel}, session: ${sessionId}${clientNote})${importanceWarning}${dedupNote}${tagNote}${pathWarning}`,
           },
         ],
       };

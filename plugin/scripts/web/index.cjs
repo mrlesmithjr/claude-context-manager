@@ -48626,7 +48626,7 @@ ${storedOutput}`;
     return sessionId;
   }
   async addManualObservation(params) {
-    const { text: rawText, project, sessionId, importanceScore, tags } = params;
+    const { text: rawText, project, sessionId, importanceScore, tags, client } = params;
     const text = rawText.trim();
     if (!text)
       return void 0;
@@ -48640,6 +48640,7 @@ ${storedOutput}`;
     }
     const tokenEstimate = Math.ceil(text.length / 4);
     const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+    const toolName = client ? `Manual:${client}` : "Manual";
     const contentHash = sha256(`${text}
 []
 `);
@@ -48655,10 +48656,11 @@ ${storedOutput}`;
         session_id, project, tool_name, summary,
         files_touched, metadata, token_estimate,
         importance, importance_score, tags, content_hash, created_at
-      ) VALUES (?, ?, 'Manual', ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
     `).run(
       sessionId,
       project,
+      toolName,
       text,
       tokenEstimate,
       importance,
@@ -49462,8 +49464,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.77")
-    return "0.8.77";
+  if ("0.8.78")
+    return "0.8.78";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

@@ -537,6 +537,12 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           ? rawTags.substring(0, 256)
           : undefined;
 
+      const rawClient = body['client'];
+      const client =
+        typeof rawClient === 'string' && rawClient.trim().length > 0
+          ? rawClient.trim().substring(0, 50)
+          : undefined;
+
       const normalizedProject = normalizePath(project, pathMap);
       const sessionId = await storage.getOrCreateManualSession(normalizedProject);
       const obsId = await storage.addManualObservation({
@@ -545,6 +551,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         sessionId,
         importanceScore,
         tags,
+        client,
       });
 
       await reply.send({ status: 'ok', session_id: sessionId, stored: obsId !== undefined });

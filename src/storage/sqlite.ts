@@ -2012,8 +2012,9 @@ export class SQLiteStorage implements ContextStorage {
     sessionId: string;
     importanceScore: number;
     tags: string | undefined;
+    client?: string;
   }): Promise<number | undefined> {
-    const { text: rawText, project, sessionId, importanceScore, tags } = params;
+    const { text: rawText, project, sessionId, importanceScore, tags, client } = params;
     // Defensive trim — call sites (MCP tool, HTTP handler) already validate, but guard here
     // in case addManualObservation is called directly from tests or future integrations.
     const text = rawText.trim();
@@ -2032,6 +2033,9 @@ export class SQLiteStorage implements ContextStorage {
     const tokenEstimate = Math.ceil(text.length / 4);
     const createdAt = new Date().toISOString();
 
+    // Build tool_name: 'Manual' when no client, 'Manual:ClientName' when client is provided.
+    const toolName = client ? `Manual:${client}` : 'Manual';
+
     // SHA256 dedup — skip if identical text already stored in this project
     const contentHash = sha256(`${text}\n[]\n`);
 
@@ -2049,10 +2053,11 @@ export class SQLiteStorage implements ContextStorage {
         session_id, project, tool_name, summary,
         files_touched, metadata, token_estimate,
         importance, importance_score, tags, content_hash, created_at
-      ) VALUES (?, ?, 'Manual', ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
     `).run(
       sessionId,
       project,
+      toolName,
       text,
       tokenEstimate,
       importance,

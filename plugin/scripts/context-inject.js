@@ -1458,7 +1458,7 @@ ${storedOutput}`;
     return sessionId;
   }
   async addManualObservation(params) {
-    const { text: rawText, project, sessionId, importanceScore, tags } = params;
+    const { text: rawText, project, sessionId, importanceScore, tags, client } = params;
     const text = rawText.trim();
     if (!text)
       return void 0;
@@ -1472,6 +1472,7 @@ ${storedOutput}`;
     }
     const tokenEstimate = Math.ceil(text.length / 4);
     const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+    const toolName = client ? `Manual:${client}` : "Manual";
     const contentHash = sha256(`${text}
 []
 `);
@@ -1487,10 +1488,11 @@ ${storedOutput}`;
         session_id, project, tool_name, summary,
         files_touched, metadata, token_estimate,
         importance, importance_score, tags, content_hash, created_at
-      ) VALUES (?, ?, 'Manual', ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, '[]', '{}', ?, ?, ?, ?, ?, ?)
     `).run(
       sessionId,
       project,
+      toolName,
       text,
       tokenEstimate,
       importance,
@@ -2082,11 +2084,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.77") {
+    if (installedVersion !== "0.8.78") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.77"}
+   Source:    v${"0.8.78"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2166,7 +2168,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.77"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.78"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats.");
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -2209,7 +2211,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.77"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.78"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
