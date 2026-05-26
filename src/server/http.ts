@@ -736,23 +736,31 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
   const abortController = new AbortController();
 
   // Graceful shutdown on SIGINT / SIGTERM.
-  // Signals the background embed loop to stop, waits up to 3s for it to drain,
-  // then closes Fastify and SQLite. This prevents the C++ mutex crash that occurs
-  // when storage.close() races with an in-progress saveEmbedding() call.
+  // Order matters:
+  //   1. Abort the embed loop so it exits after the current ONNX batch.
+  //   2. Wait for the loop to fully resolve (up to 10s — MiniLM batches are
+  //      ~50ms, so this is generous, but ensures ONNX is idle before step 3).
+  //   3. Dispose the ONNX pipeline to release its thread pool. Without this,
+  //      process.exit() triggers V8 teardown while ONNX worker threads are
+  //      still alive, causing: libc++abi: mutex lock failed: Invalid argument
+  //      (issue #114).
+  //   4. Close Fastify, then SQLite.
+  //   5. process.exit(0).
   let embedTask: Promise<void> | undefined;
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.error('[context-manager-http] Shutting down...');
-    abortController.abort(); // Signal background embed to stop
-    // Give the loop up to 3 seconds to finish its current save and exit cleanly
+    abortController.abort();
     if (embedTask) {
       await Promise.race([
         embedTask.catch(() => {}),
-        new Promise(resolve => setTimeout(resolve, 3000)),
+        new Promise(resolve => setTimeout(resolve, 10000)),
       ]);
     }
+    // Dispose ONNX pipeline to join its thread pool threads before V8 teardown.
+    await getEmbeddingService().dispose();
     await fastify.close();
     await storage.close();
     process.exit(0);

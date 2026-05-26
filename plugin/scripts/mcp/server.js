@@ -25074,6 +25074,23 @@ var EmbeddingService = class {
     const nested = output.tolist();
     return nested.map((arr) => new Float32Array(arr));
   }
+  /**
+   * Dispose the loaded ONNX pipeline and release its thread pool.
+   * Must be called before process.exit() to avoid the libc++ mutex crash
+   * that occurs when V8 teardown races against ONNX Runtime worker threads.
+   * Safe to call when no pipeline is loaded (no-op).
+   */
+  async dispose() {
+    if (!this.pipeline)
+      return;
+    const p = this.pipeline;
+    try {
+      await p.dispose?.();
+    } catch {
+    }
+    this.pipeline = null;
+    this.status = "not-loaded";
+  }
 };
 var instance = null;
 function getEmbeddingService() {
@@ -34544,7 +34561,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.93" : "unknown"
+      version: true ? "0.8.94" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."

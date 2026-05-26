@@ -212,6 +212,24 @@ export class EmbeddingService {
     const nested = output.tolist();
     return nested.map((arr: number[]) => new Float32Array(arr));
   }
+
+  /**
+   * Dispose the loaded ONNX pipeline and release its thread pool.
+   * Must be called before process.exit() to avoid the libc++ mutex crash
+   * that occurs when V8 teardown races against ONNX Runtime worker threads.
+   * Safe to call when no pipeline is loaded (no-op).
+   */
+  async dispose(): Promise<void> {
+    if (!this.pipeline) return;
+    const p = this.pipeline as unknown as { dispose?: () => Promise<void> };
+    try {
+      await p.dispose?.();
+    } catch {
+      // Disposal errors are non-fatal during shutdown
+    }
+    this.pipeline = null;
+    this.status = 'not-loaded';
+  }
 }
 
 // Singleton instance for the MCP server process

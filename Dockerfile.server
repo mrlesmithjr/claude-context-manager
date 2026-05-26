@@ -30,7 +30,10 @@ WORKDIR /app
 # Install all dependencies (including devDependencies for build tools).
 # Layer-cached until package-lock.json changes.
 COPY package.json package-lock.json ./
-RUN npm ci
+# --ignore-scripts skips the `prepare` lifecycle hook (install-hooks.sh installs
+# a git pre-push hook — meaningless in Docker where there is no .git directory).
+# npm rebuild then recompiles only the native modules needed at runtime.
+RUN npm ci --ignore-scripts && npm rebuild better-sqlite3 sqlite-vec
 
 # Copy source files needed for compilation
 COPY tsconfig.json ./
