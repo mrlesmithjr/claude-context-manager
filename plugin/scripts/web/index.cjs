@@ -47375,6 +47375,7 @@ var SQLiteStorage = class {
     this.migrateAddLastCheckpointAt();
     this.migrateAddSessionSource();
     this.migrateTagsToJson();
+    this.migrateAddLessonType();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -47445,6 +47446,7 @@ var SQLiteStorage = class {
       exported_at: row.exported_at || void 0,
       tags: row.tags ? row.tags.startsWith("[") ? JSON.parse(row.tags) : row.tags.split(",").filter(Boolean) : void 0,
       content_hash: row.content_hash || void 0,
+      lesson_type: row.lesson_type ?? null,
       created_at: row.created_at
     };
   }
@@ -47505,8 +47507,8 @@ ${storedOutput}`;
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tagsValue = observation.tags && observation.tags.length > 0 ? JSON.stringify(observation.tags) : null;
     const info = stmt.run(
@@ -47522,6 +47524,7 @@ ${storedOutput}`;
       observation.importance_score ?? 0.5,
       tagsValue,
       contentHash,
+      observation.lesson_type ?? null,
       observation.created_at
     );
     const insertedId = Number(info.lastInsertRowid);
@@ -48626,6 +48629,22 @@ ${storedOutput}`;
     migrate();
     console.error(`[context-manager] Migrated ${rows.length} observations to JSON tags format`);
   }
+  /**
+   * Migration: add lesson_type column for error lesson classification.
+   * lesson_type stores: 'error' | 'build_failure' | 'test_failure' | 'permission_denied' | NULL
+   */
+  migrateAddLessonType() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("lesson_type")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN lesson_type TEXT`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_lesson_type
+      ON observations(project, lesson_type, created_at DESC)
+      WHERE lesson_type IS NOT NULL
+    `);
+  }
   async getOrCreateManualSession(project) {
     const existing = this.db.prepare(`
       SELECT id, status FROM sessions
@@ -49116,6 +49135,54 @@ ${storedOutput}`;
     const after = afterRows.map((row) => this.mapRow(row));
     return Promise.resolve({ before, target, after });
   }
+  async getLessons(project, query, lessonType, limit = 20, since) {
+    const effectiveLimit = Math.max(1, Math.min(50, limit));
+    let sql;
+    const params = [];
+    if (project) {
+      sql = `
+        SELECT * FROM observations
+        WHERE project LIKE ? || '%'
+          AND lesson_type IS NOT NULL
+          AND (? IS NULL OR lesson_type = ?)
+          AND (? IS NULL OR summary LIKE '%' || ? || '%')
+          AND (? IS NULL OR created_at >= ?)
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params.push(
+        project,
+        lessonType ?? null,
+        lessonType ?? null,
+        query ?? null,
+        query ?? null,
+        since ?? null,
+        since ?? null,
+        effectiveLimit
+      );
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE lesson_type IS NOT NULL
+          AND (? IS NULL OR lesson_type = ?)
+          AND (? IS NULL OR summary LIKE '%' || ? || '%')
+          AND (? IS NULL OR created_at >= ?)
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params.push(
+        lessonType ?? null,
+        lessonType ?? null,
+        query ?? null,
+        query ?? null,
+        since ?? null,
+        since ?? null,
+        effectiveLimit
+      );
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -49553,8 +49620,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.81")
-    return "0.8.81";
+  if ("0.8.82")
+    return "0.8.82";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

@@ -207,6 +207,7 @@ var SQLiteStorage = class {
     this.migrateAddLastCheckpointAt();
     this.migrateAddSessionSource();
     this.migrateTagsToJson();
+    this.migrateAddLessonType();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -277,6 +278,7 @@ var SQLiteStorage = class {
       exported_at: row.exported_at || void 0,
       tags: row.tags ? row.tags.startsWith("[") ? JSON.parse(row.tags) : row.tags.split(",").filter(Boolean) : void 0,
       content_hash: row.content_hash || void 0,
+      lesson_type: row.lesson_type ?? null,
       created_at: row.created_at
     };
   }
@@ -337,8 +339,8 @@ ${storedOutput}`;
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tagsValue = observation.tags && observation.tags.length > 0 ? JSON.stringify(observation.tags) : null;
     const info = stmt.run(
@@ -354,6 +356,7 @@ ${storedOutput}`;
       observation.importance_score ?? 0.5,
       tagsValue,
       contentHash,
+      observation.lesson_type ?? null,
       observation.created_at
     );
     const insertedId = Number(info.lastInsertRowid);
@@ -1458,6 +1461,22 @@ ${storedOutput}`;
     migrate();
     console.error(`[context-manager] Migrated ${rows.length} observations to JSON tags format`);
   }
+  /**
+   * Migration: add lesson_type column for error lesson classification.
+   * lesson_type stores: 'error' | 'build_failure' | 'test_failure' | 'permission_denied' | NULL
+   */
+  migrateAddLessonType() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("lesson_type")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN lesson_type TEXT`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_lesson_type
+      ON observations(project, lesson_type, created_at DESC)
+      WHERE lesson_type IS NOT NULL
+    `);
+  }
   async getOrCreateManualSession(project) {
     const existing = this.db.prepare(`
       SELECT id, status FROM sessions
@@ -1947,6 +1966,54 @@ ${storedOutput}`;
     `).all(sessionId, capturedAt, capturedAt, id, window);
     const after = afterRows.map((row) => this.mapRow(row));
     return Promise.resolve({ before, target, after });
+  }
+  async getLessons(project, query, lessonType, limit = 20, since) {
+    const effectiveLimit = Math.max(1, Math.min(50, limit));
+    let sql;
+    const params = [];
+    if (project) {
+      sql = `
+        SELECT * FROM observations
+        WHERE project LIKE ? || '%'
+          AND lesson_type IS NOT NULL
+          AND (? IS NULL OR lesson_type = ?)
+          AND (? IS NULL OR summary LIKE '%' || ? || '%')
+          AND (? IS NULL OR created_at >= ?)
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params.push(
+        project,
+        lessonType ?? null,
+        lessonType ?? null,
+        query ?? null,
+        query ?? null,
+        since ?? null,
+        since ?? null,
+        effectiveLimit
+      );
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE lesson_type IS NOT NULL
+          AND (? IS NULL OR lesson_type = ?)
+          AND (? IS NULL OR summary LIKE '%' || ? || '%')
+          AND (? IS NULL OR created_at >= ?)
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params.push(
+        lessonType ?? null,
+        lessonType ?? null,
+        query ?? null,
+        query ?? null,
+        since ?? null,
+        since ?? null,
+        effectiveLimit
+      );
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
   }
   close() {
     this.db.close();
@@ -2535,6 +2602,39 @@ function isNearNoOpEdit(input) {
     return true;
   return addedLines.every((l) => /^(\/\/|#|\/\*|\*|\*\/)/.test(l));
 }
+var ACTION_TOOLS = /* @__PURE__ */ new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
+function parseExitCode(toolResponse) {
+  const match = toolResponse.match(/exit\s+code:\s*(\d+)/i);
+  if (match?.[1]) {
+    const code = parseInt(match[1], 10);
+    return isNaN(code) ? null : code;
+  }
+  return null;
+}
+function detectLessonType(toolName, toolResponse) {
+  if (toolName === "Bash") {
+    const exitCode = parseExitCode(toolResponse);
+    if (exitCode !== null && exitCode !== 0) {
+      if (exitCode === 126 || exitCode === 127)
+        return "permission_denied";
+      if (toolResponse.includes("npm ERR!") || toolResponse.includes("error TS") || toolResponse.includes("build failed") || toolResponse.includes("FAILED"))
+        return "build_failure";
+      if (toolResponse.includes("FAIL ") || toolResponse.includes("\u25CF ") || toolResponse.includes("AssertionError") || toolResponse.includes("test failed"))
+        return "test_failure";
+      return "error";
+    }
+  }
+  if (ACTION_TOOLS.has(toolName)) {
+    if (toolResponse.includes("Error:") || toolResponse.includes("error TS") || toolResponse.includes("npm ERR!") || toolResponse.includes("FAILED")) {
+      if (toolResponse.includes("error TS") || toolResponse.includes("build failed"))
+        return "build_failure";
+      if (toolResponse.includes("FAIL ") || toolResponse.includes("AssertionError"))
+        return "test_failure";
+      return "error";
+    }
+  }
+  return null;
+}
 var TAG_FILE_RULES = [
   {
     tag: "auth",
@@ -2834,7 +2934,7 @@ function processToolCapture(capture) {
   const contentToEstimate = `${summary}
 ${extracted.stored_output}`;
   const tokenEstimate = estimateTokens(contentToEstimate);
-  const { importance, importance_score } = calculateImportance(
+  let { importance, importance_score } = calculateImportance(
     capture.tool_name,
     capture.tool_input,
     sanitizedResponse,
@@ -2846,8 +2946,18 @@ ${extracted.stored_output}`;
   if (capture.tool_name.startsWith("mcp__") && importance_score < MCP_SUMMARY_SCORE_THRESHOLD && summary.length > MCP_SUMMARY_TRUNCATE_CHARS) {
     summary = summary.substring(0, MCP_SUMMARY_TRUNCATE_CHARS) + "...";
   }
+  const lessonType = detectLessonType(capture.tool_name, sanitizedResponse);
+  if (lessonType !== null && importance_score < 0.85) {
+    importance_score = 0.85;
+    importance = "high";
+  }
   const command = capture.tool_input && typeof capture.tool_input === "object" ? capture.tool_input.command : void 0;
-  const tags = inferTags(capture.tool_name, filesTouched, command);
+  const inferredTags = inferTags(capture.tool_name, filesTouched, command);
+  const tagsSet = new Set(inferredTags);
+  if (lessonType !== null) {
+    tagsSet.add("error");
+  }
+  const tags = [...tagsSet];
   const sanitizedToolInput = capture.tool_input ? { ...capture.tool_input } : void 0;
   if (sanitizedToolInput) {
     if (capture.tool_name === "Edit" || capture.tool_name === "Write") {
@@ -2872,6 +2982,7 @@ ${extracted.stored_output}`;
     importance,
     importance_score,
     tags: tags.length > 0 ? tags : void 0,
+    lesson_type: lessonType ?? void 0,
     created_at: (/* @__PURE__ */ new Date()).toISOString()
   };
 }

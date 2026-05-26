@@ -279,6 +279,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: convert comma-separated tags to JSON array format for json_each compatibility
     this.migrateTagsToJson();
+
+    // Migration: add lesson_type column for error lesson classification
+    this.migrateAddLessonType();
   }
 
   /**
@@ -364,6 +367,7 @@ export class SQLiteStorage implements ContextStorage {
           : (row.tags as string).split(',').filter(Boolean)
       ) : undefined,
       content_hash: (row.content_hash as string) || undefined,
+      lesson_type: (row.lesson_type as string | null) ?? null,
       created_at: row.created_at as string,
     };
   }
@@ -454,8 +458,8 @@ export class SQLiteStorage implements ContextStorage {
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const tagsValue = observation.tags && observation.tags.length > 0
@@ -475,6 +479,7 @@ export class SQLiteStorage implements ContextStorage {
       observation.importance_score ?? 0.5,
       tagsValue,
       contentHash,
+      observation.lesson_type ?? null,
       observation.created_at
     );
 
@@ -2023,6 +2028,28 @@ export class SQLiteStorage implements ContextStorage {
     console.error(`[context-manager] Migrated ${rows.length} observations to JSON tags format`);
   }
 
+  /**
+   * Migration: add lesson_type column for error lesson classification.
+   * lesson_type stores: 'error' | 'build_failure' | 'test_failure' | 'permission_denied' | NULL
+   */
+  private migrateAddLessonType(): void {
+    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('lesson_type')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN lesson_type TEXT`);
+    }
+    // Always ensure index exists — idempotent via IF NOT EXISTS.
+    // Running this outside the column guard ensures the index is created even when
+    // the column was added in a previous run but the index was never created
+    // (e.g., a partial migration or a DB migrated before this index was introduced).
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_lesson_type
+      ON observations(project, lesson_type, created_at DESC)
+      WHERE lesson_type IS NOT NULL
+    `);
+  }
+
   async getOrCreateManualSession(project: string): Promise<string> {
     // Look for any manual session for this project started today — most recent first.
     // Drop status='active' constraint so stale GC cannot fragment rapid consecutive writes.
@@ -2656,6 +2683,58 @@ export class SQLiteStorage implements ContextStorage {
     const after = afterRows.map(row => this.mapRow(row));
 
     return Promise.resolve({ before, target, after });
+  }
+
+  async getLessons(
+    project?: string,
+    query?: string,
+    lessonType?: string,
+    limit: number = 20,
+    since?: string
+  ): Promise<Observation[]> {
+    const effectiveLimit = Math.max(1, Math.min(50, limit));
+
+    let sql: string;
+    const params: unknown[] = [];
+
+    if (project) {
+      sql = `
+        SELECT * FROM observations
+        WHERE project LIKE ? || '%'
+          AND lesson_type IS NOT NULL
+          AND (? IS NULL OR lesson_type = ?)
+          AND (? IS NULL OR summary LIKE '%' || ? || '%')
+          AND (? IS NULL OR created_at >= ?)
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params.push(
+        project,
+        lessonType ?? null, lessonType ?? null,
+        query ?? null, query ?? null,
+        since ?? null, since ?? null,
+        effectiveLimit
+      );
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE lesson_type IS NOT NULL
+          AND (? IS NULL OR lesson_type = ?)
+          AND (? IS NULL OR summary LIKE '%' || ? || '%')
+          AND (? IS NULL OR created_at >= ?)
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params.push(
+        lessonType ?? null, lessonType ?? null,
+        query ?? null, query ?? null,
+        since ?? null, since ?? null,
+        effectiveLimit
+      );
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
   }
 
   close(): Promise<void> {

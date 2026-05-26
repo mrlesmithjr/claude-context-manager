@@ -60478,6 +60478,7 @@ var ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
   "git",
   "build",
   "deps",
+  "error",
   // Personal ops tags
   "home",
   "lawn",
@@ -60604,6 +60605,24 @@ function formatStats(stats, project, vectorStats, sessionEmbeddingStats) {
   }
   return lines.join("\n");
 }
+function formatLessons(lessons) {
+  if (lessons.length === 0) {
+    return "No lessons found for this project.";
+  }
+  const lines = [];
+  for (const obs of lessons) {
+    const date5 = new Date(obs.created_at);
+    const datePart = date5.toISOString().substring(0, 10);
+    const timePart = date5.toISOString().substring(11, 16);
+    const lessonLabel = obs.lesson_type ?? "error";
+    const shortSessionId = obs.session_id.substring(0, 6);
+    lines.push(`[${datePart} ${timePart}] ${lessonLabel} | ${obs.tool_name}`);
+    lines.push(obs.summary);
+    lines.push(`importance: ${obs.importance_score.toFixed(2)} | session: ${shortSessionId}...`);
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
 function mergeWithRRF(ftsResults, vecResults, k = 60) {
   const scores = /* @__PURE__ */ new Map();
   const obsMap = /* @__PURE__ */ new Map();
@@ -60698,7 +60717,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.81" : "unknown"
+      version: true ? "0.8.82" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -60733,6 +60752,21 @@ function createContextManagerServer(storage, options = {}) {
       const db = await getDb();
       const normalizedProject = np(project);
       const temporalMode = classifyTemporalIntent(query);
+      if (query.startsWith("lesson:")) {
+        const VALID_LESSON_TYPES = /* @__PURE__ */ new Set(["error", "build_failure", "test_failure", "permission_denied"]);
+        const lessonRaw = query.slice("lesson:".length).trim();
+        const isType = VALID_LESSON_TYPES.has(lessonRaw);
+        const lessons = await db.getLessons(
+          normalizedProject,
+          isType ? void 0 : lessonRaw || void 0,
+          // summary keyword
+          isType ? lessonRaw : void 0,
+          // lesson_type filter
+          20
+        );
+        const text = formatLessons(lessons);
+        return { content: [{ type: "text", text }] };
+      }
       const { tag, remainingQuery } = parseTagPrefix(query);
       if (tag) {
         const tagObs = await db.searchByTag(tag, normalizedProject);
@@ -61207,6 +61241,28 @@ Note: project path '${resolvedProject}' does not exist on disk. Observations wil
 
 ${lines.join("\n")}` }]
       };
+    }
+  );
+  server.tool(
+    "context_lessons",
+    "List past failures and error lessons for a project. Returns failed commands, build errors, test failures, and permission errors captured during prior sessions. Useful for avoiding repeated mistakes.",
+    {
+      project: external_exports.string().optional().describe("Project path to scope the results. Omit to search all projects."),
+      query: external_exports.string().optional().describe("Filter by keyword in the lesson summary"),
+      lesson_type: external_exports.enum(["error", "build_failure", "test_failure", "permission_denied"]).optional().describe("Filter to a specific lesson type"),
+      limit: external_exports.number().int().min(1).max(50).default(20).optional().describe("Maximum results to return (default: 20, max: 50)"),
+      days: external_exports.number().int().min(1).optional().describe("Only return lessons from the last N days")
+    },
+    async ({ project, query, lesson_type, limit, days }) => {
+      if (isProxy) {
+        return proxyToolCall("context_lessons", { project: np(project), query, lesson_type, limit, days }, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const normalizedProject = np(project);
+      const since = days !== void 0 ? new Date(Date.now() - days * 24 * 60 * 60 * 1e3).toISOString() : void 0;
+      const lessons = await db.getLessons(normalizedProject, query, lesson_type, limit ?? 20, since);
+      const text = formatLessons(lessons);
+      return { content: [{ type: "text", text }] };
     }
   );
   server.tool(
@@ -61909,6 +61965,7 @@ var SQLiteStorage = class {
     this.migrateAddLastCheckpointAt();
     this.migrateAddSessionSource();
     this.migrateTagsToJson();
+    this.migrateAddLessonType();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -61979,6 +62036,7 @@ var SQLiteStorage = class {
       exported_at: row.exported_at || void 0,
       tags: row.tags ? row.tags.startsWith("[") ? JSON.parse(row.tags) : row.tags.split(",").filter(Boolean) : void 0,
       content_hash: row.content_hash || void 0,
+      lesson_type: row.lesson_type ?? null,
       created_at: row.created_at
     };
   }
@@ -62039,8 +62097,8 @@ ${storedOutput}`;
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tagsValue = observation.tags && observation.tags.length > 0 ? JSON.stringify(observation.tags) : null;
     const info = stmt.run(
@@ -62056,6 +62114,7 @@ ${storedOutput}`;
       observation.importance_score ?? 0.5,
       tagsValue,
       contentHash,
+      observation.lesson_type ?? null,
       observation.created_at
     );
     const insertedId = Number(info.lastInsertRowid);
@@ -63160,6 +63219,22 @@ ${storedOutput}`;
     migrate();
     console.error(`[context-manager] Migrated ${rows.length} observations to JSON tags format`);
   }
+  /**
+   * Migration: add lesson_type column for error lesson classification.
+   * lesson_type stores: 'error' | 'build_failure' | 'test_failure' | 'permission_denied' | NULL
+   */
+  migrateAddLessonType() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("lesson_type")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN lesson_type TEXT`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_lesson_type
+      ON observations(project, lesson_type, created_at DESC)
+      WHERE lesson_type IS NOT NULL
+    `);
+  }
   async getOrCreateManualSession(project) {
     const existing = this.db.prepare(`
       SELECT id, status FROM sessions
@@ -63650,6 +63725,54 @@ ${storedOutput}`;
     const after = afterRows.map((row) => this.mapRow(row));
     return Promise.resolve({ before, target, after });
   }
+  async getLessons(project, query, lessonType, limit = 20, since) {
+    const effectiveLimit = Math.max(1, Math.min(50, limit));
+    let sql;
+    const params = [];
+    if (project) {
+      sql = `
+        SELECT * FROM observations
+        WHERE project LIKE ? || '%'
+          AND lesson_type IS NOT NULL
+          AND (? IS NULL OR lesson_type = ?)
+          AND (? IS NULL OR summary LIKE '%' || ? || '%')
+          AND (? IS NULL OR created_at >= ?)
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params.push(
+        project,
+        lessonType ?? null,
+        lessonType ?? null,
+        query ?? null,
+        query ?? null,
+        since ?? null,
+        since ?? null,
+        effectiveLimit
+      );
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE lesson_type IS NOT NULL
+          AND (? IS NULL OR lesson_type = ?)
+          AND (? IS NULL OR summary LIKE '%' || ? || '%')
+          AND (? IS NULL OR created_at >= ?)
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params.push(
+        lessonType ?? null,
+        lessonType ?? null,
+        query ?? null,
+        query ?? null,
+        since ?? null,
+        since ?? null,
+        effectiveLimit
+      );
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -63738,8 +63861,8 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.81")
-    return "0.8.81";
+  if ("0.8.82")
+    return "0.8.82";
   try {
     const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

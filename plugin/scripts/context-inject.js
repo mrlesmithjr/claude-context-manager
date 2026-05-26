@@ -207,6 +207,7 @@ var SQLiteStorage = class {
     this.migrateAddLastCheckpointAt();
     this.migrateAddSessionSource();
     this.migrateTagsToJson();
+    this.migrateAddLessonType();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -277,6 +278,7 @@ var SQLiteStorage = class {
       exported_at: row.exported_at || void 0,
       tags: row.tags ? row.tags.startsWith("[") ? JSON.parse(row.tags) : row.tags.split(",").filter(Boolean) : void 0,
       content_hash: row.content_hash || void 0,
+      lesson_type: row.lesson_type ?? null,
       created_at: row.created_at
     };
   }
@@ -337,8 +339,8 @@ ${storedOutput}`;
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tagsValue = observation.tags && observation.tags.length > 0 ? JSON.stringify(observation.tags) : null;
     const info = stmt.run(
@@ -354,6 +356,7 @@ ${storedOutput}`;
       observation.importance_score ?? 0.5,
       tagsValue,
       contentHash,
+      observation.lesson_type ?? null,
       observation.created_at
     );
     const insertedId = Number(info.lastInsertRowid);
@@ -1458,6 +1461,22 @@ ${storedOutput}`;
     migrate();
     console.error(`[context-manager] Migrated ${rows.length} observations to JSON tags format`);
   }
+  /**
+   * Migration: add lesson_type column for error lesson classification.
+   * lesson_type stores: 'error' | 'build_failure' | 'test_failure' | 'permission_denied' | NULL
+   */
+  migrateAddLessonType() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("lesson_type")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN lesson_type TEXT`);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_lesson_type
+      ON observations(project, lesson_type, created_at DESC)
+      WHERE lesson_type IS NOT NULL
+    `);
+  }
   async getOrCreateManualSession(project) {
     const existing = this.db.prepare(`
       SELECT id, status FROM sessions
@@ -1948,6 +1967,54 @@ ${storedOutput}`;
     const after = afterRows.map((row) => this.mapRow(row));
     return Promise.resolve({ before, target, after });
   }
+  async getLessons(project, query, lessonType, limit = 20, since) {
+    const effectiveLimit = Math.max(1, Math.min(50, limit));
+    let sql;
+    const params = [];
+    if (project) {
+      sql = `
+        SELECT * FROM observations
+        WHERE project LIKE ? || '%'
+          AND lesson_type IS NOT NULL
+          AND (? IS NULL OR lesson_type = ?)
+          AND (? IS NULL OR summary LIKE '%' || ? || '%')
+          AND (? IS NULL OR created_at >= ?)
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params.push(
+        project,
+        lessonType ?? null,
+        lessonType ?? null,
+        query ?? null,
+        query ?? null,
+        since ?? null,
+        since ?? null,
+        effectiveLimit
+      );
+    } else {
+      sql = `
+        SELECT * FROM observations
+        WHERE lesson_type IS NOT NULL
+          AND (? IS NULL OR lesson_type = ?)
+          AND (? IS NULL OR summary LIKE '%' || ? || '%')
+          AND (? IS NULL OR created_at >= ?)
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+      params.push(
+        lessonType ?? null,
+        lessonType ?? null,
+        query ?? null,
+        query ?? null,
+        since ?? null,
+        since ?? null,
+        effectiveLimit
+      );
+    }
+    const rows = this.db.prepare(sql).all(...params);
+    return rows.map((row) => this.mapRow(row));
+  }
   close() {
     this.db.close();
     return Promise.resolve();
@@ -2173,11 +2240,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.81") {
+    if (installedVersion !== "0.8.82") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.81"}
+   Source:    v${"0.8.82"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2257,9 +2324,33 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.81"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.82"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
-      lines2.push("MCP tools available: context_search, context_list, context_stats.");
+      lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
+      try {
+        const lessonsText = await remoteMcpText(client, "context_lessons", {
+          project: input.cwd,
+          limit: 3,
+          days: 7
+        });
+        if (lessonsText && lessonsText.trim().length > 0 && !lessonsText.startsWith("No lessons")) {
+          const blocks = lessonsText.split("\n\n").filter((b) => b.trim().length > 0);
+          if (blocks.length > 0) {
+            const items = blocks.slice(0, 3).map((block) => {
+              const firstLine = block.split("\n")[0] ?? "";
+              const dateMatch = firstLine.match(/\[(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}\]/);
+              const dateLabel = dateMatch?.[1] ? new Date(dateMatch[1]).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
+              const typeMatch = firstLine.match(/\] (.+?) \| /);
+              const summaryLine = block.split("\n")[1] ?? "";
+              const fragment = summaryLine.length > 40 ? summaryLine.substring(0, 40) : summaryLine;
+              const typeLabel = typeMatch?.[1] ?? "error";
+              return dateLabel ? `${fragment} (${typeLabel}, ${dateLabel})` : `${fragment} (${typeLabel})`;
+            });
+            lines2.push(`Recent failures (${items.length}): ${items.join(" \xB7 ")}`);
+          }
+        }
+      } catch {
+      }
       const memoryContent = await remoteGetMemory(client, input.cwd);
       if (memoryContent.trim().length > 0) {
         lines2.push("");
@@ -2300,8 +2391,8 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.81"} active. ${count} observations tracked.`);
-    lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
+    lines.push(`context-manager v${"0.8.82"} active. ${count} observations tracked.`);
+    lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
       const withSummaries = recentSessions.map((r) => r.session).filter((s) => s.summary && s.summary.trim().length > 20 && s.status === "complete");
@@ -2325,6 +2416,20 @@ async function main() {
         lines.push("");
         lines.push("Recent sessions:");
         lines.push(...sessionLines);
+      }
+    } catch {
+    }
+    try {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1e3).toISOString();
+      const recentLessons = await storage.getLessons(input.cwd, void 0, void 0, 3, sevenDaysAgo);
+      if (recentLessons.length > 0) {
+        const items = recentLessons.slice(0, 3).map((l) => {
+          const date = new Date(l.created_at);
+          const dateLabel = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          const fragment = l.summary.length > 40 ? l.summary.substring(0, 40) : l.summary;
+          return `${fragment} (${dateLabel})`;
+        });
+        lines.push(`Recent failures (${recentLessons.length}): ${items.join(" \xB7 ")}`);
       }
     } catch {
     }

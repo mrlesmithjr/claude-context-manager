@@ -38,6 +38,7 @@ export type ObservationTag =
   | 'git'
   | 'build'
   | 'deps'
+  | 'error'
   // Personal ops tags (for manual context_add writes from Desktop or scripts)
   | 'home'
   | 'lawn'
@@ -65,6 +66,7 @@ export interface Observation {
   tags?: string[]; // Domain tags inferred at capture time (auth, database, testing, etc.)
   content_hash?: string; // SHA256 of summary+files_touched+stored_output, used for exact dedup
   similarity_score?: number; // Cosine similarity [0,1], only present on vector search results
+  lesson_type?: string | null; // Lesson classification: 'error' | 'build_failure' | 'test_failure' | 'permission_denied' | null
   created_at: string; // ISO 8601 timestamp
 }
 
@@ -594,6 +596,19 @@ export interface ContextStorage {
     id: number,
     window: number
   ): Promise<{ before: Observation[]; target: Observation; after: Observation[] } | null>;
+
+  /**
+   * Get lesson observations (failed commands, build errors, test failures, permission errors).
+   * Returns observations where lesson_type IS NOT NULL, optionally filtered by project,
+   * lesson_type, a keyword in the summary, and a date threshold.
+   *
+   * @param project - Project path prefix (optional; omit for all projects)
+   * @param query - Keyword filter applied to summary (optional)
+   * @param lessonType - Filter to a specific lesson type (optional)
+   * @param limit - Maximum results to return (default: 20)
+   * @param since - ISO 8601 date string; only return observations on or after this date (optional)
+   */
+  getLessons(project?: string, query?: string, lessonType?: string, limit?: number, since?: string): Promise<Observation[]>;
 
   /**
    * Close storage connection

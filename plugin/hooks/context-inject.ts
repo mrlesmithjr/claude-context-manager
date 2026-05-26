@@ -237,7 +237,39 @@ async function main() {
 
       lines.push(`context-manager v${PLUGIN_VERSION} active (remote mode). ${remoteCount} observations on server.`);
       lines.push(`Remote server: ${remoteUrl}`);
-      lines.push('MCP tools available: context_search, context_list, context_stats.');
+      lines.push('MCP tools available: context_search, context_list, context_stats, context_lessons.');
+
+      // Recent failures hint via remote context_lessons call (last 7 days only)
+      try {
+        const lessonsText = await remoteMcpText(client, 'context_lessons', {
+          project: input.cwd,
+          limit: 3,
+          days: 7,
+        });
+        if (lessonsText && lessonsText.trim().length > 0 && !lessonsText.startsWith('No lessons')) {
+          // Parse lesson blocks: each block starts with [date time] lesson_type | tool_name
+          const blocks = lessonsText.split('\n\n').filter(b => b.trim().length > 0);
+          if (blocks.length > 0) {
+            const items = blocks.slice(0, 3).map(block => {
+              const firstLine = block.split('\n')[0] ?? '';
+              // Extract date like [2026-05-25 14:32]
+              const dateMatch = firstLine.match(/\[(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}\]/);
+              const dateLabel = dateMatch?.[1]
+                ? new Date(dateMatch[1]).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                : '';
+              // Extract lesson type | tool
+              const typeMatch = firstLine.match(/\] (.+?) \| /);
+              const summaryLine = block.split('\n')[1] ?? '';
+              const fragment = summaryLine.length > 40 ? summaryLine.substring(0, 40) : summaryLine;
+              const typeLabel = typeMatch?.[1] ?? 'error';
+              return dateLabel ? `${fragment} (${typeLabel}, ${dateLabel})` : `${fragment} (${typeLabel})`;
+            });
+            lines.push(`Recent failures (${items.length}): ${items.join(' · ')}`);
+          }
+        }
+      } catch {
+        // Non-critical — skip if lessons call fails in remote mode
+      }
 
       // Fetch memory content exported by the previous session's Stop hook.
       // remoteGetMemory never throws; it returns '' on any error.
@@ -301,7 +333,7 @@ async function main() {
       lines.push(versionWarning);
     }
     lines.push(`context-manager v${PLUGIN_VERSION} active. ${count} observations tracked.`);
-    lines.push('Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.');
+    lines.push('Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.');
 
     // Inject recent session summaries for project continuity
     try {
@@ -334,6 +366,23 @@ async function main() {
       }
     } catch {
       // Non-critical — skip if session lookup fails
+    }
+
+    // Recent failures hint: query the last 7 days of lessons for this project
+    try {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const recentLessons = await storage.getLessons(input.cwd, undefined, undefined, 3, sevenDaysAgo);
+      if (recentLessons.length > 0) {
+        const items = recentLessons.slice(0, 3).map(l => {
+          const date = new Date(l.created_at);
+          const dateLabel = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const fragment = l.summary.length > 40 ? l.summary.substring(0, 40) : l.summary;
+          return `${fragment} (${dateLabel})`;
+        });
+        lines.push(`Recent failures (${recentLessons.length}): ${items.join(' · ')}`);
+      }
+    } catch {
+      // Non-critical — skip if lessons query fails
     }
 
     const context = lines.join('\n');

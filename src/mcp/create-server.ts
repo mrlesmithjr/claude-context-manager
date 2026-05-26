@@ -44,7 +44,7 @@ const SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? '0.2
 const ALLOWED_OBSERVATION_TAGS = new Set<ObservationTag>([
   // Developer / code tags
   'auth', 'database', 'testing', 'infra', 'config',
-  'frontend', 'api', 'git', 'build', 'deps',
+  'frontend', 'api', 'git', 'build', 'deps', 'error',
   // Personal ops tags
   'home', 'lawn', 'finance', 'health', 'travel', 'planning', 'decision', 'personal',
 ]);
@@ -218,6 +218,31 @@ function formatStats(
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Format lesson observations for tool output.
+ * Each lesson is rendered as a compact multi-line block showing the type, tool, summary,
+ * importance score, and session ID.
+ */
+function formatLessons(lessons: Observation[]): string {
+  if (lessons.length === 0) {
+    return 'No lessons found for this project.';
+  }
+
+  const lines: string[] = [];
+  for (const obs of lessons) {
+    const date = new Date(obs.created_at);
+    const datePart = date.toISOString().substring(0, 10);
+    const timePart = date.toISOString().substring(11, 16);
+    const lessonLabel = obs.lesson_type ?? 'error';
+    const shortSessionId = obs.session_id.substring(0, 6);
+    lines.push(`[${datePart} ${timePart}] ${lessonLabel} | ${obs.tool_name}`);
+    lines.push(obs.summary);
+    lines.push(`importance: ${obs.importance_score.toFixed(2)} | session: ${shortSessionId}...`);
+    lines.push('');
+  }
+  return lines.join('\n').trimEnd();
 }
 
 /**
@@ -469,6 +494,23 @@ export function createContextManagerServer(
 
       // Classify temporal intent before any branch so all paths can apply ordering.
       const temporalMode: TemporalMode = classifyTemporalIntent(query);
+
+      // Check for lesson: prefix — routes to getLessons() and returns early.
+      // If the term after "lesson:" exactly matches a valid lesson_type value,
+      // route it to the lessonType filter; otherwise treat it as a summary keyword.
+      if (query.startsWith('lesson:')) {
+        const VALID_LESSON_TYPES = new Set(['error', 'build_failure', 'test_failure', 'permission_denied']);
+        const lessonRaw = query.slice('lesson:'.length).trim();
+        const isType = VALID_LESSON_TYPES.has(lessonRaw);
+        const lessons = await db.getLessons(
+          normalizedProject,
+          isType ? undefined : (lessonRaw || undefined),  // summary keyword
+          isType ? lessonRaw : undefined,                  // lesson_type filter
+          20
+        );
+        const text = formatLessons(lessons);
+        return { content: [{ type: 'text' as const, text }] };
+      }
 
       // Check for tag: prefix, routes to tag search, optionally combined with keyword
       const { tag, remainingQuery } = parseTagPrefix(query);
@@ -1065,6 +1107,35 @@ export function createContextManagerServer(
       return {
         content: [{ type: 'text' as const, text: `${projects.length} project(s):\n\n${lines.join('\n')}` }],
       };
+    }
+  );
+
+  server.tool(
+    'context_lessons',
+    'List past failures and error lessons for a project. Returns failed commands, build errors, test failures, and permission errors captured during prior sessions. Useful for avoiding repeated mistakes.',
+    {
+      project: z.string().optional().describe('Project path to scope the results. Omit to search all projects.'),
+      query: z.string().optional().describe('Filter by keyword in the lesson summary'),
+      lesson_type: z
+        .enum(['error', 'build_failure', 'test_failure', 'permission_denied'])
+        .optional()
+        .describe('Filter to a specific lesson type'),
+      limit: z.number().int().min(1).max(50).default(20).optional().describe('Maximum results to return (default: 20, max: 50)'),
+      days: z.number().int().min(1).optional().describe('Only return lessons from the last N days'),
+    },
+    async ({ project, query, lesson_type, limit, days }) => {
+      if (isProxy) {
+        return proxyToolCall('context_lessons', { project: np(project), query, lesson_type, limit, days }, remoteUrl, remoteToken);
+      }
+
+      const db = await getDb();
+      const normalizedProject = np(project);
+      const since = days !== undefined
+        ? new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+        : undefined;
+      const lessons = await db.getLessons(normalizedProject, query, lesson_type, limit ?? 20, since);
+      const text = formatLessons(lessons);
+      return { content: [{ type: 'text' as const, text }] };
     }
   );
 

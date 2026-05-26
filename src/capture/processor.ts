@@ -474,6 +474,75 @@ function isNearNoOpEdit(input: Record<string, unknown>): boolean {
   return addedLines.every(l => /^(\/\/|#|\/\*|\*|\*\/)/.test(l));
 }
 
+// --- Lesson detection ---
+
+/**
+ * Tools that can produce actual error conditions worth tracking as lessons.
+ * Read, Grep, Glob, and other passive tools are excluded — their output may
+ * contain the string "Error:" as file content, which would be a false positive.
+ */
+const ACTION_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit', 'MultiEdit']);
+
+/**
+ * Parse exit code from tool response string.
+ * Claude Code embeds "exit code: N" in Bash responses when the command fails.
+ */
+function parseExitCode(toolResponse: string): number | null {
+  const match = toolResponse.match(/exit\s+code:\s*(\d+)/i);
+  if (match?.[1]) {
+    const code = parseInt(match[1], 10);
+    return isNaN(code) ? null : code;
+  }
+  return null;
+}
+
+/**
+ * Classify a failed tool invocation into a lesson type.
+ * Returns null when the invocation is not a failure worth storing as a lesson.
+ */
+export function detectLessonType(
+  toolName: string,
+  toolResponse: string,
+): string | null {
+  if (toolName === 'Bash') {
+    const exitCode = parseExitCode(toolResponse);
+    if (exitCode !== null && exitCode !== 0) {
+      if (exitCode === 126 || exitCode === 127) return 'permission_denied';
+      if (
+        toolResponse.includes('npm ERR!') ||
+        toolResponse.includes('error TS') ||
+        toolResponse.includes('build failed') ||
+        toolResponse.includes('FAILED')
+      ) return 'build_failure';
+      if (
+        toolResponse.includes('FAIL ') ||
+        toolResponse.includes('● ') ||
+        toolResponse.includes('AssertionError') ||
+        toolResponse.includes('test failed')
+      ) return 'test_failure';
+      return 'error';
+    }
+  }
+
+  // Non-Bash tool errors: only check action tools that can genuinely fail.
+  // Read, Grep, Glob, and other passive tools are excluded to prevent false
+  // positives when file content happens to contain "Error:".
+  if (ACTION_TOOLS.has(toolName)) {
+    if (
+      toolResponse.includes('Error:') ||
+      toolResponse.includes('error TS') ||
+      toolResponse.includes('npm ERR!') ||
+      toolResponse.includes('FAILED')
+    ) {
+      if (toolResponse.includes('error TS') || toolResponse.includes('build failed')) return 'build_failure';
+      if (toolResponse.includes('FAIL ') || toolResponse.includes('AssertionError')) return 'test_failure';
+      return 'error';
+    }
+  }
+
+  return null;
+}
+
 // --- Tag inference ---
 
 const TAG_FILE_RULES: Array<{ patterns: RegExp[]; tag: ObservationTag }> = [
@@ -842,7 +911,7 @@ export function processToolCapture(capture: ToolCapture): ProcessResult {
   const tokenEstimate = estimateTokens(contentToEstimate);
 
   // Calculate importance score
-  const { importance, importance_score } = calculateImportance(
+  let { importance, importance_score } = calculateImportance(
     capture.tool_name,
     capture.tool_input,
     sanitizedResponse,
@@ -865,11 +934,27 @@ export function processToolCapture(capture: ToolCapture): ProcessResult {
     summary = summary.substring(0, MCP_SUMMARY_TRUNCATE_CHARS) + '...';
   }
 
+  // Detect lesson type (error classification for failed commands/tools)
+  const lessonType = detectLessonType(capture.tool_name, sanitizedResponse);
+
+  // Minimum importance for lessons is 0.85 — lessons are high-signal
+  if (lessonType !== null && importance_score < 0.85) {
+    importance_score = 0.85;
+    importance = 'high';
+  }
+
   // Infer domain tags from file paths and command
   const command = (capture.tool_input && typeof capture.tool_input === 'object')
     ? (capture.tool_input as Record<string, unknown>).command as string | undefined
     : undefined;
-  const tags = inferTags(capture.tool_name, filesTouched, command);
+  const inferredTags = inferTags(capture.tool_name, filesTouched, command);
+
+  // Ensure the 'error' tag is present for lessons
+  const tagsSet = new Set<string>(inferredTags);
+  if (lessonType !== null) {
+    tagsSet.add('error');
+  }
+  const tags = [...tagsSet] as ObservationTag[];
 
   // Build metadata with enhanced output storage.
   // Strip large/sensitive fields from tool_input for Edit and Write — the summary
@@ -902,6 +987,7 @@ export function processToolCapture(capture: ToolCapture): ProcessResult {
     importance,
     importance_score,
     tags: tags.length > 0 ? tags : undefined,
+    lesson_type: lessonType ?? undefined,
     created_at: new Date().toISOString(),
   };
 }
