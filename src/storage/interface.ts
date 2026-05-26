@@ -8,6 +8,7 @@
 export type ImportanceLevel = 'high' | 'medium' | 'low';
 export type RelationshipType = 'same_file' | 'followed_by' | 'cross_project_same_file';
 export type ObservationTag =
+  // Developer / code tags (inferred automatically by hook capture)
   | 'auth'
   | 'database'
   | 'testing'
@@ -17,7 +18,16 @@ export type ObservationTag =
   | 'api'
   | 'git'
   | 'build'
-  | 'deps';
+  | 'deps'
+  // Personal ops tags (for manual context_add writes from Desktop or scripts)
+  | 'home'
+  | 'lawn'
+  | 'finance'
+  | 'health'
+  | 'travel'
+  | 'planning'
+  | 'decision'
+  | 'personal';
 
 export interface Observation {
   id?: number;

@@ -36,12 +36,16 @@ import { normalizePath, type PathPrefixEntry } from '../utils/path-map.js';
 // Override via CONTEXT_SEARCH_MIN_SCORE env var.
 const SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? '0.25');
 
-// Allowed tag values for context_add — must match ObservationTag union in storage/interface.ts
-// and the TAG_FILE_RULES / TAG_BASH_RULES sets in capture/processor.ts.
+// Allowed tag values for context_add — must match ObservationTag union in storage/interface.ts.
+// Developer tags are also inferred automatically by hook capture (TAG_FILE_RULES / TAG_BASH_RULES
+// in capture/processor.ts). Personal ops tags are for manual context_add writes only.
 // Typed as Set<ObservationTag> so a compile error fires if the union gains a new member.
 const ALLOWED_OBSERVATION_TAGS = new Set<ObservationTag>([
+  // Developer / code tags
   'auth', 'database', 'testing', 'infra', 'config',
   'frontend', 'api', 'git', 'build', 'deps',
+  // Personal ops tags
+  'home', 'lawn', 'finance', 'health', 'travel', 'planning', 'decision', 'personal',
 ]);
 
 // Version injected by esbuild; falls back for non-bundled environments (e.g., ts-node, vitest)
@@ -354,9 +358,9 @@ export function createContextManagerServer(
 
   server.tool(
     'context_search',
-    'Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain (auth, database, testing, infra, config, frontend, api, git, build, deps).',
+    'Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain tag.',
     {
-      query: z.string().describe('Search query. Supports tag:X prefix to filter by domain tag (e.g. "tag:auth", "tag:database sqlite"). Available tags: auth, database, testing, infra, config, frontend, api, git, build, deps.'),
+      query: z.string().describe('Search query. Supports tag:X prefix to filter by domain tag (e.g. "tag:auth", "tag:finance budget"). Developer tags: auth, database, testing, infra, config, frontend, api, git, build, deps. Personal ops tags: home, lawn, finance, health, travel, planning, decision, personal.'),
       project: z
         .string()
         .optional()
@@ -645,7 +649,7 @@ export function createContextManagerServer(
       tags: z
         .string()
         .optional()
-        .describe('Comma-separated domain tags (auth, database, testing, infra, config, frontend, api, git, build, deps). If omitted, no tags are assigned.'),
+        .describe('Comma-separated domain tags. Developer: auth, database, testing, infra, config, frontend, api, git, build, deps. Personal ops: home, lawn, finance, health, travel, planning, decision, personal. If omitted, no tags are assigned.'),
       client: z
         .string()
         .optional()

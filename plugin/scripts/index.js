@@ -63614,7 +63614,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.78" : "unknown"
+      version: true ? "0.8.79" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -63624,9 +63624,9 @@ function createContextManagerServer(storage2, options = {}) {
   const np = (p) => p !== void 0 ? normalizePath(p, pathMap) : void 0;
   server.tool(
     "context_search",
-    "Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain (auth, database, testing, infra, config, frontend, api, git, build, deps).",
+    "Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain tag.",
     {
-      query: external_exports.string().describe('Search query. Supports tag:X prefix to filter by domain tag (e.g. "tag:auth", "tag:database sqlite"). Available tags: auth, database, testing, infra, config, frontend, api, git, build, deps.'),
+      query: external_exports.string().describe('Search query. Supports tag:X prefix to filter by domain tag (e.g. "tag:auth", "tag:finance budget"). Developer tags: auth, database, testing, infra, config, frontend, api, git, build, deps. Personal ops tags: home, lawn, finance, health, travel, planning, decision, personal.'),
       project: external_exports.string().optional().describe(
         "Project path to scope search. Omit to search all projects."
       )
@@ -63853,7 +63853,7 @@ ${lines.join("\n")}`
       text: external_exports.string().min(1).describe("The observation content to store"),
       project: external_exports.string().optional().describe("Project path to scope the observation. Omit to use the server default project."),
       importance: external_exports.union([external_exports.string(), external_exports.number()]).optional().describe('Importance level: "high" (0.80), "medium" (0.60, default), "low" (0.40), or a float 0.0\u20131.0'),
-      tags: external_exports.string().optional().describe("Comma-separated domain tags (auth, database, testing, infra, config, frontend, api, git, build, deps). If omitted, no tags are assigned."),
+      tags: external_exports.string().optional().describe("Comma-separated domain tags. Developer: auth, database, testing, infra, config, frontend, api, git, build, deps. Personal ops: home, lawn, finance, health, travel, planning, decision, personal. If omitted, no tags are assigned."),
       client: external_exports.string().optional().describe('Identifier for the calling client (e.g. "Desktop", "Script"). Stored as tool_name Manual:ClientName for filtering. Omit for generic Manual writes.')
     },
     async ({ text, project, importance, tags, client }) => {
@@ -64518,6 +64518,7 @@ var init_create_server = __esm({
     init_path_map();
     SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
     ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
+      // Developer / code tags
       "auth",
       "database",
       "testing",
@@ -64527,7 +64528,16 @@ var init_create_server = __esm({
       "api",
       "git",
       "build",
-      "deps"
+      "deps",
+      // Personal ops tags
+      "home",
+      "lawn",
+      "finance",
+      "health",
+      "travel",
+      "planning",
+      "decision",
+      "personal"
     ]);
   }
 });
@@ -65083,8 +65093,8 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.78")
-        return "0.8.78";
+      if ("0.8.79")
+        return "0.8.79";
       try {
         const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version)
