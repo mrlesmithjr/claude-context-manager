@@ -22352,6 +22352,17 @@ function l2DistanceToCosine(l2Distance) {
 // src/storage/sqlite.ts
 var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
+function recencyFactor(capturedAt) {
+  const ageMs = Date.now() - new Date(capturedAt).getTime();
+  const ageDays = ageMs / (1e3 * 60 * 60 * 24);
+  if (ageDays <= 7)
+    return 1.5;
+  if (ageDays <= 30)
+    return 1.1;
+  if (ageDays <= 90)
+    return 0.9;
+  return 0.7;
+}
 var SQLiteStorage = class {
   db;
   vecEnabled = false;
@@ -22697,7 +22708,9 @@ ${storedOutput}`;
     }
     return results;
   }
-  async search(query, project) {
+  async search(query, projectOrOptions) {
+    const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
+    const temporalMode = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.temporalMode ?? "neutral" : "neutral";
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
@@ -22722,7 +22735,19 @@ ${storedOutput}`;
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
-    return rows.map((row) => this.mapRow(row));
+    const results = rows.map((row) => this.mapRow(row));
+    if (temporalMode === "current") {
+      return results.map((obs) => ({
+        ...obs,
+        importance_score: (obs.importance_score ?? 0.5) * recencyFactor(obs.created_at)
+      })).sort((a, b) => b.importance_score - a.importance_score);
+    }
+    if (temporalMode === "historical") {
+      return results.sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+    }
+    return results;
   }
   async searchByTag(tag, project, limit = 50) {
     const likePattern = `%,${tag},%`;
@@ -33334,6 +33359,64 @@ function classifyQuery(query) {
   return "hybrid";
 }
 
+// src/utils/temporal.ts
+var CURRENT_SIGNALS = [
+  "now",
+  "current",
+  "currently",
+  "latest",
+  "today",
+  "recent",
+  "recently",
+  "right now",
+  "at the moment",
+  "as of",
+  "nowadays",
+  "present",
+  "presently",
+  "existing",
+  "active"
+];
+var HISTORICAL_SIGNALS = [
+  "history",
+  "historical",
+  "when did",
+  "previously",
+  "before",
+  "used to",
+  "changed",
+  "over time",
+  "timeline",
+  "in the past",
+  "last week",
+  "last month",
+  "last year",
+  "ago",
+  "originally",
+  "prior",
+  "earlier",
+  "past",
+  "evolution",
+  "progression"
+];
+function containsSignal(lowerQuery, signal) {
+  const escaped = signal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(?<![a-z0-9])${escaped}(?![a-z0-9])`, "i");
+  return pattern.test(lowerQuery);
+}
+function classifyTemporalIntent(query) {
+  const lower = query.toLowerCase();
+  const hasCurrent = CURRENT_SIGNALS.some((s) => containsSignal(lower, s));
+  const hasHistorical = HISTORICAL_SIGNALS.some((s) => containsSignal(lower, s));
+  if (hasCurrent && hasHistorical)
+    return "neutral";
+  if (hasCurrent)
+    return "current";
+  if (hasHistorical)
+    return "historical";
+  return "neutral";
+}
+
 // src/utils/path-map.ts
 function loadPathPrefixMap() {
   const raw = process.env.CONTEXT_MANAGER_PATH_MAP || "";
@@ -33523,6 +33606,35 @@ function mergeWithRRF(ftsResults, vecResults, k = 60) {
   }
   return [...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([id]) => obsMap.get(id)).filter(Boolean);
 }
+function recencyFactorForDate(dateStr) {
+  const ageDays = (Date.now() - new Date(dateStr).getTime()) / (1e3 * 60 * 60 * 24);
+  if (ageDays <= 7)
+    return 1.5;
+  if (ageDays <= 30)
+    return 1.1;
+  if (ageDays <= 90)
+    return 0.9;
+  return 0.7;
+}
+function applyTemporalAdjustment(items, mode, dateField) {
+  if (mode === "current") {
+    if (items.length > 0 && "importance_score" in items[0]) {
+      return items.map((item) => ({
+        ...item,
+        importance_score: (item.importance_score ?? 0.5) * recencyFactorForDate(item[dateField] ?? (/* @__PURE__ */ new Date()).toISOString())
+      })).sort((a, b) => b.importance_score - a.importance_score);
+    }
+    return [...items].sort(
+      (a, b) => new Date(b[dateField] ?? 0).getTime() - new Date(a[dateField] ?? 0).getTime()
+    );
+  }
+  if (mode === "historical") {
+    return [...items].sort(
+      (a, b) => new Date(a[dateField] ?? 0).getTime() - new Date(b[dateField] ?? 0).getTime()
+    );
+  }
+  return items;
+}
 async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
   let response;
   try {
@@ -33571,7 +33683,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.80" : "unknown"
+      version: true ? "0.8.81" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -33588,7 +33700,7 @@ function createContextManagerServer(storage2, options = {}) {
   }
   server.tool(
     "context_search",
-    "Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain tag. Returns compact one-line summaries by default; pass compact=false for full text.",
+    'Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain tag. Returns compact one-line summaries by default; pass compact=false for full text. Automatically detects temporal intent: queries with "current", "latest", or "recent" boost recent results; queries with "history", "previously", or "timeline" return results in chronological order.',
     {
       query: external_exports.string().describe('Search query. Supports tag:X prefix to filter by domain tag (e.g. "tag:auth", "tag:finance budget"). Developer tags: auth, database, testing, infra, config, frontend, api, git, build, deps. Personal ops tags: home, lawn, finance, health, travel, planning, decision, personal.'),
       project: external_exports.string().optional().describe(
@@ -33605,6 +33717,7 @@ function createContextManagerServer(storage2, options = {}) {
       }
       const db = await getDb();
       const normalizedProject = np(project);
+      const temporalMode = classifyTemporalIntent(query);
       const { tag, remainingQuery } = parseTagPrefix(query);
       if (tag) {
         const tagObs = await db.searchByTag(tag, normalizedProject);
@@ -33614,10 +33727,12 @@ function createContextManagerServer(storage2, options = {}) {
           const ftsIds = new Set(ftsResults.map((o) => o.id));
           results = tagObs.filter((o) => ftsIds.has(o.id));
         }
+        results = applyTemporalAdjustment(results, temporalMode, "created_at");
         const label = remainingQuery ? `tag:${tag} + keyword "${remainingQuery}"` : `tag:${tag}`;
         const modeLabel2 = useCompact ? "compact" : "full";
+        const temporalLabel2 = temporalMode !== "neutral" ? ` | temporal: ${temporalMode}` : "";
         const formattedResults = useCompact ? results.map((o) => formatObservationCompact(o)).join("\n") : formatObservations(results);
-        const text = results.length > 0 ? `[search: ${label} | ${modeLabel2}] ${results.length} results
+        const text = results.length > 0 ? `[search: ${label}${temporalLabel2} | ${modeLabel2}] ${results.length} results
 
 ${formattedResults}` : `No observations found for ${label}.`;
         return { content: [{ type: "text", text }] };
@@ -33626,8 +33741,9 @@ ${formattedResults}` : `No observations found for ${label}.`;
       let observations = [];
       let searchMethod = "";
       let sessionResults = [];
+      const searchOptions = { project: normalizedProject, temporalMode };
       if (strategy === "keyword") {
-        observations = await db.search(query, normalizedProject);
+        observations = await db.search(query, searchOptions);
         searchMethod = "keyword";
       } else if (strategy === "semantic") {
         if (await db.isVectorSearchEnabled()) {
@@ -33635,26 +33751,28 @@ ${formattedResults}` : `No observations found for ${label}.`;
           const queryEmbedding = await embeddingService.embed(query);
           if (queryEmbedding) {
             const rawSessions = await db.vectorSearchSessions(queryEmbedding, normalizedProject, 10);
-            sessionResults = rawSessions.filter(
+            const filteredSessions = rawSessions.filter(
               (s) => s.similarity_score == null || s.similarity_score >= SEARCH_MIN_SCORE
             );
+            sessionResults = applyTemporalAdjustment(filteredSessions, temporalMode, "started_at");
             if (sessionResults.length === 0) {
               const rawObs = await db.vectorSearch(queryEmbedding, normalizedProject, 20);
-              observations = rawObs.filter(
+              const filteredObs = rawObs.filter(
                 (o) => o.similarity_score == null || o.similarity_score >= SEARCH_MIN_SCORE
               );
+              observations = applyTemporalAdjustment(filteredObs, temporalMode, "created_at");
             }
             searchMethod = "semantic";
           } else {
-            observations = await db.search(query, normalizedProject);
+            observations = await db.search(query, searchOptions);
             searchMethod = "keyword (embedding unavailable)";
           }
         } else {
-          observations = await db.search(query, normalizedProject);
+          observations = await db.search(query, searchOptions);
           searchMethod = "keyword (vector search unavailable)";
         }
       } else {
-        const ftsResults = await db.search(query, normalizedProject);
+        const ftsResults = await db.search(query, searchOptions);
         if (await db.isVectorSearchEnabled()) {
           const embeddingService = getEmbeddingService();
           const queryEmbedding = await embeddingService.embed(query);
@@ -33677,6 +33795,7 @@ ${formattedResults}` : `No observations found for ${label}.`;
       const prompts = await db.searchPrompts(query, normalizedProject);
       const sections = [];
       const modeLabel = useCompact ? "compact" : "full";
+      const temporalLabel = temporalMode !== "neutral" ? ` | temporal: ${temporalMode}` : "";
       if (sessionResults.length > 0) {
         const lines = [];
         for (const session of sessionResults) {
@@ -33687,13 +33806,13 @@ ${formattedResults}` : `No observations found for ${label}.`;
           lines.push(`  ${summaryPreview}`);
           lines.push("");
         }
-        sections.push(`[search: ${searchMethod} | ${modeLabel}] ${sessionResults.length} sessions
+        sections.push(`[search: ${searchMethod}${temporalLabel} | ${modeLabel}] ${sessionResults.length} sessions
 
 ${lines.join("\n")}`);
       }
       if (observations.length > 0) {
         const formattedObs = useCompact ? observations.map((o) => formatObservationCompact(o)).join("\n") : formatObservations(observations);
-        sections.push(`[search: ${searchMethod} | ${modeLabel}] ${observations.length} results
+        sections.push(`[search: ${searchMethod}${temporalLabel} | ${modeLabel}] ${observations.length} results
 
 ${formattedObs}`);
         if (!useCompact) {

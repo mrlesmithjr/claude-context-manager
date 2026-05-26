@@ -35,6 +35,17 @@ function l2DistanceToCosine(l2Distance) {
 // src/storage/sqlite.ts
 var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
+function recencyFactor(capturedAt) {
+  const ageMs = Date.now() - new Date(capturedAt).getTime();
+  const ageDays = ageMs / (1e3 * 60 * 60 * 24);
+  if (ageDays <= 7)
+    return 1.5;
+  if (ageDays <= 30)
+    return 1.1;
+  if (ageDays <= 90)
+    return 0.9;
+  return 0.7;
+}
 var SQLiteStorage = class {
   db;
   vecEnabled = false;
@@ -380,7 +391,9 @@ ${storedOutput}`;
     }
     return results;
   }
-  async search(query, project) {
+  async search(query, projectOrOptions) {
+    const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
+    const temporalMode = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.temporalMode ?? "neutral" : "neutral";
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
@@ -405,7 +418,19 @@ ${storedOutput}`;
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
-    return rows.map((row) => this.mapRow(row));
+    const results = rows.map((row) => this.mapRow(row));
+    if (temporalMode === "current") {
+      return results.map((obs) => ({
+        ...obs,
+        importance_score: (obs.importance_score ?? 0.5) * recencyFactor(obs.created_at)
+      })).sort((a, b) => b.importance_score - a.importance_score);
+    }
+    if (temporalMode === "historical") {
+      return results.sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+    }
+    return results;
   }
   async searchByTag(tag, project, limit = 50) {
     const likePattern = `%,${tag},%`;

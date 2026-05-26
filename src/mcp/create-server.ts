@@ -28,6 +28,7 @@ import {
   formatShortDate,
 } from '../utils/session-format.js';
 import { classifyQuery, type QueryStrategy } from '../utils/classify.js';
+import { classifyTemporalIntent, type TemporalMode } from '../utils/temporal.js';
 import { normalizePath, type PathPrefixEntry } from '../utils/path-map.js';
 
 // Minimum cosine similarity score for semantic/hybrid search results.
@@ -253,6 +254,73 @@ function mergeWithRRF(
     .filter(Boolean);
 }
 
+/**
+ * Apply temporal ordering/scoring to a list of results in-memory.
+ *
+ * Used for result sets that bypass the sql.ts search() path (semantic vector
+ * results, tag-filtered results) so they receive the same adjustments.
+ *
+ * current:    multiply importance_score by a recency factor, re-sort descending
+ * historical: sort ascending by the date field (oldest first)
+ * neutral:    return items unchanged
+ *
+ * The recency factor thresholds (applied for 'current' mode):
+ *   0-7 days:  1.5x
+ *   8-30 days: 1.1x
+ *   31-90 days: 0.9x
+ *   90+ days:  0.7x
+ *
+ * Note: importance_score is mutated only on the spread copies produced here;
+ * no DB writes occur.
+ */
+function recencyFactorForDate(dateStr: string): number {
+  const ageDays = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
+  if (ageDays <= 7)  return 1.5;
+  if (ageDays <= 30) return 1.1;
+  if (ageDays <= 90) return 0.9;
+  return 0.7;
+}
+
+// Overload for items that carry importance_score (Observation and similar)
+function applyTemporalAdjustment<T extends { importance_score: number; created_at?: string; started_at?: string }>(
+  items: T[],
+  mode: TemporalMode,
+  dateField: 'created_at' | 'started_at',
+): T[];
+// Overload for items without importance_score (Session); only date-ordering is applied
+function applyTemporalAdjustment<T extends { created_at?: string; started_at?: string }>(
+  items: T[],
+  mode: TemporalMode,
+  dateField: 'created_at' | 'started_at',
+): T[];
+function applyTemporalAdjustment<T extends { importance_score?: number; created_at?: string; started_at?: string }>(
+  items: T[],
+  mode: TemporalMode,
+  dateField: 'created_at' | 'started_at',
+): T[] {
+  if (mode === 'current') {
+    if (items.length > 0 && 'importance_score' in items[0]!) {
+      // Score-carrying items: apply recency factor and re-sort descending
+      return (items as Array<T & { importance_score: number }>)
+        .map(item => ({
+          ...item,
+          importance_score: (item.importance_score ?? 0.5) * recencyFactorForDate((item[dateField] as string) ?? new Date().toISOString()),
+        }))
+        .sort((a, b) => b.importance_score - a.importance_score) as T[];
+    }
+    // Items without importance_score (e.g. Session): sort most-recent first by date field
+    return [...items].sort((a, b) =>
+      new Date((b[dateField] as string) ?? 0).getTime() - new Date((a[dateField] as string) ?? 0).getTime()
+    );
+  }
+  if (mode === 'historical') {
+    return [...items].sort((a, b) =>
+      new Date((a[dateField] as string) ?? 0).getTime() - new Date((b[dateField] as string) ?? 0).getTime()
+    );
+  }
+  return items;
+}
+
 /** Typed content block as expected by McpServer tool handlers */
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[] };
@@ -372,7 +440,7 @@ export function createContextManagerServer(
 
   server.tool(
     'context_search',
-    'Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain tag. Returns compact one-line summaries by default; pass compact=false for full text.',
+    'Search past Claude Code session activity. Automatically routes to the optimal search strategy: keyword (FTS5) for short/specific queries, semantic (vector similarity) for natural language, or hybrid (both merged with Reciprocal Rank Fusion) for mixed queries. Also searches user prompts and enriches results with related observations. Supports tag:X prefix to filter by domain tag. Returns compact one-line summaries by default; pass compact=false for full text. Automatically detects temporal intent: queries with "current", "latest", or "recent" boost recent results; queries with "history", "previously", or "timeline" return results in chronological order.',
     {
       query: z.string().describe('Search query. Supports tag:X prefix to filter by domain tag (e.g. "tag:auth", "tag:finance budget"). Developer tags: auth, database, testing, infra, config, frontend, api, git, build, deps. Personal ops tags: home, lawn, finance, health, travel, planning, decision, personal.'),
       project: z
@@ -399,6 +467,9 @@ export function createContextManagerServer(
       const db = await getDb();
       const normalizedProject = np(project);
 
+      // Classify temporal intent before any branch so all paths can apply ordering.
+      const temporalMode: TemporalMode = classifyTemporalIntent(query);
+
       // Check for tag: prefix, routes to tag search, optionally combined with keyword
       const { tag, remainingQuery } = parseTagPrefix(query);
       if (tag) {
@@ -410,15 +481,18 @@ export function createContextManagerServer(
           const ftsIds = new Set(ftsResults.map(o => o.id));
           results = tagObs.filter(o => ftsIds.has(o.id));
         }
+        // Apply temporal ordering to tag results the same way as other paths
+        results = applyTemporalAdjustment(results, temporalMode, 'created_at');
         const label = remainingQuery
           ? `tag:${tag} + keyword "${remainingQuery}"`
           : `tag:${tag}`;
         const modeLabel = useCompact ? 'compact' : 'full';
+        const temporalLabel = temporalMode !== 'neutral' ? ` | temporal: ${temporalMode}` : '';
         const formattedResults = useCompact
           ? results.map(o => formatObservationCompact(o)).join('\n')
           : formatObservations(results);
         const text = results.length > 0
-          ? `[search: ${label} | ${modeLabel}] ${results.length} results\n\n${formattedResults}`
+          ? `[search: ${label}${temporalLabel} | ${modeLabel}] ${results.length} results\n\n${formattedResults}`
           : `No observations found for ${label}.`;
         return { content: [{ type: 'text' as const, text }] };
       }
@@ -429,8 +503,10 @@ export function createContextManagerServer(
       let searchMethod = '';
       let sessionResults: Session[] = [];
 
+      const searchOptions = { project: normalizedProject, temporalMode };
+
       if (strategy === 'keyword') {
-        observations = await db.search(query, normalizedProject);
+        observations = await db.search(query, searchOptions);
         searchMethod = 'keyword';
       } else if (strategy === 'semantic') {
         // Try semantic search; fall back to keyword if embeddings unavailable
@@ -440,27 +516,31 @@ export function createContextManagerServer(
           if (queryEmbedding) {
             // Try session-level first (enriched, higher quality)
             const rawSessions = await db.vectorSearchSessions(queryEmbedding, normalizedProject, 10);
-            sessionResults = rawSessions.filter(
+            const filteredSessions = rawSessions.filter(
               s => s.similarity_score == null || s.similarity_score >= SEARCH_MIN_SCORE
             );
+            // Apply temporal ordering; use started_at as the date field for sessions
+            sessionResults = applyTemporalAdjustment(filteredSessions, temporalMode, 'started_at');
             if (sessionResults.length === 0) {
               const rawObs = await db.vectorSearch(queryEmbedding, normalizedProject, 20);
-              observations = rawObs.filter(
+              const filteredObs = rawObs.filter(
                 o => o.similarity_score == null || o.similarity_score >= SEARCH_MIN_SCORE
               );
+              // Apply temporal ordering to observation-level fallback
+              observations = applyTemporalAdjustment(filteredObs, temporalMode, 'created_at');
             }
             searchMethod = 'semantic';
           } else {
-            observations = await db.search(query, normalizedProject);
+            observations = await db.search(query, searchOptions);
             searchMethod = 'keyword (embedding unavailable)';
           }
         } else {
-          observations = await db.search(query, normalizedProject);
+          observations = await db.search(query, searchOptions);
           searchMethod = 'keyword (vector search unavailable)';
         }
       } else {
         // hybrid: run FTS5 + vector, merge with RRF
-        const ftsResults = await db.search(query, normalizedProject);
+        const ftsResults = await db.search(query, searchOptions);
 
         if (await db.isVectorSearchEnabled()) {
           const embeddingService = getEmbeddingService();
@@ -489,6 +569,8 @@ export function createContextManagerServer(
       // Build response sections
       const sections: string[] = [];
       const modeLabel = useCompact ? 'compact' : 'full';
+      // Append temporal label to headers only when the mode is non-neutral
+      const temporalLabel = temporalMode !== 'neutral' ? ` | temporal: ${temporalMode}` : '';
 
       // Session-level results (from semantic strategy)
       if (sessionResults.length > 0) {
@@ -503,7 +585,7 @@ export function createContextManagerServer(
           lines.push(`  ${summaryPreview}`);
           lines.push('');
         }
-        sections.push(`[search: ${searchMethod} | ${modeLabel}] ${sessionResults.length} sessions\n\n${lines.join('\n')}`);
+        sections.push(`[search: ${searchMethod}${temporalLabel} | ${modeLabel}] ${sessionResults.length} sessions\n\n${lines.join('\n')}`);
       }
 
       // Observation results
@@ -511,7 +593,7 @@ export function createContextManagerServer(
         const formattedObs = useCompact
           ? observations.map(o => formatObservationCompact(o)).join('\n')
           : formatObservations(observations);
-        sections.push(`[search: ${searchMethod} | ${modeLabel}] ${observations.length} results\n\n${formattedObs}`);
+        sections.push(`[search: ${searchMethod}${temporalLabel} | ${modeLabel}] ${observations.length} results\n\n${formattedObs}`);
 
         if (!useCompact) {
           // Enrich top 3 results with related observations (full mode only)

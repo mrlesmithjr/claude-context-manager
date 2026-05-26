@@ -6,6 +6,25 @@
  */
 
 export type ImportanceLevel = 'high' | 'medium' | 'low';
+
+import type { TemporalMode } from '../utils/temporal.js';
+export type { TemporalMode };
+
+/**
+ * Options for observation search. Passed to search() to control retrieval behavior.
+ */
+export interface SearchOptions {
+  /** Project path to scope the search (optional). */
+  project?: string;
+  /** Maximum number of results to return (default: 50). */
+  limit?: number;
+  /**
+   * Temporal intent classification. When 'current', recent results are boosted.
+   * When 'historical', results are sorted chronologically ascending (oldest first).
+   * When 'neutral' (default), existing relevance ordering is preserved.
+   */
+  temporalMode?: TemporalMode;
+}
 export type RelationshipType = 'same_file' | 'followed_by' | 'cross_project_same_file';
 export type ObservationTag =
   // Developer / code tags (inferred automatically by hook capture)
@@ -158,9 +177,9 @@ export interface ContextStorage {
   /**
    * Full-text search observations
    * @param query - Search query
-   * @param project - Project path (optional, for project-scoped search)
+   * @param projectOrOptions - Project path string (legacy) or SearchOptions object
    */
-  search(query: string, project?: string): Promise<Observation[]>;
+  search(query: string, projectOrOptions?: string | SearchOptions): Promise<Observation[]>;
 
   /**
    * Search observations by domain tag

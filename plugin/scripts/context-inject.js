@@ -35,6 +35,17 @@ function l2DistanceToCosine(l2Distance) {
 // src/storage/sqlite.ts
 var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
+function recencyFactor(capturedAt) {
+  const ageMs = Date.now() - new Date(capturedAt).getTime();
+  const ageDays = ageMs / (1e3 * 60 * 60 * 24);
+  if (ageDays <= 7)
+    return 1.5;
+  if (ageDays <= 30)
+    return 1.1;
+  if (ageDays <= 90)
+    return 0.9;
+  return 0.7;
+}
 var SQLiteStorage = class {
   db;
   vecEnabled = false;
@@ -380,7 +391,9 @@ ${storedOutput}`;
     }
     return results;
   }
-  async search(query, project) {
+  async search(query, projectOrOptions) {
+    const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
+    const temporalMode = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.temporalMode ?? "neutral" : "neutral";
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
@@ -405,7 +418,19 @@ ${storedOutput}`;
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
-    return rows.map((row) => this.mapRow(row));
+    const results = rows.map((row) => this.mapRow(row));
+    if (temporalMode === "current") {
+      return results.map((obs) => ({
+        ...obs,
+        importance_score: (obs.importance_score ?? 0.5) * recencyFactor(obs.created_at)
+      })).sort((a, b) => b.importance_score - a.importance_score);
+    }
+    if (temporalMode === "historical") {
+      return results.sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+    }
+    return results;
   }
   async searchByTag(tag, project, limit = 50) {
     const likePattern = `%,${tag},%`;
@@ -2148,11 +2173,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.80") {
+    if (installedVersion !== "0.8.81") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.80"}
+   Source:    v${"0.8.81"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2232,7 +2257,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.80"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.81"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats.");
       const memoryContent = await remoteGetMemory(client, input.cwd);
@@ -2275,7 +2300,7 @@ async function main() {
     if (versionWarning) {
       lines.push(versionWarning);
     }
-    lines.push(`context-manager v${"0.8.80"} active. ${count} observations tracked.`);
+    lines.push(`context-manager v${"0.8.81"} active. ${count} observations tracked.`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

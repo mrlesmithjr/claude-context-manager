@@ -20,6 +20,7 @@ import type {
   Observation,
   ImportanceLevel,
   RelationshipType,
+  SearchOptions,
   Session,
   Stats,
   UserPrompt,
@@ -35,6 +36,24 @@ const DEFAULT_DB_PATH = path.join(homedir(), '.claude-context', 'context.db');
 // Sentinel summary written by closeStaleActiveSessions() — used by getStats() to count GC-closed sessions.
 // Kept as a shared constant so writer and reader cannot diverge silently across refactors.
 const GC_SESSION_SUMMARY = '[Session ended abnormally - no Stop hook fired]';
+
+/**
+ * Compute a recency multiplier for temporal 'current' mode scoring.
+ *
+ * Observations written within the last 7 days score highest; observations
+ * older than 90 days are deprioritized. The multiplier is applied to the
+ * existing importance_score in-memory after SQL returns results.
+ *
+ * @param capturedAt - ISO 8601 timestamp from the observation's created_at field
+ */
+function recencyFactor(capturedAt: string): number {
+  const ageMs = Date.now() - new Date(capturedAt).getTime();
+  const ageDays = ageMs / (1000 * 60 * 60 * 24);
+  if (ageDays <= 7)  return 1.5;
+  if (ageDays <= 30) return 1.1;
+  if (ageDays <= 90) return 0.9;
+  return 0.7;
+}
 
 export class SQLiteStorage implements ContextStorage {
   private db: Database.Database;
@@ -516,7 +535,15 @@ export class SQLiteStorage implements ContextStorage {
     return results;
   }
 
-  async search(query: string, project?: string): Promise<Observation[]> {
+  async search(query: string, projectOrOptions?: string | SearchOptions): Promise<Observation[]> {
+    // Normalize overloaded argument: accept legacy string or SearchOptions object
+    const project = typeof projectOrOptions === 'string'
+      ? projectOrOptions
+      : projectOrOptions?.project;
+    const temporalMode = typeof projectOrOptions === 'object' && projectOrOptions !== null
+      ? (projectOrOptions.temporalMode ?? 'neutral')
+      : 'neutral';
+
     let sql: string;
     let params: unknown[];
 
@@ -552,7 +579,30 @@ export class SQLiteStorage implements ContextStorage {
 
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params) as Array<Record<string, unknown>>;
-    return rows.map(row => this.mapRow(row));
+    const results = rows.map(row => this.mapRow(row));
+
+    // Apply temporal mode post-query adjustments
+    if (temporalMode === 'current') {
+      // Returns transient scoring copies -- importance_score reflects recency adjustment
+      // for display only and is not written back to the database.
+      // Multiply each result's base score by a recency factor, then re-sort descending
+      return results
+        .map(obs => ({
+          ...obs,
+          importance_score: (obs.importance_score ?? 0.5) * recencyFactor(obs.created_at),
+        }))
+        .sort((a, b) => b.importance_score - a.importance_score);
+    }
+
+    if (temporalMode === 'historical') {
+      // Sort chronologically ascending (oldest first); no score changes
+      return results.sort((a, b) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+    }
+
+    // neutral: return as-is (SQL already orders by created_at DESC)
+    return results;
   }
 
   async searchByTag(tag: string, project?: string, limit: number = 50): Promise<Observation[]> {
