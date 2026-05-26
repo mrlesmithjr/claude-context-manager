@@ -311,6 +311,27 @@ function mergeSessionBlocks(existingBody: string, newContent: string): string {
   for (const newBlock of newBlocks) {
     const existing = existingBlocks.find(b => b.sessionId === newBlock.sessionId);
     if (existing) {
+      // Update the heading when the new block carries fresher session data.
+      // The most recent call to exportToAutoMemory always has the most up-to-date
+      // ended_at (set by the Stop hook), so its heading wins unconditionally when
+      // it differs from what was written by an earlier checkpoint.
+      //
+      // Edge case: the heading-only block written at Stop omits the action count
+      // (since all observations were already exported by checkpoints). Preserve the
+      // action count from the existing heading so "37m, 14 actions" is not reduced
+      // to just "42m".
+      if (newBlock.heading !== existing.heading) {
+        const existingCountMatch = existing.heading.match(/(\d+)\s+actions/);
+        const newHasCount = /\d+\s+actions/.test(newBlock.heading);
+        if (existingCountMatch && !newHasCount) {
+          // Append the preserved action count to the new heading.
+          // Input:  "### Session abc12345 (42m)"
+          // Output: "### Session abc12345 (42m, 14 actions)"
+          existing.heading = newBlock.heading.replace(/\)$/, `, ${existingCountMatch[0]})`);
+        } else {
+          existing.heading = newBlock.heading;
+        }
+      }
       // Backfill narrative if the existing block predates the narrative fix and has none.
       // Sessions exported before the fix were parsed without a narrative field; the new
       // export carries the correct narrative and should win in that case.
@@ -469,8 +490,46 @@ export async function exportToAutoMemory(
     sessionId
   );
 
+  // When the Stop hook fires for a session that exported everything via checkpoints,
+  // there are 0 unexported observations — but we still need to update the activity
+  // file with the correct final duration now that ended_at is set in the DB.
   if (observations.length === 0) {
-    return { exported: 0, filePath: null };
+    if (!sessionId) {
+      // Normal checkpoint with nothing new to write — skip entirely.
+      return { exported: 0, filePath: null };
+    }
+
+    // Stop hook path: fetch the session and write a heading-only block so
+    // mergeSessionBlocks can update the frozen "37m, 14 actions" heading in place.
+    const sessions = await storage.getRecentSessions(projectPath, 50);
+    const session = sessions.find(s => s.id === sessionId);
+    if (!session) {
+      console.error(`[context-manager] exportToAutoMemory: session ${sessionId.substring(0, 8)} not found in recent sessions; heading update skipped`);
+      return { exported: 0, filePath: null };
+    }
+
+    // Only write a heading-only block if the session is complete (Stop hook path).
+    // A mid-session checkpoint with nothing new to export should be a no-op.
+    if (session.status !== 'complete') {
+      return { exported: 0, filePath: null };
+    }
+
+    const shortId = sessionId.substring(0, 8);
+    const duration = computeSessionDuration(session);
+    // We don't know the total action count here (all were already exported),
+    // so omit the count from this heading update — it will merge with the
+    // existing block and overwrite its heading only.
+    const heading = `### Session ${shortId} (${duration})`;
+    const narrative = extractSessionNarrative(session.summary);
+    const parts: string[] = [heading];
+    if (narrative) parts.push(narrative);
+    const headingBlock = parts.join('\n');
+
+    const date = (session.ended_at ?? session.started_at).split('T')[0] ?? 'unknown';
+    const newContent = `## ${date}\n\n${headingBlock}`;
+
+    const { filePath } = writeActivityToMemory(projectPath, newContent);
+    return { exported: 0, filePath };
   }
 
   // Fetch session summaries for the sessions referenced by these observations
