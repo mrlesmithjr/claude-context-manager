@@ -2695,7 +2695,7 @@ function validateSessionStartInput(input) {
 }
 
 // plugin/hooks/context-inject.ts
-import { existsSync, readFileSync as readFileSync2 } from "fs";
+import { existsSync, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync } from "fs";
 import { join as join2 } from "path";
 import { homedir as homedir4 } from "os";
 
@@ -2868,11 +2868,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.100") {
+    if (installedVersion !== "0.8.101") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.100"}
+   Source:    v${"0.8.101"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2880,6 +2880,25 @@ function checkVersionMismatch() {
   } catch (error) {
     console.error("[context-manager] Version check failed:", error);
     return "";
+  }
+}
+var PLUGIN_VERSION_FILE = join2(homedir4(), ".claude-context", ".plugin-version");
+function checkPostUpdate() {
+  try {
+    const stored = existsSync(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
+    if (stored === "0.8.101")
+      return "";
+    const verb = stored === "" ? "Installed" : "Updated";
+    return `[context-manager] ${verb} v${"0.8.101"}. Hooks active.`;
+  } catch {
+    return "";
+  }
+}
+function markVersionActivated() {
+  try {
+    mkdirSync2(join2(homedir4(), ".claude-context"), { recursive: true });
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.101", "utf-8");
+  } catch {
   }
 }
 var REMOTE_MEMORY_INJECT_MAX = 3e3;
@@ -2944,8 +2963,15 @@ async function main() {
         await remoteCloseStale(client);
       } catch {
       }
+      const updateNotice2 = checkPostUpdate();
       const versionWarning2 = checkVersionMismatch();
       const lines2 = [];
+      if (updateNotice2) {
+        const serverMsg = `${updateNotice2} Server may need restart \u2014 check ${remoteUrl}/health`;
+        console.error(serverMsg);
+        lines2.push(serverMsg);
+        markVersionActivated();
+      }
       if (versionWarning2)
         lines2.push(versionWarning2);
       let remoteCount = 0;
@@ -2953,7 +2979,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.100"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.101"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3020,6 +3046,13 @@ async function main() {
       });
       return;
     }
+    {
+      const updateNotice2 = checkPostUpdate();
+      if (updateNotice2) {
+        console.error(updateNotice2);
+        markVersionActivated();
+      }
+    }
     if (!__nativeModulesAvailable) {
       console.error(NO_NATIVE_ERROR);
       await writeResponse({
@@ -3038,13 +3071,19 @@ async function main() {
     } catch {
     }
     const count = await storage.countObservations(input.cwd);
+    const updateNotice = checkPostUpdate();
     const versionWarning = checkVersionMismatch();
     const lines = [];
+    if (updateNotice) {
+      console.error(updateNotice);
+      lines.push(updateNotice);
+      markVersionActivated();
+    }
     if (versionWarning) {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.100"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.101"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
