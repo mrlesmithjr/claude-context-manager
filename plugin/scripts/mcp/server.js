@@ -2053,38 +2053,28 @@ var require_fast_deep_equal = __commonJS({
   "node_modules/fast-deep-equal/index.js"(exports, module) {
     "use strict";
     module.exports = function equal(a, b) {
-      if (a === b)
-        return true;
+      if (a === b) return true;
       if (a && b && typeof a == "object" && typeof b == "object") {
-        if (a.constructor !== b.constructor)
-          return false;
+        if (a.constructor !== b.constructor) return false;
         var length, i, keys;
         if (Array.isArray(a)) {
           length = a.length;
-          if (length != b.length)
-            return false;
+          if (length != b.length) return false;
           for (i = length; i-- !== 0; )
-            if (!equal(a[i], b[i]))
-              return false;
+            if (!equal(a[i], b[i])) return false;
           return true;
         }
-        if (a.constructor === RegExp)
-          return a.source === b.source && a.flags === b.flags;
-        if (a.valueOf !== Object.prototype.valueOf)
-          return a.valueOf() === b.valueOf();
-        if (a.toString !== Object.prototype.toString)
-          return a.toString() === b.toString();
+        if (a.constructor === RegExp) return a.source === b.source && a.flags === b.flags;
+        if (a.valueOf !== Object.prototype.valueOf) return a.valueOf() === b.valueOf();
+        if (a.toString !== Object.prototype.toString) return a.toString() === b.toString();
         keys = Object.keys(a);
         length = keys.length;
-        if (length !== Object.keys(b).length)
-          return false;
+        if (length !== Object.keys(b).length) return false;
         for (i = length; i-- !== 0; )
-          if (!Object.prototype.hasOwnProperty.call(b, keys[i]))
-            return false;
+          if (!Object.prototype.hasOwnProperty.call(b, keys[i])) return false;
         for (i = length; i-- !== 0; ) {
           var key = keys[i];
-          if (!equal(a[key], b[key]))
-            return false;
+          if (!equal(a[key], b[key])) return false;
         }
         return true;
       }
@@ -3240,8 +3230,7 @@ var require_utils = __commonJS({
     function findToken(str, token) {
       let ind = 0;
       for (let i = 0; i < str.length; i++) {
-        if (str[i] === token)
-          ind++;
+        if (str[i] === token) ind++;
       }
       return ind;
     }
@@ -3699,8 +3688,7 @@ var require_fast_uri = __commonJS({
       const options = Object.assign({}, opts);
       const uriTokens = [];
       const schemeHandler = getSchemeHandler(options.scheme || component.scheme);
-      if (schemeHandler && schemeHandler.serialize)
-        schemeHandler.serialize(component, options);
+      if (schemeHandler && schemeHandler.serialize) schemeHandler.serialize(component, options);
       if (component.path !== void 0) {
         if (!options.skipEscape) {
           component.path = escape(component.path);
@@ -6888,8 +6876,7 @@ async function remoteGetMemory(client, project) {
         }
       }
     );
-    if (!response.ok)
-      return "";
+    if (!response.ok) return "";
     const data = await response.json();
     return typeof data.content === "string" ? data.content : "";
   } catch {
@@ -6932,8 +6919,7 @@ async function remoteGetNextDecisionNumber(client, project) {
         }
       }
     );
-    if (!response.ok)
-      return 1;
+    if (!response.ok) return 1;
     const data = await response.json();
     const n = data["nextNumber"];
     return typeof n === "number" && Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
@@ -6972,8 +6958,7 @@ async function remoteMcpText(client, toolName, args) {
         params: { name: toolName, arguments: args }
       })
     });
-    if (!response.ok)
-      return "";
+    if (!response.ok) return "";
     const data = await response.json();
     return data.result?.content?.[0]?.text ?? "";
   } catch {
@@ -7564,7 +7549,7 @@ function $constructor(name, initializer3, params) {
   Object.defineProperty(_, "name", { value: name });
   return _;
 }
-var $brand = Symbol("zod_brand");
+var $brand = /* @__PURE__ */ Symbol("zod_brand");
 var $ZodAsyncError = class extends Error {
   constructor() {
     super(`Encountered Promise during synchronous parse. Use .parseAsync() instead.`);
@@ -7711,7 +7696,7 @@ function floatSafeRemainder(val, step) {
   const stepInt = Number.parseInt(step.toFixed(decCount).replace(".", ""));
   return valInt % stepInt / 10 ** decCount;
 }
-var EVALUATING = Symbol("evaluating");
+var EVALUATING = /* @__PURE__ */ Symbol("evaluating");
 function defineLazy(object3, key, getter) {
   let value = void 0;
   Object.defineProperty(object3, key, {
@@ -11845,6 +11830,7 @@ var error5 = () => {
         return `Clau inv\xE0lida a ${issue2.origin}`;
       case "invalid_union":
         return "Entrada inv\xE0lida";
+      // Could also be "Tipus d'unió invàlid" but "Entrada invàlida" is more general
       case "invalid_element":
         return `Element inv\xE0lid a ${issue2.origin}`;
       default:
@@ -16783,8 +16769,8 @@ function yo_default() {
 
 // node_modules/zod/v4/core/registries.js
 var _a;
-var $output = Symbol("ZodOutput");
-var $input = Symbol("ZodInput");
+var $output = /* @__PURE__ */ Symbol("ZodOutput");
+var $input = /* @__PURE__ */ Symbol("ZodInput");
 var $ZodRegistry = class {
   constructor() {
     this._map = /* @__PURE__ */ new WeakMap();
@@ -17821,7 +17807,7 @@ function _stringbool(Classes, _params) {
     type: "pipe",
     in: stringSchema,
     out: booleanSchema,
-    transform: (input, payload) => {
+    transform: ((input, payload) => {
       let data = input;
       if (params.case !== "sensitive")
         data = data.toLowerCase();
@@ -17840,14 +17826,14 @@ function _stringbool(Classes, _params) {
         });
         return {};
       }
-    },
-    reverseTransform: (input, _payload) => {
+    }),
+    reverseTransform: ((input, _payload) => {
       if (input === true) {
         return truthyArray[0] || "true";
       } else {
         return falsyArray[0] || "false";
       }
-    },
+    }),
     error: params.error
   });
   return codec2;
@@ -19175,10 +19161,10 @@ var ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
   inst.with = inst.check;
   inst.clone = (def2, params) => clone(inst, def2, params);
   inst.brand = () => inst;
-  inst.register = (reg, meta3) => {
+  inst.register = ((reg, meta3) => {
     reg.add(inst, meta3);
     return inst;
-  };
+  });
   inst.parse = (data, params) => parse2(inst, data, params, { callee: inst.parse });
   inst.safeParse = (data, params) => safeParse2(inst, data, params);
   inst.parseAsync = async (data, params) => parseAsync2(inst, data, params, { callee: inst.parseAsync });
@@ -20766,10 +20752,9 @@ var ProgressTokenSchema = union([string2(), number2().int()]);
 var CursorSchema = string2();
 var TaskCreationParamsSchema = looseObject({
   /**
-   * Time in milliseconds to keep task results available after completion.
-   * If null, the task has unlimited lifetime until manually cleaned up.
+   * Requested duration in milliseconds to retain task from creation.
    */
-  ttl: union([number2(), _null3()]).optional(),
+  ttl: number2().optional(),
   /**
    * Time in milliseconds to wait between task status requests.
    */
@@ -21069,7 +21054,11 @@ var ClientCapabilitiesSchema = object({
   /**
    * Present if the client supports task creation.
    */
-  tasks: ClientTasksCapabilitySchema.optional()
+  tasks: ClientTasksCapabilitySchema.optional(),
+  /**
+   * Extensions that the client supports. Keys are extension identifiers (vendor-prefix/extension-name).
+   */
+  extensions: record(string2(), AssertObjectSchema).optional()
 });
 var InitializeRequestParamsSchema = BaseRequestParamsSchema.extend({
   /**
@@ -21130,7 +21119,11 @@ var ServerCapabilitiesSchema = object({
   /**
    * Present if the server supports task creation.
    */
-  tasks: ServerTasksCapabilitySchema.optional()
+  tasks: ServerTasksCapabilitySchema.optional(),
+  /**
+   * Extensions that the server supports. Keys are extension identifiers (vendor-prefix/extension-name).
+   */
+  extensions: record(string2(), AssertObjectSchema).optional()
 });
 var InitializeResultSchema = ResultSchema.extend({
   /**
@@ -21322,6 +21315,12 @@ var ResourceSchema = object({
    * The MIME type of this resource, if known.
    */
   mimeType: optional(string2()),
+  /**
+   * The size of the raw resource content, in bytes (i.e., before base64 encoding or any tokenization), if known.
+   *
+   * This can be used by Hosts to display file sizes and estimate context window usage.
+   */
+  size: optional(number2()),
   /**
    * Optional annotations for the client.
    */
@@ -22121,11 +22120,13 @@ function assertCompleteRequestPrompt(request) {
   if (request.params.ref.type !== "ref/prompt") {
     throw new TypeError(`Expected CompleteRequestPrompt, but got ${request.params.ref.type}`);
   }
+  void request;
 }
 function assertCompleteRequestResourceTemplate(request) {
   if (request.params.ref.type !== "ref/resource") {
     throw new TypeError(`Expected CompleteRequestResourceTemplate, but got ${request.params.ref.type}`);
   }
+  void request;
 }
 var CompleteResultSchema = ResultSchema.extend({
   completion: looseObject({
@@ -22418,8 +22419,7 @@ var FACT_CATEGORIES = [
   }
 ];
 function detectFactType(summary) {
-  if (!summary)
-    return null;
+  if (!summary) return null;
   const lower = summary.toLowerCase();
   for (const cat of FACT_CATEGORIES) {
     for (const pattern of cat.patterns) {
@@ -22441,17 +22441,13 @@ var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
 function recencyFactor(capturedAt) {
   const ageMs = Date.now() - new Date(capturedAt).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
-  if (ageDays <= 7)
-    return 1.5;
-  if (ageDays <= 30)
-    return 1.1;
-  if (ageDays <= 90)
-    return 0.9;
+  if (ageDays <= 7) return 1.5;
+  if (ageDays <= 30) return 1.1;
+  if (ageDays <= 90) return 0.9;
   return 0.7;
 }
 function applyDecay(obs) {
-  if (obs.pinned === 1)
-    return obs.importance_score;
+  if (obs.pinned === 1) return obs.importance_score;
   const base = obs.importance_score;
   const ageMs = Date.now() - new Date(obs.created_at).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
@@ -22703,11 +22699,9 @@ var SQLiteStorage = class {
   normalizeSummaryForDedup(summary, toolName) {
     if (summary.includes("psql")) {
       const match = summary.match(/^(Bash:\s*docker\s+exec\s+\S+\s+psql\b)/);
-      if (match?.[1])
-        return match[1];
+      if (match?.[1]) return match[1];
       const psqlMatch = summary.match(/^(Bash:\s*psql\b[^|;]*)/);
-      if (psqlMatch?.[1])
-        return psqlMatch[1].substring(0, 40);
+      if (psqlMatch?.[1]) return psqlMatch[1].substring(0, 40);
     }
     if (/^Bash:\s*git\s+(status|diff|log)\b/.test(summary)) {
       return summary.substring(0, 20);
@@ -22868,8 +22862,7 @@ ${storedOutput}`;
       LIMIT ? OFFSET ?
     `);
     const params = [project + "%"];
-    if (toolName)
-      params.push(toolName);
+    if (toolName) params.push(toolName);
     params.push(safeLimit, safeOffset);
     const rows = stmt.all(...params);
     return rows.map((row) => this.mapRow(row));
@@ -22896,23 +22889,18 @@ ${storedOutput}`;
     const includedIds = /* @__PURE__ */ new Set();
     let highTokens = 0;
     for (const { obs } of scoredRows) {
-      if (obs.importance_score < 0.65)
-        continue;
-      if (highTokens + obs.token_estimate > highBudget)
-        continue;
+      if (obs.importance_score < 0.65) continue;
+      if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
-      if (obs.id !== void 0)
-        includedIds.add(obs.id);
+      if (obs.id !== void 0) includedIds.add(obs.id);
       highTokens += obs.token_estimate;
     }
     const remainingBudget = effectiveBudget - highTokens;
     const lowResults = [];
     let lowTokens = 0;
     for (const { obs } of scoredRows) {
-      if (obs.id !== void 0 && includedIds.has(obs.id))
-        continue;
-      if (lowTokens + obs.token_estimate > remainingBudget)
-        continue;
+      if (obs.id !== void 0 && includedIds.has(obs.id)) continue;
+      if (lowTokens + obs.token_estimate > remainingBudget) continue;
       lowResults.push(obs);
       lowTokens += obs.token_estimate;
     }
@@ -22949,10 +22937,8 @@ ${storedOutput}`;
         ${paginationClause}
       `;
       params = [ftsQuery, project + "%", branchFilter];
-      if (importance)
-        params.push(importance);
-      if (toolName)
-        params.push(toolName);
+      if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     } else if (project) {
       sql = `
         SELECT o.* FROM observations o
@@ -22962,10 +22948,8 @@ ${storedOutput}`;
         ${paginationClause}
       `;
       params = [ftsQuery, project + "%"];
-      if (importance)
-        params.push(importance);
-      if (toolName)
-        params.push(toolName);
+      if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     } else if (hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
@@ -22975,10 +22959,8 @@ ${storedOutput}`;
         ${paginationClause}
       `;
       params = [ftsQuery, branchFilter];
-      if (importance)
-        params.push(importance);
-      if (toolName)
-        params.push(toolName);
+      if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -22988,10 +22970,8 @@ ${storedOutput}`;
         ${paginationClause}
       `;
       params = [ftsQuery];
-      if (importance)
-        params.push(importance);
-      if (toolName)
-        params.push(toolName);
+      if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
@@ -23187,8 +23167,7 @@ ${storedOutput}`;
     stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, summaryExtended || null, sessionId);
   }
   async updateSessionDraftSummary(sessionId, summary) {
-    if (!summary)
-      return;
+    if (!summary) return;
     this.db.prepare(`
       UPDATE sessions SET summary = ? WHERE id = ?
     `).run(summary, sessionId);
@@ -23212,8 +23191,7 @@ ${storedOutput}`;
       WHERE id = ?
       LIMIT 1
     `).get(id);
-    if (!row)
-      return void 0;
+    if (!row) return void 0;
     return {
       id: row.id,
       project: row.project,
@@ -23280,10 +23258,8 @@ ${storedOutput}`;
       LIMIT ? OFFSET ?
     `;
     const params = [project];
-    if (status)
-      params.push(status);
-    if (branch)
-      params.push(branch);
+    if (status) params.push(status);
+    if (branch) params.push(branch);
     params.push(limit, offset);
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => ({
@@ -23809,8 +23785,7 @@ ${storedOutput}`;
     return rows.map((row) => this.mapRow(row));
   }
   async markExported(ids) {
-    if (ids.length === 0)
-      return;
+    if (ids.length === 0) return;
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const stmt = this.db.prepare(
       `UPDATE observations SET exported_at = ? WHERE id IN (SELECT value FROM json_each(?))`
@@ -23827,8 +23802,7 @@ ${storedOutput}`;
     if (!columnNames.has("embedding")) {
       this.db.exec(`ALTER TABLE observations ADD COLUMN embedding BLOB`);
     }
-    if (!this.vecEnabled)
-      return;
+    if (!this.vecEnabled) return;
     try {
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS vec_observations USING vec0(
@@ -23852,8 +23826,7 @@ ${storedOutput}`;
    * preserving relational integrity (observation_relationships may reference this row).
    */
   checkSemanticDuplicate(embedding, project, id, threshold = 0.85) {
-    if (!this.vecEnabled)
-      return false;
+    if (!this.vecEnabled) return false;
     const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
     const row = this.db.prepare(`
       SELECT v.distance
@@ -23865,8 +23838,7 @@ ${storedOutput}`;
       ORDER BY v.distance ASC
       LIMIT 1
     `).get(embeddingBuf, 10, project + "%", id);
-    if (!row)
-      return false;
+    if (!row) return false;
     return l2DistanceToCosine(row.distance) >= threshold;
   }
   async saveEmbedding(id, embedding) {
@@ -23950,8 +23922,7 @@ ${storedOutput}`;
     if (!columnNames.has("enriched_text")) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN enriched_text TEXT`);
     }
-    if (!this.vecEnabled)
-      return;
+    if (!this.vecEnabled) return;
     try {
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS vec_sessions USING vec0(
@@ -24087,8 +24058,7 @@ ${storedOutput}`;
     const rows = this.db.prepare(
       `SELECT id, tags FROM observations WHERE tags IS NOT NULL AND tags NOT LIKE '[%'`
     ).all();
-    if (rows.length === 0)
-      return;
+    if (rows.length === 0) return;
     const update = this.db.prepare(`UPDATE observations SET tags = ? WHERE id = ?`);
     const migrate = this.db.transaction(() => {
       for (const row of rows) {
@@ -24142,8 +24112,7 @@ ${storedOutput}`;
   async addManualObservation(params) {
     const { text: rawText, project, sessionId, importanceScore, tags, client } = params;
     const text = rawText.trim();
-    if (!text)
-      return void 0;
+    if (!text) return void 0;
     let importance;
     if (importanceScore >= 0.65) {
       importance = "high";
@@ -24383,8 +24352,7 @@ ${storedOutput}`;
    */
   async getRecentSessionsWithObservations(project, sessionLimit = 10) {
     const sessions = await this.getRecentSessions(project, sessionLimit);
-    if (sessions.length === 0)
-      return [];
+    if (sessions.length === 0) return [];
     const ids = sessions.map((s) => s.id);
     const rows = this.db.prepare(`
       SELECT * FROM observations
@@ -24565,8 +24533,7 @@ ${storedOutput}`;
       ORDER BY importance_score DESC
       LIMIT 1
     `).get(sessionId);
-    if (!row)
-      return null;
+    if (!row) return null;
     return this.mapRow(row);
   }
   /**
@@ -24590,11 +24557,9 @@ ${storedOutput}`;
    * Results returned in ascending created_at order.
    */
   getObservationsByIds(ids) {
-    if (ids.length === 0)
-      return Promise.resolve([]);
+    if (ids.length === 0) return Promise.resolve([]);
     const safeIds = ids.map((id) => Math.trunc(id)).filter((id) => id > 0);
-    if (safeIds.length === 0)
-      return Promise.resolve([]);
+    if (safeIds.length === 0) return Promise.resolve([]);
     const placeholders = safeIds.map(() => "?").join(", ");
     const sql = `
       SELECT * FROM observations
@@ -24622,8 +24587,7 @@ ${storedOutput}`;
     const targetRow = this.db.prepare(`
       SELECT * FROM observations WHERE id = ?
     `).get(id);
-    if (!targetRow)
-      return Promise.resolve(null);
+    if (!targetRow) return Promise.resolve(null);
     const target = this.mapRow(targetRow);
     const sessionId = targetRow.session_id;
     const capturedAt = targetRow.created_at;
@@ -24938,8 +24902,7 @@ ${storedOutput}`;
    * array, not user input.
    */
   async findConflictingFact(project, categoryValues, newValue, currentObservationId) {
-    if (categoryValues.length === 0)
-      return null;
+    if (categoryValues.length === 0) return null;
     const likeClauses = categoryValues.map(() => `summary LIKE ?`).join(" OR ");
     const selfExclusion = currentObservationId != null ? "AND id != ?" : "";
     const sql = `
@@ -24955,8 +24918,7 @@ ${storedOutput}`;
     const likeParams = categoryValues.map((v) => `%${v}%`);
     const excludeParam = `%${newValue}%`;
     const params = [project, ...likeParams, excludeParam];
-    if (currentObservationId != null)
-      params.push(currentObservationId);
+    if (currentObservationId != null) params.push(currentObservationId);
     const rows = this.db.prepare(sql).all(...params);
     return rows[0]?.id ?? null;
   }
@@ -25022,8 +24984,7 @@ ${storedOutput}`;
    * Runs as a transaction for efficiency. Tokens are already normalized.
    */
   addTokens(tokens) {
-    if (tokens.length === 0)
-      return;
+    if (tokens.length === 0) return;
     const upsert = this.db.prepare(
       `INSERT INTO token_index(token, frequency) VALUES(?, 1)
        ON CONFLICT(token) DO UPDATE SET frequency = frequency + 1`
@@ -25042,8 +25003,7 @@ ${storedOutput}`;
    * Returns the best candidate with edit distance <= 2, or null.
    */
   findClosestToken(token, minFrequency = 3) {
-    if (token.length > 50)
-      return null;
+    if (token.length > 50) return null;
     const minLen = Math.max(1, token.length - 2);
     const maxLen = token.length + 2;
     const rows = this.db.prepare(
@@ -25156,8 +25116,7 @@ var EmbeddingService = class {
     } catch {
     }
     const installed = this.autoInstall();
-    if (!installed)
-      return null;
+    if (!installed) return null;
     try {
       const require2 = createRequire(join(embeddingsDir, "index.js"));
       return require2("@huggingface/transformers");
@@ -25170,10 +25129,8 @@ var EmbeddingService = class {
    * On first run: auto-installs dependencies, downloads model (~80MB).
    */
   async load() {
-    if (this.status === "ready")
-      return true;
-    if (this.status === "unavailable")
-      return false;
+    if (this.status === "ready") return true;
+    if (this.status === "unavailable") return false;
     this.status = "loading";
     this.error = null;
     try {
@@ -25208,12 +25165,10 @@ var EmbeddingService = class {
    * @returns Array of Float32Array (384-dim each), or null if service unavailable
    */
   async embedBatch(texts) {
-    if (texts.length === 0)
-      return [];
+    if (texts.length === 0) return [];
     if (this.status !== "ready") {
       const loaded = await this.load();
-      if (!loaded || !this.pipeline)
-        return null;
+      if (!loaded || !this.pipeline) return null;
     }
     const output = await this.pipeline(texts, {
       pooling: "mean",
@@ -25229,8 +25184,7 @@ var EmbeddingService = class {
    * Safe to call when no pipeline is loaded (no-op).
    */
   async dispose() {
-    if (!this.pipeline)
-      return;
+    if (!this.pipeline) return;
     const p = this.pipeline;
     try {
       await p.dispose?.();
@@ -25253,28 +25207,22 @@ var MAX_TEXT_LENGTH = 2e3;
 function buildSessionEmbeddingText(prompts, observations, sessionSummary) {
   const parts = [];
   const promptText = buildPromptSection(prompts);
-  if (promptText)
-    parts.push(promptText);
+  if (promptText) parts.push(promptText);
   const actionText = buildActionSection(observations);
-  if (actionText)
-    parts.push(actionText);
+  if (actionText) parts.push(actionText);
   const filesText = buildFilesSection(observations);
-  if (filesText)
-    parts.push(filesText);
+  if (filesText) parts.push(filesText);
   if (sessionSummary) {
     const cleaned = cleanSummary(sessionSummary);
-    if (cleaned)
-      parts.push(`Outcome: ${cleaned}`);
+    if (cleaned) parts.push(`Outcome: ${cleaned}`);
   }
   const text = parts.join("\n");
   return text.length > MAX_TEXT_LENGTH ? text.substring(0, MAX_TEXT_LENGTH) : text;
 }
 function buildPromptSection(prompts) {
-  if (prompts.length === 0)
-    return "";
+  if (prompts.length === 0) return "";
   const substantive = prompts.map((p) => p.prompt_text.trim()).filter((t) => t.length > 10).slice(0, 5);
-  if (substantive.length === 0)
-    return "";
+  if (substantive.length === 0) return "";
   const truncated = substantive.map(
     (p) => p.length > 200 ? p.substring(0, 200) : p
   );
@@ -25282,14 +25230,11 @@ function buildPromptSection(prompts) {
 }
 function buildActionSection(observations) {
   const highValue = observations.filter((obs) => {
-    if (["Read", "Grep", "Glob"].includes(obs.tool_name))
-      return false;
-    if (obs.importance === "low")
-      return false;
+    if (["Read", "Grep", "Glob"].includes(obs.tool_name)) return false;
+    if (obs.importance === "low") return false;
     return true;
   });
-  if (highValue.length === 0)
-    return "";
+  if (highValue.length === 0) return "";
   const actions = highValue.slice(0, 10).map((obs) => {
     return describeAction(obs);
   });
@@ -25319,16 +25264,11 @@ function describeAction(obs) {
         const msg = command.match(/commit -m ["'](.+?)["']/)?.[1] || command.match(/"([^"]+)"/)?.[1] || "";
         return msg ? `Git commit: "${msg.substring(0, 80)}"` : "Git commit";
       }
-      if (command.includes("git push"))
-        return "Git push";
-      if (command.includes("npm run build"))
-        return "Build";
-      if (command.includes("npm run test") || command.includes("npm test"))
-        return "Ran tests";
-      if (command.includes("npm install") || command.includes("npm add"))
-        return "Installed dependencies";
-      if (command.includes("npm version"))
-        return "Version bump";
+      if (command.includes("git push")) return "Git push";
+      if (command.includes("npm run build")) return "Build";
+      if (command.includes("npm run test") || command.includes("npm test")) return "Ran tests";
+      if (command.includes("npm install") || command.includes("npm add")) return "Installed dependencies";
+      if (command.includes("npm version")) return "Version bump";
       return command.length > 80 ? command.substring(0, 80) : command;
     }
     default:
@@ -25340,12 +25280,10 @@ function buildFilesSection(observations) {
   for (const obs of observations) {
     for (const file2 of obs.files_touched) {
       const basename2 = file2.split("/").pop();
-      if (basename2)
-        allFiles.add(basename2);
+      if (basename2) allFiles.add(basename2);
     }
   }
-  if (allFiles.size === 0)
-    return "";
+  if (allFiles.size === 0) return "";
   const fileList = [...allFiles].slice(0, 15).join(", ");
   return `Files: ${fileList}`;
 }
@@ -29070,7 +29008,6 @@ ZodNaN2.create = (params) => {
     ...processCreateParams(params)
   });
 };
-var BRAND = Symbol("zod_brand");
 var ZodBranded = class extends ZodType2 {
   _parse(input) {
     const { ctx } = this._processInputParams(input);
@@ -29262,10 +29199,10 @@ var ZodMiniType = /* @__PURE__ */ $constructor("ZodMiniType", (inst, def) => {
   inst.with = inst.check;
   inst.clone = (_def, params) => clone(inst, _def, params);
   inst.brand = () => inst;
-  inst.register = (reg, meta3) => {
+  inst.register = ((reg, meta3) => {
     reg.add(inst, meta3);
     return inst;
-  };
+  });
   inst.apply = (fn) => fn(inst);
 });
 var ZodMiniObject = /* @__PURE__ */ $constructor("ZodMiniObject", (inst, def) => {
@@ -29433,7 +29370,7 @@ function isTerminal(status) {
 }
 
 // node_modules/zod-to-json-schema/dist/esm/Options.js
-var ignoreOverride = Symbol("Let zodToJsonSchema decide on which parser to use");
+var ignoreOverride = /* @__PURE__ */ Symbol("Let zodToJsonSchema decide on which parser to use");
 var defaultOptions = {
   name: void 0,
   $refStrategy: "root",
@@ -30970,6 +30907,10 @@ var Protocol = class {
     this._progressHandlers.clear();
     this._taskProgressTokens.clear();
     this._pendingDebouncedNotifications.clear();
+    for (const info of this._timeoutInfo.values()) {
+      clearTimeout(info.timeoutId);
+    }
+    this._timeoutInfo.clear();
     for (const controller of this._requestHandlerAbortControllers.values()) {
       controller.abort();
     }
@@ -31100,7 +31041,9 @@ var Protocol = class {
         await capturedTransport?.send(errorResponse);
       }
     }).catch((error48) => this._onerror(new Error(`Failed to send response: ${error48}`))).finally(() => {
-      this._requestHandlerAbortControllers.delete(request.id);
+      if (this._requestHandlerAbortControllers.get(request.id) === abortController) {
+        this._requestHandlerAbortControllers.delete(request.id);
+      }
     });
   }
   _onprogress(notification) {
@@ -32403,7 +32346,7 @@ var Server = class extends Protocol {
 };
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/completable.js
-var COMPLETABLE_SYMBOL = Symbol.for("mcp.completable");
+var COMPLETABLE_SYMBOL = /* @__PURE__ */ Symbol.for("mcp.completable");
 function isCompletable(schema) {
   return !!schema && typeof schema === "object" && COMPLETABLE_SYMBOL in schema;
 }
@@ -33113,6 +33056,9 @@ var McpServer = class {
           annotations = rest.shift();
         }
       } else if (typeof firstArg === "object" && firstArg !== null) {
+        if (Object.values(firstArg).some((v) => typeof v === "object" && v !== null)) {
+          throw new Error(`Tool ${name} expected a Zod schema or ToolAnnotations, but received an unrecognized object`);
+        }
         annotations = rest.shift();
       }
     }
@@ -33231,6 +33177,9 @@ function getZodSchemaObject(schema) {
   if (isZodRawShapeCompat(schema)) {
     return objectFromShape(schema);
   }
+  if (!isZodSchemaInstance(schema)) {
+    throw new Error("inputSchema must be a Zod schema or raw shape, received an unrecognized object");
+  }
   return schema;
 }
 function promptArgumentsFromSchema(schema) {
@@ -33291,24 +33240,19 @@ function convertPathToDashed(projectPath) {
 
 // src/utils/session-format.ts
 function computeSessionDuration(session) {
-  if (!session.ended_at)
-    return "active";
+  if (!session.ended_at) return "active";
   const start = new Date(session.started_at).getTime();
   const end = new Date(session.ended_at).getTime();
-  if (isNaN(start) || isNaN(end) || end <= start)
-    return "unknown";
+  if (isNaN(start) || isNaN(end) || end <= start) return "unknown";
   const minutes = Math.round((end - start) / 6e4);
-  if (minutes < 1)
-    return "<1m";
-  if (minutes < 60)
-    return `${minutes}m`;
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const remaining = minutes % 60;
   return remaining > 0 ? `${hours}h ${remaining}m` : `${hours}h`;
 }
 function extractSessionNarrative(summary, maxLen = 120) {
-  if (!summary || summary.length < 10)
-    return "";
+  if (!summary || summary.length < 10) return "";
   let text = summary.replace(/\*\*/g, "").replace(/`/g, "").trim();
   const sentenceEnd = text.search(/[.!?\n]/);
   if (sentenceEnd > 0 && sentenceEnd < maxLen) {
@@ -33331,8 +33275,7 @@ function countByImportance(observations) {
   const counts = { high: 0, medium: 0, low: 0 };
   for (const obs of observations) {
     const level = obs.importance;
-    if (level in counts)
-      counts[level]++;
+    if (level in counts) counts[level]++;
   }
   return counts;
 }
@@ -33356,8 +33299,7 @@ function resolveMemoryDir(projectPath) {
   return join2(homedir2(), ".claude", "projects", dashedPath, "memory");
 }
 function formatObservationsForMemory(observations, sessions) {
-  if (observations.length === 0)
-    return "";
+  if (observations.length === 0) return "";
   const sessionLookup = /* @__PURE__ */ new Map();
   if (sessions) {
     for (const s of sessions) {
@@ -33367,11 +33309,9 @@ function formatObservationsForMemory(observations, sessions) {
   const byDate = /* @__PURE__ */ new Map();
   for (const obs of observations) {
     const date5 = obs.created_at.split("T")[0] ?? "unknown";
-    if (!byDate.has(date5))
-      byDate.set(date5, /* @__PURE__ */ new Map());
+    if (!byDate.has(date5)) byDate.set(date5, /* @__PURE__ */ new Map());
     const dateGroup = byDate.get(date5);
-    if (!dateGroup.has(obs.session_id))
-      dateGroup.set(obs.session_id, []);
+    if (!dateGroup.has(obs.session_id)) dateGroup.set(obs.session_id, []);
     dateGroup.get(obs.session_id).push(obs);
   }
   const lines = [];
@@ -33413,16 +33353,14 @@ function formatSessionBlock(observations, session) {
         break;
       case "Edit": {
         const desc = describeEdit(obs);
-        if (!edited.has(shortFile))
-          edited.set(shortFile, []);
+        if (!edited.has(shortFile)) edited.set(shortFile, []);
         edited.get(shortFile).push(desc);
         break;
       }
       case "Bash": {
         if (obs.summary.includes("git commit")) {
           const msg = obs.summary.match(/commit -m ["'](.+?)["']/)?.[1] || obs.summary.match(/"([^"]+)"/)?.[1] || "";
-          if (msg)
-            commits.push(msg.substring(0, 70));
+          if (msg) commits.push(msg.substring(0, 70));
         } else if (obs.summary.includes("git push")) {
           commands.push("Git push");
         } else if (obs.summary.includes("npm install") || obs.summary.includes("yarn add")) {
@@ -33453,8 +33391,7 @@ function formatSessionBlock(observations, session) {
   }
   for (const [file2, descriptions] of edited) {
     const meaningful = descriptions.filter((d) => d.length > 0);
-    if (meaningful.length === 0)
-      continue;
+    if (meaningful.length === 0) continue;
     const best = meaningful.find((d) => d.startsWith("Added") || d.startsWith("Schema")) || meaningful.find((d) => d.startsWith("Changed") || d.startsWith("Removed")) || meaningful[0] || "modified";
     items.push(`Edited ${file2} \u2014 ${best}`);
   }
@@ -33476,58 +33413,45 @@ function formatSessionBlock(observations, session) {
   if (items.length > MAX_ITEMS_PER_SESSION) {
     cappedItems.push(`+ ${items.length - MAX_ITEMS_PER_SESSION} more changes`);
   }
-  if (cappedItems.length === 0 && !narrative)
-    return "";
+  if (cappedItems.length === 0 && !narrative) return "";
   const itemLines = cappedItems.map((item) => `- ${item}`).join("\n");
   const parts = [heading];
-  if (narrative)
-    parts.push(narrative);
-  if (itemLines)
-    parts.push(itemLines);
+  if (narrative) parts.push(narrative);
+  if (itemLines) parts.push(itemLines);
   return parts.join("\n");
 }
 function describeEdit(obs) {
   const toolInput = obs.metadata?.tool_input;
-  if (!toolInput)
-    return "";
+  if (!toolInput) return "";
   const oldStr = toolInput.old_string || "";
   const newStr = toolInput.new_string || "";
-  if (!oldStr && !newStr)
-    return "";
+  if (!oldStr && !newStr) return "";
   const filePath = obs.files_touched[0] ?? "";
-  if (filePath && isVersionBump(filePath))
-    return "";
+  if (filePath && isVersionBump(filePath)) return "";
   const oldLines = oldStr.split("\n").map((l) => l.trim()).filter(Boolean);
   const newLines = newStr.split("\n").map((l) => l.trim()).filter(Boolean);
   const oldSet = new Set(oldLines);
   const addedLines = newLines.filter((l) => !oldSet.has(l));
   for (const line of addedLines) {
     const funcMatch = line.match(/(?:function|async function|class|const|export)\s+(\w+)/);
-    if (funcMatch)
-      return `Added ${funcMatch[0].substring(0, 60)}`;
+    if (funcMatch) return `Added ${funcMatch[0].substring(0, 60)}`;
     const importMatch = line.match(/import\s+.+from\s+['"](.+?)['"]/);
-    if (importMatch)
-      return `Added import from '${importMatch[1]}'`;
+    if (importMatch) return `Added import from '${importMatch[1]}'`;
     const typeMatch = line.match(/(?:interface|type)\s+(\w+)/);
-    if (typeMatch)
-      return `Added ${typeMatch[0]}`;
+    if (typeMatch) return `Added ${typeMatch[0]}`;
     const toolMatch = line.match(/['"](\w+)['"]/);
-    if (line.includes("server.tool") && toolMatch)
-      return `Added tool '${toolMatch[1]}'`;
+    if (line.includes("server.tool") && toolMatch) return `Added tool '${toolMatch[1]}'`;
     if (line.includes('"dependencies"') || line.match(/["']\w+["']\s*:\s*["']\^/)) {
       const depMatch = line.match(/["'](@?[\w/-]+)["']\s*:/);
-      if (depMatch)
-        return `Added dependency ${depMatch[1]}`;
+      if (depMatch) return `Added dependency ${depMatch[1]}`;
     }
     if (line.includes("CREATE TABLE") || line.includes("CREATE VIRTUAL TABLE") || line.includes("ALTER TABLE")) {
       return `Schema change: ${line.substring(0, 60)}`;
     }
   }
   const netLines = newLines.length - oldLines.length;
-  if (netLines > 5)
-    return `Added ~${netLines} lines`;
-  if (netLines < -5)
-    return `Removed ~${Math.abs(netLines)} lines`;
+  if (netLines > 5) return `Added ~${netLines} lines`;
+  if (netLines < -5) return `Removed ~${Math.abs(netLines)} lines`;
   if (addedLines.length > 0) {
     const hint = addedLines[0].substring(0, 60);
     if (hint.length >= 10 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
@@ -33537,12 +33461,9 @@ function describeEdit(obs) {
   return "";
 }
 function mergeSessionBlocks(existingBody, newContent) {
-  if (!existingBody && !newContent)
-    return "";
-  if (!existingBody)
-    return newContent.trimEnd();
-  if (!newContent)
-    return existingBody.trimEnd();
+  if (!existingBody && !newContent) return "";
+  if (!existingBody) return newContent.trimEnd();
+  if (!newContent) return existingBody.trimEnd();
   const existingBlocks = parseSessionBlocks(existingBody);
   const newBlocks = parseSessionBlocks(newContent);
   for (const newBlock of newBlocks) {
@@ -33585,8 +33506,7 @@ function parseSessionBlocks(body) {
     if (line.startsWith("## ")) {
       currentDate = line.substring(3).trim();
     } else if (line.startsWith("### ")) {
-      if (currentBlock)
-        blocks.push(currentBlock);
+      if (currentBlock) blocks.push(currentBlock);
       const headingText = line.substring(4).trim();
       const sessionId = headingText.replace(/^Session\s+/, "").split(/[\s—(]/)[0] || headingText;
       currentBlock = {
@@ -33601,15 +33521,13 @@ function parseSessionBlocks(body) {
       currentBlock.narrative = ((currentBlock.narrative || "") + line + " ").trimEnd();
     }
   }
-  if (currentBlock)
-    blocks.push(currentBlock);
+  if (currentBlock) blocks.push(currentBlock);
   return blocks;
 }
 function rebuildFromBlocks(blocks) {
   const byDate = /* @__PURE__ */ new Map();
   for (const block of blocks) {
-    if (!byDate.has(block.date))
-      byDate.set(block.date, []);
+    if (!byDate.has(block.date)) byDate.set(block.date, []);
     byDate.get(block.date).push(block);
   }
   const lines = [];
@@ -33618,8 +33536,7 @@ function rebuildFromBlocks(blocks) {
     lines.push("");
     for (const block of dateBlocks) {
       lines.push(block.heading);
-      if (block.narrative)
-        lines.push(block.narrative);
+      if (block.narrative) lines.push(block.narrative);
       lines.push(...block.items);
       lines.push("");
     }
@@ -33675,8 +33592,7 @@ async function exportToAutoMemory(storage2, projectPath, sessionId) {
     const heading = `### Session ${shortId} (${duration3})`;
     const narrative = extractSessionNarrative(session.summary);
     const parts = [heading];
-    if (narrative)
-      parts.push(narrative);
+    if (narrative) parts.push(narrative);
     const headingBlock = parts.join("\n");
     const date5 = (session.ended_at ?? session.started_at).split("T")[0] ?? "unknown";
     const newContent = `## ${date5}
@@ -33716,8 +33632,7 @@ function parseFrontmatter(content) {
   const result = { ...defaults };
   for (const line of frontmatter.split("\n")) {
     const colonIdx = line.indexOf(":");
-    if (colonIdx === -1)
-      continue;
+    if (colonIdx === -1) continue;
     const key = line.substring(0, colonIdx).trim();
     const value = line.substring(colonIdx + 1).trim();
     if (key === "name") {
@@ -33755,10 +33670,8 @@ function scanMemoryDirectory(projectDir, dashedPath, isCurrentProject) {
     return stats;
   }
   for (const filename of entries) {
-    if (!MEMORY_FILE_PATTERN.test(filename))
-      continue;
-    if (EXCLUDED_FILES.has(filename))
-      continue;
+    if (!MEMORY_FILE_PATTERN.test(filename)) continue;
+    if (EXCLUDED_FILES.has(filename)) continue;
     const filePath = join3(memoryDir, filename);
     let fileStat;
     try {
@@ -33807,8 +33720,7 @@ function auditMemoryDirectories(projectPath) {
   const current = [];
   const orphans = [];
   for (const entry of allEntries) {
-    if (!entry.startsWith(dashedPrefix))
-      continue;
+    if (!entry.startsWith(dashedPrefix)) continue;
     const fullProjectDir = join3(claudeProjectsDir, entry);
     let entryStat;
     try {
@@ -33816,16 +33728,13 @@ function auditMemoryDirectories(projectPath) {
     } catch {
       continue;
     }
-    if (!entryStat.isDirectory())
-      continue;
+    if (!entryStat.isDirectory()) continue;
     const remainder = entry.substring(dashedPrefix.length);
     const isExactMatch = remainder === "";
     const isChildMatch = remainder.startsWith("-");
-    if (!isExactMatch && !isChildMatch)
-      continue;
+    if (!isExactMatch && !isChildMatch) continue;
     const memoryDir = join3(fullProjectDir, "memory");
-    if (!existsSync3(memoryDir))
-      continue;
+    if (!existsSync3(memoryDir)) continue;
     const dirStats = scanMemoryDirectory(fullProjectDir, entry, isExactMatch);
     if (isExactMatch) {
       current.push(dirStats);
@@ -33897,8 +33806,7 @@ function formatAuditReport(report) {
 function formatTypeBreakdown(byType, indent) {
   const parts = [];
   for (const [type, count] of Object.entries(byType)) {
-    if (count > 0)
-      parts.push(`${type}: ${count}`);
+    if (count > 0) parts.push(`${type}: ${count}`);
   }
   return parts.length > 0 ? `${indent}Types: ${parts.join(", ")}` : "";
 }
@@ -33927,17 +33835,14 @@ function parseFrontmatterForIndex(content, filename) {
     description: "",
     type: "unknown"
   };
-  if (!content.startsWith("---"))
-    return defaults;
+  if (!content.startsWith("---")) return defaults;
   const endIndex = content.indexOf("\n---", 3);
-  if (endIndex === -1)
-    return defaults;
+  if (endIndex === -1) return defaults;
   const frontmatter = content.substring(3, endIndex);
   const result = { ...defaults };
   for (const line of frontmatter.split("\n")) {
     const colonIdx = line.indexOf(":");
-    if (colonIdx === -1)
-      continue;
+    if (colonIdx === -1) continue;
     const key = line.substring(0, colonIdx).trim();
     const value = line.substring(colonIdx + 1).trim();
     if (key === "name" && value) {
@@ -33970,10 +33875,8 @@ function rebuildMemoryIndex(memoryDir, projectPath) {
     unknown: []
   };
   for (const filename of entries) {
-    if (!filename.endsWith(".md"))
-      continue;
-    if (EXCLUDED_FILES2.has(filename))
-      continue;
+    if (!filename.endsWith(".md")) continue;
+    if (EXCLUDED_FILES2.has(filename)) continue;
     const filePath = join4(memoryDir, filename);
     let content = "";
     try {
@@ -33992,8 +33895,7 @@ function rebuildMemoryIndex(memoryDir, projectPath) {
   const sectionOrder = ["user", "reference", "feedback", "project", "unknown"];
   for (const type of sectionOrder) {
     const files = byType[type];
-    if (!files || files.length === 0)
-      continue;
+    if (!files || files.length === 0) continue;
     const heading = type === "unknown" ? "Other" : capitalize(type);
     lines.push(`## ${heading}`);
     for (const file2 of files) {
@@ -34096,15 +33998,11 @@ function consolidateMemories(projectPath, dryRun = true, includeStale = false) {
   }
   if (skipped.length > 0 && migrated.length > 0) {
     const skipCounts = { excluded: 0, duplicate: 0, stale: 0 };
-    for (const s of skipped)
-      skipCounts[s.reason]++;
+    for (const s of skipped) skipCounts[s.reason]++;
     const skipParts = [];
-    if (skipCounts.duplicate > 0)
-      skipParts.push(`${skipCounts.duplicate} duplicates`);
-    if (skipCounts.stale > 0)
-      skipParts.push(`${skipCounts.stale} stale`);
-    if (skipCounts.excluded > 0)
-      skipParts.push(`${skipCounts.excluded} excluded`);
+    if (skipCounts.duplicate > 0) skipParts.push(`${skipCounts.duplicate} duplicates`);
+    if (skipCounts.stale > 0) skipParts.push(`${skipCounts.stale} stale`);
+    if (skipCounts.excluded > 0) skipParts.push(`${skipCounts.excluded} excluded`);
     summary += ` Skipped: ${skipParts.join(", ")}.`;
   }
   return {
@@ -34164,12 +34062,9 @@ var nlStarters = [
 ];
 function classifyQuery(query) {
   const words = query.trim().split(/\s+/);
-  if (words.length <= 2)
-    return "keyword";
-  if (nlStarters.some((s) => query.toLowerCase().startsWith(s)))
-    return "semantic";
-  if (words.length >= 5)
-    return "semantic";
+  if (words.length <= 2) return "keyword";
+  if (nlStarters.some((s) => query.toLowerCase().startsWith(s))) return "semantic";
+  if (words.length >= 5) return "semantic";
   return "hybrid";
 }
 
@@ -34222,12 +34117,9 @@ function classifyTemporalIntent(query) {
   const lower = query.toLowerCase();
   const hasCurrent = CURRENT_SIGNALS.some((s) => containsSignal(lower, s));
   const hasHistorical = HISTORICAL_SIGNALS.some((s) => containsSignal(lower, s));
-  if (hasCurrent && hasHistorical)
-    return "neutral";
-  if (hasCurrent)
-    return "current";
-  if (hasHistorical)
-    return "historical";
+  if (hasCurrent && hasHistorical) return "neutral";
+  if (hasCurrent) return "current";
+  if (hasHistorical) return "historical";
   return "neutral";
 }
 
@@ -34262,8 +34154,7 @@ function correctTokens(query, findClosest) {
 // src/utils/path-map.ts
 function loadPathPrefixMap() {
   const raw = process.env.CONTEXT_MANAGER_PATH_MAP || "";
-  if (!raw)
-    return [];
+  if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
@@ -34367,8 +34258,7 @@ function buildReflection(project, observations, lookbackDays) {
   }
   const tagGroups = [];
   for (const [tag, obs] of groupMap.entries()) {
-    if (obs.length < 3)
-      continue;
+    if (obs.length < 3) continue;
     const sessionIds = new Set(obs.map((o) => o.session_id));
     tagGroups.push({
       tag,
@@ -34430,8 +34320,7 @@ function getCurrentBranch(cwd) {
       encoding: "utf8",
       timeout: 1e3
     });
-    if (result.status !== 0 || result.error)
-      return null;
+    if (result.status !== 0 || result.error) return null;
     const branch = result.stdout.trim();
     return branch && branch !== "HEAD" ? branch : null;
   } catch {
@@ -34481,8 +34370,7 @@ function formatObservations(observations) {
 }
 function parseTagPrefix(query) {
   const match = query.match(/(?:^|\s)tag:(\w+)/i);
-  if (!match)
-    return { tag: null, remainingQuery: query };
+  if (!match) return { tag: null, remainingQuery: query };
   const tag = match[1].toLowerCase();
   const remainingQuery = query.replace(match[0], "").trim();
   return { tag, remainingQuery };
@@ -34638,12 +34526,9 @@ function mergeWithRRF(ftsResults, vecResults, k = 60) {
 }
 function recencyFactorForDate(dateStr) {
   const ageDays = (Date.now() - new Date(dateStr).getTime()) / (1e3 * 60 * 60 * 24);
-  if (ageDays <= 7)
-    return 1.5;
-  if (ageDays <= 30)
-    return 1.1;
-  if (ageDays <= 90)
-    return 0.9;
+  if (ageDays <= 7) return 1.5;
+  if (ageDays <= 30) return 1.1;
+  if (ageDays <= 90) return 0.9;
   return 0.7;
 }
 function applyTemporalAdjustment(items, mode, dateField) {
@@ -35913,11 +35798,9 @@ function loadDotEnv() {
     const content = readFileSync4(envPath, "utf8");
     for (const line of content.split("\n")) {
       const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#"))
-        continue;
+      if (!trimmed || trimmed.startsWith("#")) continue;
       const eqIdx = trimmed.indexOf("=");
-      if (eqIdx < 1)
-        continue;
+      if (eqIdx < 1) continue;
       const key = trimmed.slice(0, eqIdx).trim();
       let value = trimmed.slice(eqIdx + 1).trim();
       if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
@@ -35947,32 +35830,26 @@ async function getStorage() {
   return storage;
 }
 async function backgroundEmbed() {
-  if (REMOTE_URL)
-    return;
+  if (REMOTE_URL) return;
   await new Promise((resolve) => setTimeout(resolve, 5e3));
   try {
     const db = await getStorage();
-    if (!await db.isVectorSearchEnabled())
-      return;
+    if (!await db.isVectorSearchEnabled()) return;
     const pending = db.countUnembedded();
     const pendingSessionsCount = await db.countUnembeddedSessions();
-    if (pending === 0 && pendingSessionsCount === 0)
-      return;
+    if (pending === 0 && pendingSessionsCount === 0) return;
     const embeddingService = getEmbeddingService();
     const { status } = embeddingService.getStatus();
-    if (status === "unavailable")
-      return;
+    if (status === "unavailable") return;
     const loaded = await embeddingService.load();
-    if (!loaded)
-      return;
+    if (!loaded) return;
     console.error(`[context-manager-mcp] Background embedding: ${pending} observations pending`);
     const BATCH_SIZE = 50;
     const BATCH_DELAY_MS = 500;
     let totalEmbedded = 0;
     while (true) {
       const batch = await db.getUnembeddedObservations(BATCH_SIZE);
-      if (batch.length === 0)
-        break;
+      if (batch.length === 0) break;
       const texts = batch.map((obs) => {
         const parts = [obs.summary];
         if (obs.files_touched.length > 0) {
@@ -35981,13 +35858,11 @@ async function backgroundEmbed() {
         return parts.join(" | ");
       });
       const embeddings = await embeddingService.embedBatch(texts);
-      if (!embeddings)
-        break;
+      if (!embeddings) break;
       for (let j = 0; j < batch.length; j++) {
         const obs = batch[j];
         const emb = embeddings[j];
-        if (!obs?.id || !emb)
-          continue;
+        if (!obs?.id || !emb) continue;
         try {
           await db.saveEmbedding(obs.id, emb);
           totalEmbedded++;
@@ -36016,8 +35891,7 @@ async function backgroundEmbed() {
             ]);
             enrichedText = buildSessionEmbeddingText(prompts, observations, session.summary);
           }
-          if (enrichedText.length < 20)
-            continue;
+          if (enrichedText.length < 20) continue;
           const sessionEmb = await embeddingService.embed(enrichedText);
           if (sessionEmb) {
             await db.saveSessionEmbedding(session.id, sessionEmb, enrichedText);

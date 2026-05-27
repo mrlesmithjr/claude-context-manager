@@ -1,6 +1,6 @@
 {
   "name": "claude-context-manager",
-  "version": "0.8.109",
+  "version": "0.8.110",
   "description": "Persistent memory for Claude Code sessions",
   "type": "module",
   "main": "dist/cli.js",
@@ -58,7 +58,7 @@
     "@vitest/coverage-v8": "^4.1.7",
     "esbuild": "^0.28.0",
     "nodemon": "^3.1.0",
-    "tailwindcss": "^4.3.0",
+    "tailwindcss": "^3.4.19",
     "ts-node": "^10.9.2",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3",

@@ -67,8 +67,7 @@ var FACT_CATEGORIES = [
   }
 ];
 function detectFactType(summary) {
-  if (!summary)
-    return null;
+  if (!summary) return null;
   const lower = summary.toLowerCase();
   for (const cat of FACT_CATEGORIES) {
     for (const pattern of cat.patterns) {
@@ -90,17 +89,13 @@ var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
 function recencyFactor(capturedAt) {
   const ageMs = Date.now() - new Date(capturedAt).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
-  if (ageDays <= 7)
-    return 1.5;
-  if (ageDays <= 30)
-    return 1.1;
-  if (ageDays <= 90)
-    return 0.9;
+  if (ageDays <= 7) return 1.5;
+  if (ageDays <= 30) return 1.1;
+  if (ageDays <= 90) return 0.9;
   return 0.7;
 }
 function applyDecay(obs) {
-  if (obs.pinned === 1)
-    return obs.importance_score;
+  if (obs.pinned === 1) return obs.importance_score;
   const base = obs.importance_score;
   const ageMs = Date.now() - new Date(obs.created_at).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
@@ -352,11 +347,9 @@ var SQLiteStorage = class {
   normalizeSummaryForDedup(summary, toolName) {
     if (summary.includes("psql")) {
       const match = summary.match(/^(Bash:\s*docker\s+exec\s+\S+\s+psql\b)/);
-      if (match?.[1])
-        return match[1];
+      if (match?.[1]) return match[1];
       const psqlMatch = summary.match(/^(Bash:\s*psql\b[^|;]*)/);
-      if (psqlMatch?.[1])
-        return psqlMatch[1].substring(0, 40);
+      if (psqlMatch?.[1]) return psqlMatch[1].substring(0, 40);
     }
     if (/^Bash:\s*git\s+(status|diff|log)\b/.test(summary)) {
       return summary.substring(0, 20);
@@ -517,8 +510,7 @@ ${storedOutput}`;
       LIMIT ? OFFSET ?
     `);
     const params = [project + "%"];
-    if (toolName)
-      params.push(toolName);
+    if (toolName) params.push(toolName);
     params.push(safeLimit, safeOffset);
     const rows = stmt.all(...params);
     return rows.map((row) => this.mapRow(row));
@@ -545,23 +537,18 @@ ${storedOutput}`;
     const includedIds = /* @__PURE__ */ new Set();
     let highTokens = 0;
     for (const { obs } of scoredRows) {
-      if (obs.importance_score < 0.65)
-        continue;
-      if (highTokens + obs.token_estimate > highBudget)
-        continue;
+      if (obs.importance_score < 0.65) continue;
+      if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
-      if (obs.id !== void 0)
-        includedIds.add(obs.id);
+      if (obs.id !== void 0) includedIds.add(obs.id);
       highTokens += obs.token_estimate;
     }
     const remainingBudget = effectiveBudget - highTokens;
     const lowResults = [];
     let lowTokens = 0;
     for (const { obs } of scoredRows) {
-      if (obs.id !== void 0 && includedIds.has(obs.id))
-        continue;
-      if (lowTokens + obs.token_estimate > remainingBudget)
-        continue;
+      if (obs.id !== void 0 && includedIds.has(obs.id)) continue;
+      if (lowTokens + obs.token_estimate > remainingBudget) continue;
       lowResults.push(obs);
       lowTokens += obs.token_estimate;
     }
@@ -598,10 +585,8 @@ ${storedOutput}`;
         ${paginationClause}
       `;
       params = [ftsQuery, project + "%", branchFilter];
-      if (importance)
-        params.push(importance);
-      if (toolName)
-        params.push(toolName);
+      if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     } else if (project) {
       sql = `
         SELECT o.* FROM observations o
@@ -611,10 +596,8 @@ ${storedOutput}`;
         ${paginationClause}
       `;
       params = [ftsQuery, project + "%"];
-      if (importance)
-        params.push(importance);
-      if (toolName)
-        params.push(toolName);
+      if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     } else if (hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
@@ -624,10 +607,8 @@ ${storedOutput}`;
         ${paginationClause}
       `;
       params = [ftsQuery, branchFilter];
-      if (importance)
-        params.push(importance);
-      if (toolName)
-        params.push(toolName);
+      if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -637,10 +618,8 @@ ${storedOutput}`;
         ${paginationClause}
       `;
       params = [ftsQuery];
-      if (importance)
-        params.push(importance);
-      if (toolName)
-        params.push(toolName);
+      if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
@@ -836,8 +815,7 @@ ${storedOutput}`;
     stmt.run((/* @__PURE__ */ new Date()).toISOString(), summary || null, summaryExtended || null, sessionId);
   }
   async updateSessionDraftSummary(sessionId, summary) {
-    if (!summary)
-      return;
+    if (!summary) return;
     this.db.prepare(`
       UPDATE sessions SET summary = ? WHERE id = ?
     `).run(summary, sessionId);
@@ -861,8 +839,7 @@ ${storedOutput}`;
       WHERE id = ?
       LIMIT 1
     `).get(id);
-    if (!row)
-      return void 0;
+    if (!row) return void 0;
     return {
       id: row.id,
       project: row.project,
@@ -929,10 +906,8 @@ ${storedOutput}`;
       LIMIT ? OFFSET ?
     `;
     const params = [project];
-    if (status)
-      params.push(status);
-    if (branch)
-      params.push(branch);
+    if (status) params.push(status);
+    if (branch) params.push(branch);
     params.push(limit, offset);
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => ({
@@ -1458,8 +1433,7 @@ ${storedOutput}`;
     return rows.map((row) => this.mapRow(row));
   }
   async markExported(ids) {
-    if (ids.length === 0)
-      return;
+    if (ids.length === 0) return;
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const stmt = this.db.prepare(
       `UPDATE observations SET exported_at = ? WHERE id IN (SELECT value FROM json_each(?))`
@@ -1476,8 +1450,7 @@ ${storedOutput}`;
     if (!columnNames.has("embedding")) {
       this.db.exec(`ALTER TABLE observations ADD COLUMN embedding BLOB`);
     }
-    if (!this.vecEnabled)
-      return;
+    if (!this.vecEnabled) return;
     try {
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS vec_observations USING vec0(
@@ -1501,8 +1474,7 @@ ${storedOutput}`;
    * preserving relational integrity (observation_relationships may reference this row).
    */
   checkSemanticDuplicate(embedding, project, id, threshold = 0.85) {
-    if (!this.vecEnabled)
-      return false;
+    if (!this.vecEnabled) return false;
     const embeddingBuf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
     const row = this.db.prepare(`
       SELECT v.distance
@@ -1514,8 +1486,7 @@ ${storedOutput}`;
       ORDER BY v.distance ASC
       LIMIT 1
     `).get(embeddingBuf, 10, project + "%", id);
-    if (!row)
-      return false;
+    if (!row) return false;
     return l2DistanceToCosine(row.distance) >= threshold;
   }
   async saveEmbedding(id, embedding) {
@@ -1599,8 +1570,7 @@ ${storedOutput}`;
     if (!columnNames.has("enriched_text")) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN enriched_text TEXT`);
     }
-    if (!this.vecEnabled)
-      return;
+    if (!this.vecEnabled) return;
     try {
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS vec_sessions USING vec0(
@@ -1736,8 +1706,7 @@ ${storedOutput}`;
     const rows = this.db.prepare(
       `SELECT id, tags FROM observations WHERE tags IS NOT NULL AND tags NOT LIKE '[%'`
     ).all();
-    if (rows.length === 0)
-      return;
+    if (rows.length === 0) return;
     const update = this.db.prepare(`UPDATE observations SET tags = ? WHERE id = ?`);
     const migrate = this.db.transaction(() => {
       for (const row of rows) {
@@ -1791,8 +1760,7 @@ ${storedOutput}`;
   async addManualObservation(params) {
     const { text: rawText, project, sessionId, importanceScore, tags, client } = params;
     const text = rawText.trim();
-    if (!text)
-      return void 0;
+    if (!text) return void 0;
     let importance;
     if (importanceScore >= 0.65) {
       importance = "high";
@@ -2032,8 +2000,7 @@ ${storedOutput}`;
    */
   async getRecentSessionsWithObservations(project, sessionLimit = 10) {
     const sessions = await this.getRecentSessions(project, sessionLimit);
-    if (sessions.length === 0)
-      return [];
+    if (sessions.length === 0) return [];
     const ids = sessions.map((s) => s.id);
     const rows = this.db.prepare(`
       SELECT * FROM observations
@@ -2214,8 +2181,7 @@ ${storedOutput}`;
       ORDER BY importance_score DESC
       LIMIT 1
     `).get(sessionId);
-    if (!row)
-      return null;
+    if (!row) return null;
     return this.mapRow(row);
   }
   /**
@@ -2239,11 +2205,9 @@ ${storedOutput}`;
    * Results returned in ascending created_at order.
    */
   getObservationsByIds(ids) {
-    if (ids.length === 0)
-      return Promise.resolve([]);
+    if (ids.length === 0) return Promise.resolve([]);
     const safeIds = ids.map((id) => Math.trunc(id)).filter((id) => id > 0);
-    if (safeIds.length === 0)
-      return Promise.resolve([]);
+    if (safeIds.length === 0) return Promise.resolve([]);
     const placeholders = safeIds.map(() => "?").join(", ");
     const sql = `
       SELECT * FROM observations
@@ -2271,8 +2235,7 @@ ${storedOutput}`;
     const targetRow = this.db.prepare(`
       SELECT * FROM observations WHERE id = ?
     `).get(id);
-    if (!targetRow)
-      return Promise.resolve(null);
+    if (!targetRow) return Promise.resolve(null);
     const target = this.mapRow(targetRow);
     const sessionId = targetRow.session_id;
     const capturedAt = targetRow.created_at;
@@ -2587,8 +2550,7 @@ ${storedOutput}`;
    * array, not user input.
    */
   async findConflictingFact(project, categoryValues, newValue, currentObservationId) {
-    if (categoryValues.length === 0)
-      return null;
+    if (categoryValues.length === 0) return null;
     const likeClauses = categoryValues.map(() => `summary LIKE ?`).join(" OR ");
     const selfExclusion = currentObservationId != null ? "AND id != ?" : "";
     const sql = `
@@ -2604,8 +2566,7 @@ ${storedOutput}`;
     const likeParams = categoryValues.map((v) => `%${v}%`);
     const excludeParam = `%${newValue}%`;
     const params = [project, ...likeParams, excludeParam];
-    if (currentObservationId != null)
-      params.push(currentObservationId);
+    if (currentObservationId != null) params.push(currentObservationId);
     const rows = this.db.prepare(sql).all(...params);
     return rows[0]?.id ?? null;
   }
@@ -2671,8 +2632,7 @@ ${storedOutput}`;
    * Runs as a transaction for efficiency. Tokens are already normalized.
    */
   addTokens(tokens) {
-    if (tokens.length === 0)
-      return;
+    if (tokens.length === 0) return;
     const upsert = this.db.prepare(
       `INSERT INTO token_index(token, frequency) VALUES(?, 1)
        ON CONFLICT(token) DO UPDATE SET frequency = frequency + 1`
@@ -2691,8 +2651,7 @@ ${storedOutput}`;
    * Returns the best candidate with edit distance <= 2, or null.
    */
   findClosestToken(token, minFrequency = 3) {
-    if (token.length > 50)
-      return null;
+    if (token.length > 50) return null;
     const minLen = Math.max(1, token.length - 2);
     const maxLen = token.length + 2;
     const rows = this.db.prepare(
@@ -2825,8 +2784,7 @@ async function remoteGetMemory(client, project) {
         }
       }
     );
-    if (!response.ok)
-      return "";
+    if (!response.ok) return "";
     const data = await response.json();
     return typeof data.content === "string" ? data.content : "";
   } catch {
@@ -2864,8 +2822,7 @@ async function remoteMcpText(client, toolName, args) {
         params: { name: toolName, arguments: args }
       })
     });
-    if (!response.ok)
-      return "";
+    if (!response.ok) return "";
     const data = await response.json();
     return data.result?.content?.[0]?.text ?? "";
   } catch {
@@ -2883,11 +2840,9 @@ function loadDotEnv() {
     const content = readFileSync(envPath, "utf8");
     for (const line of content.split("\n")) {
       const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#"))
-        continue;
+      if (!trimmed || trimmed.startsWith("#")) continue;
       const eqIdx = trimmed.indexOf("=");
-      if (eqIdx < 1)
-        continue;
+      if (eqIdx < 1) continue;
       const key = trimmed.slice(0, eqIdx).trim();
       let value = trimmed.slice(eqIdx + 1).trim();
       if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
@@ -2913,8 +2868,7 @@ function getCurrentBranch(cwd) {
       encoding: "utf8",
       timeout: 1e3
     });
-    if (result.status !== 0 || result.error)
-      return null;
+    if (result.status !== 0 || result.error) return null;
     const branch = result.stdout.trim();
     return branch && branch !== "HEAD" ? branch : null;
   } catch {
@@ -2977,8 +2931,7 @@ var PLUGIN_VERSION_FILE = join2(homedir4(), ".claude-context", ".plugin-version"
 function checkPostUpdate() {
   try {
     const stored = existsSync(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.109")
-      return "";
+    if (stored === "0.8.109") return "";
     const verb = stored === "" ? "Installed" : "Updated";
     return `[context-manager] ${verb} v${"0.8.109"}. Hooks active.`;
   } catch {
@@ -3064,13 +3017,11 @@ async function main() {
         lines2.push(serverMsg);
         noticeWasInjected2 = true;
       }
-      if (versionWarning2)
-        lines2.push(versionWarning2);
+      if (versionWarning2) lines2.push(versionWarning2);
       let remoteCount = 0;
       const statsText = await remoteMcpText(client, "context_stats", { project: input.cwd });
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
-      if (countMatch?.[1])
-        remoteCount = parseInt(countMatch[1], 10);
+      if (countMatch?.[1]) remoteCount = parseInt(countMatch[1], 10);
       lines2.push(`context-manager v${"0.8.109"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
@@ -3136,8 +3087,7 @@ async function main() {
           additionalContext: context2
         }
       });
-      if (noticeWasInjected2)
-        markVersionActivated();
+      if (noticeWasInjected2) markVersionActivated();
       return;
     }
     if (!__nativeModulesAvailable) {
@@ -3180,8 +3130,7 @@ async function main() {
       const diverse = withSummaries.filter((s) => {
         const parts = s.project.split("/");
         const parentKey = parts.slice(0, -1).join("/") || s.project;
-        if (seen.has(parentKey))
-          return false;
+        if (seen.has(parentKey)) return false;
         seen.add(parentKey);
         return true;
       });
@@ -3235,8 +3184,7 @@ async function main() {
         additionalContext: context
       }
     });
-    if (noticeWasInjected)
-      markVersionActivated();
+    if (noticeWasInjected) markVersionActivated();
   } catch (error) {
     console.error("[context-manager] Error:", error);
     await writeResponse({
@@ -3246,8 +3194,7 @@ async function main() {
       }
     });
   } finally {
-    if (storage)
-      await storage.close();
+    if (storage) await storage.close();
   }
 }
 main();
