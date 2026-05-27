@@ -517,24 +517,47 @@ ${storedOutput}`;
   }
   async getWithinBudget(project, tokenBudget) {
     const effectiveBudget = Math.floor(tokenBudget * 0.8);
+    const HIGH_IMPORTANCE_ALLOCATION = 0.6;
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
+        AND is_compacted = 0
+        AND superseded_by IS NULL
       ORDER BY importance_score DESC, created_at DESC
       LIMIT 500
     `);
     const rows = stmt.all(project + "%");
-    const results = [];
-    let totalTokens = 0;
-    for (const row of rows) {
-      const tokenEstimate = row.token_estimate;
-      if (totalTokens + tokenEstimate > effectiveBudget) {
-        break;
-      }
-      results.push(this.mapRow(row));
-      totalTokens += tokenEstimate;
+    const scoredRows = rows.map((row) => {
+      const obs = this.mapRow(row);
+      return { obs, score: applyDecay(obs) };
+    });
+    scoredRows.sort((a, b) => b.score - a.score);
+    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * effectiveBudget);
+    const highResults = [];
+    const includedIds = /* @__PURE__ */ new Set();
+    let highTokens = 0;
+    for (const { obs } of scoredRows) {
+      if (obs.importance_score < 0.65)
+        continue;
+      if (highTokens + obs.token_estimate > highBudget)
+        continue;
+      highResults.push(obs);
+      if (obs.id !== void 0)
+        includedIds.add(obs.id);
+      highTokens += obs.token_estimate;
     }
-    return results;
+    const remainingBudget = effectiveBudget - highTokens;
+    const lowResults = [];
+    let lowTokens = 0;
+    for (const { obs } of scoredRows) {
+      if (obs.id !== void 0 && includedIds.has(obs.id))
+        continue;
+      if (lowTokens + obs.token_estimate > remainingBudget)
+        continue;
+      lowResults.push(obs);
+      lowTokens += obs.token_estimate;
+    }
+    return [...highResults, ...lowResults];
   }
   async search(query, projectOrOptions) {
     const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
@@ -691,27 +714,8 @@ ${storedOutput}`;
       tokensByTool[row.tool_name] = row.tokens;
     }
     const avgTokensPerSession = sessionRow.count > 0 ? Math.round((baseRow.total_tokens || 0) / sessionRow.count) : 0;
-    const recentSql = project ? `
-        SELECT SUM(token_estimate) as session_tokens
-        FROM observations
-        WHERE project LIKE ? || '%'
-        GROUP BY session_id
-        ORDER BY MAX(created_at) DESC
-        LIMIT 10
-      ` : `
-        SELECT SUM(token_estimate) as session_tokens
-        FROM observations
-        GROUP BY session_id
-        ORDER BY MAX(created_at) DESC
-        LIMIT 10
-      `;
-    const recentRows = this.db.prepare(recentSql).all(
-      ...project ? [project] : []
-    );
-    const avgRecentTokens = recentRows.length > 0 ? Math.round(
-      recentRows.reduce((sum, r) => sum + r.session_tokens, 0) / recentRows.length
-    ) : 0;
-    const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET);
+    const budgetObs = await this.getWithinBudget(project ?? "", TOKEN_BUDGET);
+    const budgetFillTokens = budgetObs.reduce((sum, o) => sum + o.token_estimate, 0);
     const importanceSql = project ? `
         SELECT importance, COUNT(*) as cnt
         FROM observations
@@ -770,7 +774,7 @@ ${storedOutput}`;
       avg_tokens_per_session: avgTokensPerSession,
       tokens_by_tool: tokensByTool,
       token_budget: TOKEN_BUDGET,
-      typical_injection_tokens: typicalInjection,
+      budget_fill_tokens: budgetFillTokens,
       importance_counts: importanceCounts,
       compacted_count: compactedRow?.compacted_count || 0,
       compacted_original_count: compactedRow?.original_count || 0,
@@ -1203,6 +1207,8 @@ ${storedOutput}`;
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE session_id = ?
+        AND is_compacted = 0
+        AND superseded_by IS NULL
       ORDER BY created_at ASC
     `);
     const rows = stmt.all(sessionId);
@@ -2807,11 +2813,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.95") {
+    if (installedVersion !== "0.8.96") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.95"}
+   Source:    v${"0.8.96"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2892,7 +2898,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.95"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.96"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -2983,7 +2989,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.95"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.96"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
