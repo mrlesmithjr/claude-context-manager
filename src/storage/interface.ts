@@ -41,6 +41,11 @@ export interface SearchOptions {
    * contradictory stack preference facts. Default false (exclude superseded).
    */
   include_superseded?: boolean;
+  /**
+   * Pagination offset: number of results to skip before returning `limit` results.
+   * Only applies when search() is called via the web API observations endpoint.
+   */
+  offset?: number;
 }
 export type RelationshipType = 'same_file' | 'followed_by' | 'cross_project_same_file';
 export type ObservationTag =
@@ -200,8 +205,9 @@ export interface ContextStorage {
    * Get recent observations for a project
    * @param project - Project path
    * @param limit - Maximum number of observations to return
+   * @param offset - Number of observations to skip (for pagination)
    */
-  getRecent(project: string, limit: number): Promise<Observation[]>;
+  getRecent(project: string, limit?: number, offset?: number): Promise<Observation[]>;
 
   /**
    * Get observations within a token budget using tiered allocation.
@@ -269,6 +275,13 @@ export interface ContextStorage {
    * Returns null if the session does not exist.
    */
   getSessionTimestamps(sessionId: string): Promise<{ started_at: string; last_checkpoint_at: number | null } | null>;
+
+  /**
+   * Get a single session by ID.
+   * Returns the full session row from the sessions table, or undefined if not found.
+   * @param id - Session ID
+   */
+  getSession(id: string): Promise<Session | undefined>;
 
   /**
    * Get recent sessions for a project

@@ -644,16 +644,16 @@ export class SQLiteStorage implements ContextStorage {
     return insertedId;
   }
 
-  async getRecent(project: string, limit: number): Promise<Observation[]> {
+  async getRecent(project: string, limit: number = 50, offset: number = 0): Promise<Observation[]> {
     // Use LIKE for prefix matching (parent directory sees children)
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
       ORDER BY created_at DESC
-      LIMIT ?
+      LIMIT ? OFFSET ?
     `);
 
-    const rows = stmt.all(project + '%', limit) as Array<Record<string, unknown>>;
+    const rows = stmt.all(project + '%', limit, offset) as Array<Record<string, unknown>>;
     return rows.map(row => this.mapRow(row));
   }
 
@@ -734,6 +734,10 @@ export class SQLiteStorage implements ContextStorage {
     const includeSuperseded = typeof projectOrOptions === 'object' && projectOrOptions !== null
       ? (projectOrOptions.include_superseded ?? false)
       : false;
+    // offset: pagination offset; only used when search() is called with SearchOptions
+    const searchOffset = typeof projectOrOptions === 'object' && projectOrOptions !== null
+      ? (projectOrOptions.offset ?? 0)
+      : 0;
 
     let sql: string;
     let params: unknown[];
@@ -750,6 +754,11 @@ export class SQLiteStorage implements ContextStorage {
     const hasBranchFilter = branchFilter !== undefined && branchFilter !== '*';
     // Superseded exclusion clause added to all search paths when include_superseded is false
     const supersededClause = includeSuperseded ? '' : ' AND o.superseded_by IS NULL';
+    // Limit and offset for FTS queries (searchOffset only non-zero when called via web API)
+    const limitParam = typeof projectOrOptions === 'object' && projectOrOptions !== null
+      ? (projectOrOptions.limit ?? 50)
+      : 50;
+    const paginationClause = searchOffset > 0 ? `LIMIT ${limitParam} OFFSET ${searchOffset}` : `LIMIT ${limitParam}`;
 
     if (project && hasBranchFilter) {
       sql = `
@@ -757,7 +766,7 @@ export class SQLiteStorage implements ContextStorage {
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery, project + '%', branchFilter];
     } else if (project) {
@@ -768,7 +777,7 @@ export class SQLiteStorage implements ContextStorage {
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ? AND o.project LIKE ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery, project + '%'];
     } else if (hasBranchFilter) {
@@ -777,7 +786,7 @@ export class SQLiteStorage implements ContextStorage {
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ? AND o.branch = ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery, branchFilter];
     } else {
@@ -786,7 +795,7 @@ export class SQLiteStorage implements ContextStorage {
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery];
     }
@@ -1102,6 +1111,42 @@ export class SQLiteStorage implements ContextStorage {
     `).get(sessionId) as { started_at: string; last_checkpoint_at: number | null } | undefined;
 
     return row ?? null;
+  }
+
+  async getSession(id: string): Promise<Session | undefined> {
+    const row = this.db.prepare(`
+      SELECT id, project, started_at, ended_at, summary, summary_extended,
+             source, status, last_checkpoint_at, branch
+      FROM sessions
+      WHERE id = ?
+      LIMIT 1
+    `).get(id) as {
+      id: string;
+      project: string;
+      started_at: string;
+      ended_at: string | null;
+      summary: string | null;
+      summary_extended: string | null;
+      source: string | null;
+      status: 'active' | 'complete';
+      last_checkpoint_at: number | null;
+      branch: string | null;
+    } | undefined;
+
+    if (!row) return undefined;
+
+    return {
+      id: row.id,
+      project: row.project,
+      started_at: row.started_at,
+      ended_at: row.ended_at || undefined,
+      summary: row.summary || undefined,
+      summary_extended: row.summary_extended || undefined,
+      source: row.source || undefined,
+      status: row.status,
+      last_checkpoint_at: row.last_checkpoint_at ?? undefined,
+      branch: row.branch ?? null,
+    };
   }
 
   async getRecentSessions(project: string, limit: number): Promise<Session[]> {

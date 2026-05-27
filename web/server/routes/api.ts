@@ -53,6 +53,20 @@ interface ProjectVelocityQuerystring {
   weeks?: number;
 }
 
+interface DecisionsQuerystring {
+  project?: string;
+  q?: string;
+  limit?: number;
+}
+
+interface LessonsQuerystring {
+  project?: string;
+  q?: string;
+  lesson_type?: string;
+  limit?: number;
+  days?: number;
+}
+
 // Minimum project path depth required in network mode (non-localhost).
 // Prevents "project=/" or "project=/Users" from exposing all data.
 // Set CONTEXT_MANAGER_PROJECT_PREFIX to require a specific prefix
@@ -139,33 +153,24 @@ export async function registerApiRoutes(
       const { id } = request.params;
 
       try {
-        // Get session info from observations (we don't have a getSession method yet)
-        const observations = await storage.getSessionObservations(id);
-        const prompts = await storage.getSessionPrompts(id);
+        const session = await storage.getSession(id);
 
-        if (observations.length === 0 && prompts.length === 0) {
+        if (!session) {
           reply.status(404).send({ error: 'Session not found' });
           return;
         }
 
-        // Build session object from observations
-        const project = observations[0]?.project || prompts[0]?.project || '';
-
         // In network mode, reject sessions whose project path is too broad.
         // This prevents an authenticated caller from enumerating arbitrary sessions.
-        if (isNetworkMode && isProjectTooBroad(project, isNetworkMode)) {
+        if (isNetworkMode && isProjectTooBroad(session.project, isNetworkMode)) {
           reply.status(403).send({ error: 'Session project path too broad for network mode' });
           return;
         }
 
-        const session = {
-          id,
-          project,
-          started_at:
-            observations[0]?.created_at || prompts[0]?.created_at || '',
-          ended_at: observations[observations.length - 1]?.created_at,
-          status: 'complete' as const,
-        };
+        const [observations, prompts] = await Promise.all([
+          storage.getSessionObservations(id),
+          storage.getSessionPrompts(id),
+        ]);
 
         reply.send({
           session,
@@ -212,13 +217,18 @@ export async function registerApiRoutes(
         let observations;
 
         if (q) {
-          // Full-text search
-          observations = await storage.search(q, project);
+          // Full-text search with pagination
+          observations = await storage.search(q, {
+            project,
+            limit,
+            offset,
+          });
         } else {
-          // Get recent observations
+          // Get recent observations with proper LIMIT/OFFSET
           observations = await storage.getRecent(
             project || '',
-            limit + offset
+            limit,
+            offset
           );
         }
 
@@ -230,14 +240,8 @@ export async function registerApiRoutes(
         // Get total count
         const total = await storage.countObservations(project, tool);
 
-        // Apply pagination
-        const paginatedObservations = observations.slice(
-          offset,
-          offset + limit
-        );
-
         reply.send({
-          observations: paginatedObservations,
+          observations,
           total,
           limit,
           offset,
@@ -438,6 +442,89 @@ export async function registerApiRoutes(
       reply.status(500).send({ error: 'Failed to retrieve projects' });
     }
   });
+
+  // GET /api/decisions - Search decisions for a project (refs #129)
+  fastify.get<{ Querystring: DecisionsQuerystring }>(
+    '/api/decisions',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
+            q: { type: 'string', maxLength: MAX_QUERY_LEN },
+            limit: { type: 'number', minimum: 1, maximum: 50 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { project, q, limit = 20 } = request.query;
+
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
+
+      try {
+        const decisions = await storage.searchDecisions(project || '/', q, limit);
+        reply.send({ decisions, total: decisions.length });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: 'Failed to retrieve decisions' });
+      }
+    }
+  );
+
+  // GET /api/lessons - Get lesson observations for a project (refs #129)
+  fastify.get<{ Querystring: LessonsQuerystring }>(
+    '/api/lessons',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
+            q: { type: 'string', maxLength: MAX_QUERY_LEN },
+            lesson_type: {
+              type: 'string',
+              enum: ['error', 'build_failure', 'test_failure', 'permission_denied'],
+            },
+            limit: { type: 'number', minimum: 1, maximum: 50 },
+            days: { type: 'number', minimum: 1, maximum: 365 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { project, q, lesson_type, limit = 20, days } = request.query;
+
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
+
+      const since = days
+        ? new Date(Date.now() - days * 86400000).toISOString()
+        : undefined;
+
+      try {
+        const lessons = await storage.getLessons(project, q, lesson_type, limit, since);
+        reply.send({ lessons, total: lessons.length });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: 'Failed to retrieve lessons' });
+      }
+    }
+  );
 
   // POST /api/import — import a context.db file into the active database.
   // Network mode: protected by the global Bearer auth hook in index.ts.

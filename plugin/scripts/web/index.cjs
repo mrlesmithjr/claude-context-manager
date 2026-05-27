@@ -47673,14 +47673,14 @@ ${storedOutput}`;
     }
     return insertedId;
   }
-  async getRecent(project, limit) {
+  async getRecent(project, limit = 50, offset = 0) {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
       ORDER BY created_at DESC
-      LIMIT ?
+      LIMIT ? OFFSET ?
     `);
-    const rows = stmt.all(project + "%", limit);
+    const rows = stmt.all(project + "%", limit, offset);
     return rows.map((row) => this.mapRow(row));
   }
   async getWithinBudget(project, tokenBudget) {
@@ -47733,18 +47733,21 @@ ${storedOutput}`;
     const skipDecay = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.skipDecay ?? false : false;
     const branchFilter = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.branch : void 0;
     const includeSuperseded = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.include_superseded ?? false : false;
+    const searchOffset = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.offset ?? 0 : 0;
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     const hasBranchFilter = branchFilter !== void 0 && branchFilter !== "*";
     const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
+    const limitParam = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50;
+    const paginationClause = searchOffset > 0 ? `LIMIT ${limitParam} OFFSET ${searchOffset}` : `LIMIT ${limitParam}`;
     if (project && hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery, project + "%", branchFilter];
     } else if (project) {
@@ -47753,7 +47756,7 @@ ${storedOutput}`;
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ? AND o.project LIKE ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery, project + "%"];
     } else if (hasBranchFilter) {
@@ -47762,7 +47765,7 @@ ${storedOutput}`;
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ? AND o.branch = ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery, branchFilter];
     } else {
@@ -47771,7 +47774,7 @@ ${storedOutput}`;
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery];
     }
@@ -47984,6 +47987,29 @@ ${storedOutput}`;
       SELECT started_at, last_checkpoint_at FROM sessions WHERE id = ?
     `).get(sessionId);
     return row ?? null;
+  }
+  async getSession(id) {
+    const row = this.db.prepare(`
+      SELECT id, project, started_at, ended_at, summary, summary_extended,
+             source, status, last_checkpoint_at, branch
+      FROM sessions
+      WHERE id = ?
+      LIMIT 1
+    `).get(id);
+    if (!row)
+      return void 0;
+    return {
+      id: row.id,
+      project: row.project,
+      started_at: row.started_at,
+      ended_at: row.ended_at || void 0,
+      summary: row.summary || void 0,
+      summary_extended: row.summary_extended || void 0,
+      source: row.source || void 0,
+      status: row.status,
+      last_checkpoint_at: row.last_checkpoint_at ?? void 0,
+      branch: row.branch ?? null
+    };
   }
   async getRecentSessions(project, limit) {
     const stmt = this.db.prepare(`
@@ -49813,24 +49839,19 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     async (request, reply) => {
       const { id } = request.params;
       try {
-        const observations = await storage.getSessionObservations(id);
-        const prompts = await storage.getSessionPrompts(id);
-        if (observations.length === 0 && prompts.length === 0) {
+        const session = await storage.getSession(id);
+        if (!session) {
           reply.status(404).send({ error: "Session not found" });
           return;
         }
-        const project = observations[0]?.project || prompts[0]?.project || "";
-        if (isNetworkMode2 && isProjectTooBroad(project, isNetworkMode2)) {
+        if (isNetworkMode2 && isProjectTooBroad(session.project, isNetworkMode2)) {
           reply.status(403).send({ error: "Session project path too broad for network mode" });
           return;
         }
-        const session = {
-          id,
-          project,
-          started_at: observations[0]?.created_at || prompts[0]?.created_at || "",
-          ended_at: observations[observations.length - 1]?.created_at,
-          status: "complete"
-        };
+        const [observations, prompts] = await Promise.all([
+          storage.getSessionObservations(id),
+          storage.getSessionPrompts(id)
+        ]);
         reply.send({
           session,
           observations,
@@ -49871,23 +49892,24 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
       try {
         let observations;
         if (q) {
-          observations = await storage.search(q, project);
+          observations = await storage.search(q, {
+            project,
+            limit,
+            offset
+          });
         } else {
           observations = await storage.getRecent(
             project || "",
-            limit + offset
+            limit,
+            offset
           );
         }
         if (tool) {
           observations = observations.filter((obs) => obs.tool_name === tool);
         }
         const total = await storage.countObservations(project, tool);
-        const paginatedObservations = observations.slice(
-          offset,
-          offset + limit
-        );
         reply.send({
-          observations: paginatedObservations,
+          observations,
           total,
           limit,
           offset
@@ -50070,6 +50092,78 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
       reply.status(500).send({ error: "Failed to retrieve projects" });
     }
   });
+  fastify.get(
+    "/api/decisions",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
+            q: { type: "string", maxLength: MAX_QUERY_LEN },
+            limit: { type: "number", minimum: 1, maximum: 50 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { project, q, limit = 20 } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
+      try {
+        const decisions = await storage.searchDecisions(project || "/", q, limit);
+        reply.send({ decisions, total: decisions.length });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Failed to retrieve decisions" });
+      }
+    }
+  );
+  fastify.get(
+    "/api/lessons",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
+            q: { type: "string", maxLength: MAX_QUERY_LEN },
+            lesson_type: {
+              type: "string",
+              enum: ["error", "build_failure", "test_failure", "permission_denied"]
+            },
+            limit: { type: "number", minimum: 1, maximum: 50 },
+            days: { type: "number", minimum: 1, maximum: 365 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { project, q, lesson_type, limit = 20, days } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
+      const since = days ? new Date(Date.now() - days * 864e5).toISOString() : void 0;
+      try {
+        const lessons = await storage.getLessons(project, q, lesson_type, limit, since);
+        reply.send({ lessons, total: lessons.length });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Failed to retrieve lessons" });
+      }
+    }
+  );
   fastify.post("/api/import", async (request, reply) => {
     let data;
     try {
@@ -50174,8 +50268,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.97")
-    return "0.8.97";
+  if ("0.8.99")
+    return "0.8.99";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)

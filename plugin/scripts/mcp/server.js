@@ -22856,14 +22856,14 @@ ${storedOutput}`;
     }
     return insertedId;
   }
-  async getRecent(project, limit) {
+  async getRecent(project, limit = 50, offset = 0) {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
       ORDER BY created_at DESC
-      LIMIT ?
+      LIMIT ? OFFSET ?
     `);
-    const rows = stmt.all(project + "%", limit);
+    const rows = stmt.all(project + "%", limit, offset);
     return rows.map((row) => this.mapRow(row));
   }
   async getWithinBudget(project, tokenBudget) {
@@ -22916,18 +22916,21 @@ ${storedOutput}`;
     const skipDecay = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.skipDecay ?? false : false;
     const branchFilter = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.branch : void 0;
     const includeSuperseded = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.include_superseded ?? false : false;
+    const searchOffset = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.offset ?? 0 : 0;
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     const hasBranchFilter = branchFilter !== void 0 && branchFilter !== "*";
     const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
+    const limitParam = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50;
+    const paginationClause = searchOffset > 0 ? `LIMIT ${limitParam} OFFSET ${searchOffset}` : `LIMIT ${limitParam}`;
     if (project && hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery, project + "%", branchFilter];
     } else if (project) {
@@ -22936,7 +22939,7 @@ ${storedOutput}`;
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ? AND o.project LIKE ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery, project + "%"];
     } else if (hasBranchFilter) {
@@ -22945,7 +22948,7 @@ ${storedOutput}`;
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ? AND o.branch = ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery, branchFilter];
     } else {
@@ -22954,7 +22957,7 @@ ${storedOutput}`;
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
         WHERE observations_fts MATCH ?${supersededClause}
         ORDER BY o.created_at DESC
-        LIMIT 50
+        ${paginationClause}
       `;
       params = [ftsQuery];
     }
@@ -23167,6 +23170,29 @@ ${storedOutput}`;
       SELECT started_at, last_checkpoint_at FROM sessions WHERE id = ?
     `).get(sessionId);
     return row ?? null;
+  }
+  async getSession(id) {
+    const row = this.db.prepare(`
+      SELECT id, project, started_at, ended_at, summary, summary_extended,
+             source, status, last_checkpoint_at, branch
+      FROM sessions
+      WHERE id = ?
+      LIMIT 1
+    `).get(id);
+    if (!row)
+      return void 0;
+    return {
+      id: row.id,
+      project: row.project,
+      started_at: row.started_at,
+      ended_at: row.ended_at || void 0,
+      summary: row.summary || void 0,
+      summary_extended: row.summary_extended || void 0,
+      source: row.source || void 0,
+      status: row.status,
+      last_checkpoint_at: row.last_checkpoint_at ?? void 0,
+      branch: row.branch ?? null
+    };
   }
   async getRecentSessions(project, limit) {
     const stmt = this.db.prepare(`
@@ -34571,7 +34597,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.97" : "unknown"
+      version: true ? "0.8.99" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
