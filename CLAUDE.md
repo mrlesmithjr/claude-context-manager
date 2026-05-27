@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 26, 2026 (v0.8.94)
+**Last Updated**: May 27, 2026 (v0.8.96)
 
 ---
 
@@ -261,6 +261,7 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 37 | Progressive disclosure | `context_search` (compact, default) + `context_get` (full detail by ID) + `context_timeline` (session context around IDs); 3-layer pattern |
 | 38 | Remote parity | `remoteCreateSession` forwards branch; `GET /api/decisions/next-number` for globally sequential decision numbering in remote mode |
 | 39 | searchByTag json_each | Tag matching uses `EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)` instead of LIKE; correct for JSON array storage |
+| 40 | Tiered recall budget | `getWithinBudget()` and `getSessionObservations()` filter `is_compacted = 0 AND superseded_by IS NULL` before allocation. `getWithinBudget()` applies `applyDecay()` before ranking (consistent with `search()`), then two-pass allocation: 60% of effective budget to observations with `importance_score >= 0.65`; remaining 40% filled by everything else sorted by decayed score. Both passes use `continue` on overflow so smaller items later in the sort are not skipped. `context_list` reads `CONTEXT_MANAGER_TOKEN_BUDGET` and stops adding sessions when `TOKEN_BUDGET * 0.8` is reached; always shows at least 1 session; appends `[Budget: showing N of M sessions. Use context_search for full history.]` when truncated. `budget_fill_tokens` stat (renamed from `typical_injection_tokens`) reports the actual token count `getWithinBudget()` would return for the configured budget. |
 
 ---
 
@@ -289,7 +290,7 @@ All env vars read from `~/.claude-context/.env` (loaded at hook and MCP server s
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONTEXT_MANAGER_DB` | `~/.claude-context/context.db` | Database path |
-| `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens for context injection |
+| `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens per MCP recall tool response (context_list, context_search) |
 | `CONTEXT_MANAGER_PORT` | `3847` | Web dashboard port |
 | `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Min cosine similarity for semantic/hybrid results |
 | `CONTEXT_MANAGER_URL` | _(unset)_ | Remote capture server URL (enables proxy mode) |
