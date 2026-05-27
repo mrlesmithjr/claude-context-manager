@@ -138,7 +138,7 @@ export interface Stats {
   avg_tokens_per_session: number;
   tokens_by_tool: Record<string, number>;
   token_budget: number;
-  typical_injection_tokens: number;
+  budget_fill_tokens: number;
   // Importance distribution
   importance_counts: { high: number; medium: number; low: number };
   // Compaction stats

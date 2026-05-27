@@ -954,38 +954,9 @@ export class SQLiteStorage implements ContextStorage {
     const avgTokensPerSession =
       sessionRow.count > 0 ? Math.round((baseRow.total_tokens || 0) / sessionRow.count) : 0;
 
-    // Typical injection: get median of recent injection sizes
-    // Approximated by looking at what would be injected for recent sessions
-    const recentSql = project
-      ? `
-        SELECT SUM(token_estimate) as session_tokens
-        FROM observations
-        WHERE project LIKE ? || '%'
-        GROUP BY session_id
-        ORDER BY MAX(created_at) DESC
-        LIMIT 10
-      `
-      : `
-        SELECT SUM(token_estimate) as session_tokens
-        FROM observations
-        GROUP BY session_id
-        ORDER BY MAX(created_at) DESC
-        LIMIT 10
-      `;
-
-    const recentRows = this.db.prepare(recentSql).all(
-      ...(project ? [project] : [])
-    ) as Array<{ session_tokens: number }>;
-
-    // Typical injection is roughly min(avg recent session tokens, budget)
-    const avgRecentTokens =
-      recentRows.length > 0
-        ? Math.round(
-            recentRows.reduce((sum, r) => sum + r.session_tokens, 0) /
-              recentRows.length
-          )
-        : 0;
-    const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET);
+    // Budget fill: compute actual token count that getWithinBudget would return
+    const budgetObs = await this.getWithinBudget(project ?? '', TOKEN_BUDGET);
+    const budgetFillTokens = budgetObs.reduce((sum, o) => sum + o.token_estimate, 0);
 
     // Importance distribution
     const importanceSql = project
@@ -1069,7 +1040,7 @@ export class SQLiteStorage implements ContextStorage {
       avg_tokens_per_session: avgTokensPerSession,
       tokens_by_tool: tokensByTool,
       token_budget: TOKEN_BUDGET,
-      typical_injection_tokens: typicalInjection,
+      budget_fill_tokens: budgetFillTokens,
       importance_counts: importanceCounts,
       compacted_count: compactedRow?.compacted_count || 0,
       compacted_original_count: compactedRow?.original_count || 0,

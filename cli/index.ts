@@ -203,7 +203,7 @@ async function statsCommand(args: string[]) {
   console.log(`Avg per Observation: ${stats.avg_tokens_per_observation} tokens`);
   console.log(`Avg per Session: ${stats.avg_tokens_per_session.toLocaleString()} tokens`);
   console.log(`Injection Budget: ${stats.token_budget.toLocaleString()} tokens`);
-  console.log(`Typical Injection: ~${stats.typical_injection_tokens.toLocaleString()} tokens (${Math.round((stats.typical_injection_tokens / stats.token_budget) * 100)}% of budget)`);
+  console.log(`Budget Fill: ~${stats.budget_fill_tokens.toLocaleString()} tokens (${Math.round((stats.budget_fill_tokens / stats.token_budget) * 100)}% of budget)`);
 
   // Tokens by tool
   if (Object.keys(stats.tokens_by_tool).length > 0) {
