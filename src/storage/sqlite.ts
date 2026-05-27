@@ -661,12 +661,11 @@ export class SQLiteStorage implements ContextStorage {
     project: string,
     tokenBudget: number
   ): Promise<Observation[]> {
-    // Apply 80% safety margin
     const effectiveBudget = Math.floor(tokenBudget * 0.8);
+    const HIGH_IMPORTANCE_ALLOCATION = 0.6;
 
     // Use LIKE for prefix matching (parent directory sees children).
-    // LIMIT 500 caps memory usage on mature databases — the budget accumulator
-    // stops well before this ceiling, so no relevant observations are lost.
+    // LIMIT 500 caps memory usage on mature databases.
     // Exclude compacted observations and superseded facts from budget calculation.
     const stmt = this.db.prepare(`
       SELECT * FROM observations
@@ -679,21 +678,41 @@ export class SQLiteStorage implements ContextStorage {
 
     const rows = stmt.all(project + '%') as Array<Record<string, unknown>>;
 
-    // Accumulate observations until budget exceeded
-    const results: Observation[] = [];
-    let totalTokens = 0;
+    // Apply decay transiently for ranking — consistent with search() behavior.
+    // The adjusted score is never written to the DB.
+    const scoredRows = rows.map(row => {
+      const obs = this.mapRow(row);
+      return { obs, score: applyDecay(obs) };
+    });
+    scoredRows.sort((a, b) => b.score - a.score);
 
-    for (const row of rows) {
-      const tokenEstimate = row.token_estimate as number;
-      if (totalTokens + tokenEstimate > effectiveBudget) {
-        break;
-      }
+    // Pass 1: fill up to 60% of budget from high-importance observations (score >= 0.65)
+    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * effectiveBudget);
+    const highResults: Observation[] = [];
+    const includedIds = new Set<number>();
+    let highTokens = 0;
 
-      results.push(this.mapRow(row));
-      totalTokens += tokenEstimate;
+    for (const { obs } of scoredRows) {
+      if (obs.importance_score < 0.65) continue;
+      if (highTokens + obs.token_estimate > highBudget) break;
+      highResults.push(obs);
+      if (obs.id !== undefined) includedIds.add(obs.id);
+      highTokens += obs.token_estimate;
     }
 
-    return results;
+    // Pass 2: fill remaining budget from everything else (sorted by decayed score)
+    const remainingBudget = effectiveBudget - highTokens;
+    const lowResults: Observation[] = [];
+    let lowTokens = 0;
+
+    for (const { obs } of scoredRows) {
+      if (obs.id !== undefined && includedIds.has(obs.id)) continue;
+      if (lowTokens + obs.token_estimate > remainingBudget) break;
+      lowResults.push(obs);
+      lowTokens += obs.token_estimate;
+    }
+
+    return [...highResults, ...lowResults];
   }
 
   async search(query: string, projectOrOptions?: string | SearchOptions): Promise<Observation[]> {

@@ -204,9 +204,10 @@ export interface ContextStorage {
   getRecent(project: string, limit: number): Promise<Observation[]>;
 
   /**
-   * Get observations within a token budget
-   * @param project - Project path
-   * @param tokenBudget - Maximum tokens to return
+   * Get observations within a token budget using tiered allocation.
+   * Applies time-weighted decay before ranking. First pass fills 60% of the
+   * effective budget (tokenBudget * 0.8) from observations with importance_score >= 0.65.
+   * Second pass fills the remainder from all other observations sorted by decayed score.
    */
   getWithinBudget(project: string, tokenBudget: number): Promise<Observation[]>;
 
