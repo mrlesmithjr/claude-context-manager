@@ -49,6 +49,7 @@ services:
       CONTEXT_MANAGER_DB: /data/context.db
       PROJECT_A: /data/projects/project-a
       PROJECT_B: /data/projects/project-b
+      PROJECT_BUDGET: /data/budget-tests/project-budget
     volumes:
       - e2e-db:/data
     depends_on:

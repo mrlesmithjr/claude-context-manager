@@ -12,6 +12,7 @@
  *   CONTEXT_MANAGER_DB  path to the SQLite database (default /data/context.db)
  *   PROJECT_A           project path for instance A (default /data/projects/project-a)
  *   PROJECT_B           project path for instance B (default /data/projects/project-b)
+ *   PROJECT_BUDGET      project path for budget tests (default /data/projects/project-budget)
  *   OBS_COUNT           observations per session per project (default 5)
  */
 
@@ -21,6 +22,10 @@ import { randomUUID } from 'crypto';
 const DB_PATH = process.env.CONTEXT_MANAGER_DB || '/data/context.db';
 const PROJECT_A = process.env.PROJECT_A || '/data/projects/project-a';
 const PROJECT_B = process.env.PROJECT_B || '/data/projects/project-b';
+// NOTE: intentionally NOT under /data/projects/ to avoid interfering with the
+// cross-project isolation test (scenario 02), which queries the /data/projects/
+// parent scope and relies on budget not truncating project-a/project-b sessions.
+const PROJECT_BUDGET = process.env.PROJECT_BUDGET || '/data/budget-tests/project-budget';
 const OBS_COUNT = parseInt(process.env.OBS_COUNT || '5', 10);
 
 const storage = new SQLiteStorage(DB_PATH);
@@ -136,9 +141,61 @@ const projectBSession = await insertSession(PROJECT_B, [
   },
 ]);
 
+// Budget-enforcement project: 4 sessions designed to trigger context_list truncation.
+//
+// Default TOKEN_BUDGET = 4000 → effectiveBudget = 3200.
+// Each session below contributes ~900 tokens.
+// Sessions 1+2+3 = 2700 tokens. Adding session 4 (900 tokens) would reach 3600 > 3200,
+// so context_list should stop after 3 sessions and emit a truncation footer.
+//
+// Each observation uses a unique summary UUID fragment to bypass content-hash dedup.
+const budgetSessionIds = [];
+for (let s = 0; s < 4; s++) {
+  const sessionId = await insertSession(PROJECT_BUDGET, [
+    {
+      toolName: 'Edit',
+      summary: `Budget session ${s} obs 0 — added feature impl to src/feature-${s}-a.ts uuid-${randomUUID()}`,
+      files: [`src/feature-${s}-a.ts`],
+      tokens: 220,
+      importance: 'high',
+      score: 0.85,
+      tags: ['api'],
+    },
+    {
+      toolName: 'Write',
+      summary: `Budget session ${s} obs 1 — created test suite for feature-${s} uuid-${randomUUID()}`,
+      files: [`tests/feature-${s}.test.ts`],
+      tokens: 220,
+      importance: 'high',
+      score: 0.80,
+      tags: ['testing'],
+    },
+    {
+      toolName: 'Bash',
+      summary: `Budget session ${s} obs 2 — ran integration tests, 12 passed uuid-${randomUUID()}`,
+      files: [],
+      tokens: 220,
+      importance: 'medium',
+      score: 0.55,
+      tags: ['testing'],
+    },
+    {
+      toolName: 'Bash',
+      summary: `Budget session ${s} obs 3 — git commit feature-${s} uuid-${randomUUID()}`,
+      files: [],
+      tokens: 240,
+      importance: 'medium',
+      score: 0.55,
+      tags: ['git'],
+    },
+  ]);
+  budgetSessionIds.push(sessionId);
+}
+
 await storage.close();
 
 console.log(`[setup-data] Inserted sessions:`);
 console.log(`  ${PROJECT_A}: session ${projectASession} (5 observations)`);
 console.log(`  ${PROJECT_B}: session ${projectBSession} (3 observations)`);
+console.log(`  ${PROJECT_BUDGET}: ${budgetSessionIds.length} sessions (~900 tokens each, designed to trigger budget truncation)`);
 console.log('[setup-data] Done.');
