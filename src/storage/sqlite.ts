@@ -1054,10 +1054,10 @@ export class SQLiteStorage implements ContextStorage {
     ) as { count: number } | undefined;
 
     const gcLast24hSql = project
-      ? `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day') AND project LIKE ? || '%'`
-      : `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day')`;
+      ? `SELECT COUNT(*) as count FROM sessions WHERE summary = ? AND ended_at > datetime('now', '-1 day') AND project LIKE ? || '%'`
+      : `SELECT COUNT(*) as count FROM sessions WHERE summary = ? AND ended_at > datetime('now', '-1 day')`;
     const gcLast24hRow = this.db.prepare(gcLast24hSql).get(
-      ...(project ? [project] : [])
+      ...(project ? [GC_SESSION_SUMMARY, project] : [GC_SESSION_SUMMARY])
     ) as { count: number } | undefined;
 
     const eligibleSql = project
@@ -1297,7 +1297,7 @@ export class SQLiteStorage implements ContextStorage {
       SET
         status = 'complete',
         ended_at = datetime('now'),
-        summary = '${GC_SESSION_SUMMARY}'
+        summary = ?
       WHERE status = 'active'
         AND ended_at IS NULL
         AND (
@@ -1307,7 +1307,7 @@ export class SQLiteStorage implements ContextStorage {
           (last_checkpoint_at IS NULL
             AND started_at < ?)
         )
-    `).run(staleThresholdISO, staleThresholdISO);
+    `).run(GC_SESSION_SUMMARY, staleThresholdISO, staleThresholdISO);
 
     return staleResult.changes;
   }
