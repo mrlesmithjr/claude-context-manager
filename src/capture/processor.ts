@@ -863,13 +863,13 @@ export function calculateImportance(
 /**
  * Result of processToolCapture.
  *
- * - `{ status: 'skipped' }` — observation intentionally not stored (low-value Bash below threshold)
+ * - `{ status: 'skipped' }` — observation intentionally not stored (below capture floor)
  * - `Omit<Observation, 'id'>` — observation ready for storage
  */
 export type ProcessResult = { status: 'skipped' } | Omit<Observation, 'id'>;
 
-/** Threshold below which low-signal Bash observations are dropped entirely. */
-const BASH_SKIP_THRESHOLD = 0.15;
+/** Default capture floor for all tool types. Used as fallback when CONTEXT_MANAGER_CAPTURE_FLOOR is absent or unparseable. */
+const DEFAULT_CAPTURE_FLOOR = 0.15;
 
 /** Char limit (~40 tokens at 4 chars/token) for MCP tool summaries below importance threshold. */
 const MCP_SUMMARY_TRUNCATE_CHARS = 160;
@@ -918,9 +918,12 @@ export function processToolCapture(capture: ToolCapture): ProcessResult {
     filesTouched
   );
 
-  // Issue #57: Skip storage for low-signal Bash observations.
-  // Gate is after scoring so the error-signal boost (+0.25) is already factored in.
-  if (capture.tool_name === 'Bash' && importance_score < BASH_SKIP_THRESHOLD) {
+  // Capture floor: drop observations below threshold to limit DB growth.
+  // Gate is after all scoring adjustments so error-signal boosts are preserved.
+  // Configurable via CONTEXT_MANAGER_CAPTURE_FLOOR (default 0.15).
+  const rawFloor = parseFloat(process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'] ?? '');
+  const captureFloor = isNaN(rawFloor) ? DEFAULT_CAPTURE_FLOOR : Math.min(Math.max(rawFloor, 0.0), 0.65);
+  if (importance_score < captureFloor) {
     return { status: 'skipped' };
   }
 

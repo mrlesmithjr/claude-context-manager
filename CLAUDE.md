@@ -243,7 +243,7 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 19 | PreToolUse file context | Injects prior session history on first Read per file per session (min 2 prior obs) |
 | 20 | Stale session GC | Auto-runs on SessionStart; marks sessions inactive > 2h as `complete` |
 | 21 | Manual write path | `context_add` MCP tool; daily manual session per project; `source='manual'` in sessions; no tag inference from free text |
-| 22 | Bash skip threshold | Bash observations scoring < 0.15 are dropped before DB write; gate runs after all scoring adjustments so error-signal commands (score boosted +0.25) are preserved |
+| 22 | Capture floor | All observations scoring below the capture floor are dropped before DB write; default 0.15, configurable via `CONTEXT_MANAGER_CAPTURE_FLOOR` (clamped to 0.0–0.65); gate runs after all scoring adjustments so error-signal boosts (+0.25) are preserved |
 | 23 | MCP summary cap | MCP tool summaries truncated to ~40 tokens (160 chars) when importance < 0.3; observation still stored for relationship tracking and dedup |
 | 24 | Bearer token injection | Web server dynamically serves `index.html` with `window.__CTX_TOKEN` injected before `</head>`; `Cache-Control: no-store`; GET / bypassed from auth hook |
 | 25 | Network mode project scoping | `isNetworkMode = token.length > 0`; all components gate fetch + render behind project selection; `ProjectFilter` auto-selects first project on load |
@@ -297,6 +297,7 @@ All env vars read from `~/.claude-context/.env` (loaded at hook and MCP server s
 | `CONTEXT_MANAGER_TOKEN` | _(unset)_ | Bearer token; required when URL is set |
 | `CONTEXT_MANAGER_CHECKPOINT_INTERVAL` | `30` | Minutes between checkpoint exports |
 | `CONTEXT_MANAGER_EMBED_INTERVAL` | `10` | Minutes between background embedding passes in HTTP server; invalid values fall back to 10 |
+| `CONTEXT_MANAGER_CAPTURE_FLOOR` | `0.15` | Minimum importance score for any observation to be stored; observations scoring below this are dropped at capture time. Values are clamped to [0.0, 0.65]; values outside this range are silently adjusted. Setting 0.0 disables the floor entirely. |
 
 ---
 

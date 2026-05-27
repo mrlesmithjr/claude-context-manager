@@ -180,7 +180,7 @@ async function main() {
       tool_response: input.tool_response,
     });
 
-    // Low-value observations (e.g., Bash below score threshold) are dropped by the processor
+    // Low-value observations below capture floor (CONTEXT_MANAGER_CAPTURE_FLOOR) are dropped by the processor
     if ('status' in result) {
       await writeResponse({ status: result.status });
       return;

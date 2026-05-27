@@ -258,9 +258,9 @@ describe('processToolCapture', () => {
     });
   });
 
-  // --- Issue #57: Bash skip threshold ---
+  // --- Issue #57 / #144: Capture floor (all tool types) ---
 
-  describe('Bash skip threshold (issue #57)', () => {
+  describe('Capture floor (issue #57, extended to all tools in #144)', () => {
     it('returns skipped for a low-signal Bash command below 0.15', () => {
       // python3 -c scores 0.30 base (one-off python script branch in calculateImportance).
       // Lock file penalty (-0.30) fires because extractFilesTouched picks up file_path
@@ -298,18 +298,18 @@ describe('processToolCapture', () => {
       expect(obs.importance_score).toBeGreaterThanOrEqual(0.15);
     });
 
-    it('does NOT skip a non-Bash tool even when scoring below 0.15', () => {
-      // Grep scores 0.25 base — still above threshold, but test verifies the gate
-      // is Bash-only by using a Glob which scores 0.20 with lock file penalty -> 0.0.
-      // The skip gate must never fire for non-Bash tools.
+    it('skips a non-Bash tool that scores below the capture floor', () => {
+      // Issue #144: floor now applies to ALL tool types, not just Bash.
+      // Glob scores 0.20 base; lock file penalty -0.30 -> clamped to 0.0 < 0.15 -> skipped.
       const capture = makeCapture({
         tool_name: 'Glob',
         tool_input: { pattern: '*.lock', path: '.', file_path: 'package-lock.json' },
         tool_response: '',
       });
       const result = processToolCapture(capture);
-      // Glob is not Bash — should always return an observation, not skipped
-      expect('status' in result).toBe(false);
+      // Glob with score 0.0 is below the default floor (0.15) — should now be skipped
+      expect('status' in result).toBe(true);
+      expect((result as { status: string }).status).toBe('skipped');
     });
 
     it('does NOT skip a Bash command scoring at or above 0.15', () => {
@@ -321,6 +321,86 @@ describe('processToolCapture', () => {
       });
       const result = processToolCapture(capture);
       expect('status' in result).toBe(false);
+    });
+
+    // --- CONTEXT_MANAGER_CAPTURE_FLOOR env var (issue #144) ---
+
+    it('respects a raised floor set via CONTEXT_MANAGER_CAPTURE_FLOOR', () => {
+      const orig = process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'];
+      process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'] = '0.40';
+      try {
+        // git status scores ~0.35, which is above the default 0.15 floor but below 0.40.
+        const capture = makeCapture({
+          tool_name: 'Bash',
+          tool_input: { command: 'git status' },
+          tool_response: 'On branch main\nnothing to commit',
+        });
+        const result = processToolCapture(capture);
+        // Score ~0.35 < raised floor 0.40 — should be skipped
+        expect('status' in result).toBe(true);
+        expect((result as { status: string }).status).toBe('skipped');
+      } finally {
+        if (orig === undefined) delete process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'];
+        else process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'] = orig;
+      }
+    });
+
+    it('falls back to default 0.15 floor when CONTEXT_MANAGER_CAPTURE_FLOOR is not a number', () => {
+      const orig = process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'];
+      process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'] = 'not-a-number';
+      try {
+        // Glob + lock file penalty -> score 0.0 < default 0.15 -> skipped (NaN fallback active)
+        const capture = makeCapture({
+          tool_name: 'Glob',
+          tool_input: { pattern: '*.lock', path: '.', file_path: 'package-lock.json' },
+          tool_response: '',
+        });
+        const result = processToolCapture(capture);
+        expect('status' in result).toBe(true);
+        expect((result as { status: string }).status).toBe('skipped');
+      } finally {
+        if (orig === undefined) delete process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'];
+        else process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'] = orig;
+      }
+    });
+
+    it('clamps CONTEXT_MANAGER_CAPTURE_FLOOR above 0.65 to 0.65 — high-importance obs still stored', () => {
+      const orig = process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'];
+      process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'] = '0.99';
+      try {
+        // Write scores 0.80 — above the clamped ceiling of 0.65, so it should be stored
+        const capture = makeCapture({
+          tool_name: 'Write',
+          tool_input: { file_path: 'src/foo.ts', content: 'export const x = 1;' },
+          tool_response: '',
+        });
+        const result = processToolCapture(capture);
+        expect('status' in result).toBe(false); // 0.80 >= clamped floor 0.65 — stored
+        const obs = result as Exclude<ProcessResult, { status: string }>;
+        expect(obs.importance_score).toBeGreaterThanOrEqual(0.65);
+      } finally {
+        if (orig === undefined) delete process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'];
+        else process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'] = orig;
+      }
+    });
+
+    it('clamps CONTEXT_MANAGER_CAPTURE_FLOOR to 0.0 when set to a negative value', () => {
+      const orig = process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'];
+      process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'] = '-0.5';
+      try {
+        // Glob + lock file penalty -> score 0.0; floor clamped to 0.0; 0.0 < 0.0 is false -> stored
+        const capture = makeCapture({
+          tool_name: 'Glob',
+          tool_input: { pattern: '*.lock', path: '.', file_path: 'package-lock.json' },
+          tool_response: '',
+        });
+        const result = processToolCapture(capture);
+        // With floor=0.0, even score 0.0 passes (< is strict)
+        expect('status' in result).toBe(false);
+      } finally {
+        if (orig === undefined) delete process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'];
+        else process.env['CONTEXT_MANAGER_CAPTURE_FLOOR'] = orig;
+      }
     });
   });
 
