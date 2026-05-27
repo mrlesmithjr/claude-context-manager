@@ -645,6 +645,10 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async getRecent(project: string, limit: number = 50, offset: number = 0, toolName?: string): Promise<Observation[]> {
+    // Coerce to integers — callers from non-HTTP paths may pass floats; parameterized
+    // SQLite truncates silently, so make the behavior explicit here.
+    const safeLimit = Math.floor(Math.max(1, Math.min(500, Number(limit))));
+    const safeOffset = Math.floor(Math.max(0, Number(offset)));
     // Use LIKE for prefix matching (parent directory sees children).
     // Tool filter pushed into SQL so paginated results are dense (fixes #127).
     const toolClause = toolName ? ' AND tool_name = ?' : '';
@@ -657,7 +661,7 @@ export class SQLiteStorage implements ContextStorage {
 
     const params: unknown[] = [project + '%'];
     if (toolName) params.push(toolName);
-    params.push(limit, offset);
+    params.push(safeLimit, safeOffset);
 
     const rows = stmt.all(...params) as Array<Record<string, unknown>>;
     return rows.map(row => this.mapRow(row));
@@ -740,10 +744,13 @@ export class SQLiteStorage implements ContextStorage {
     const includeSuperseded = typeof projectOrOptions === 'object' && projectOrOptions !== null
       ? (projectOrOptions.include_superseded ?? false)
       : false;
-    // offset: pagination offset; only used when search() is called with SearchOptions
-    const searchOffset = typeof projectOrOptions === 'object' && projectOrOptions !== null
-      ? (projectOrOptions.offset ?? 0)
-      : 0;
+    // offset: pagination offset; only used when search() is called with SearchOptions.
+    // Coerced to integer here so the value is clean before it reaches the SQL site.
+    const searchOffset = Math.floor(Math.max(0, Number(
+      typeof projectOrOptions === 'object' && projectOrOptions !== null
+        ? (projectOrOptions.offset ?? 0)
+        : 0
+    )));
     // importance: exact match filter when provided (refs #131)
     const importance = typeof projectOrOptions === 'object' && projectOrOptions !== null
       ? projectOrOptions.importance
@@ -772,10 +779,14 @@ export class SQLiteStorage implements ContextStorage {
     const importanceClause = importance ? ' AND o.importance = ?' : '';
     // Tool name filter clause (fixes #127)
     const toolClause = toolName ? ' AND o.tool_name = ?' : '';
-    // Limit and offset for FTS queries (searchOffset only non-zero when called via web API)
-    const limitParam = typeof projectOrOptions === 'object' && projectOrOptions !== null
-      ? (projectOrOptions.limit ?? 50)
-      : 50;
+    // Limit for FTS queries (searchOffset only non-zero when called via web API).
+    // Math.floor() guards against float inputs at the storage layer.
+    // API contract enforces maximum: 200; 500 is the storage-layer safety net for direct callers.
+    const limitParam = Math.floor(Math.max(1, Math.min(500, Number(
+      typeof projectOrOptions === 'object' && projectOrOptions !== null
+        ? (projectOrOptions.limit ?? 50)
+        : 50
+    ))));
     const paginationClause = searchOffset > 0 ? `LIMIT ${limitParam} OFFSET ${searchOffset}` : `LIMIT ${limitParam}`;
 
     if (project && hasBranchFilter) {
@@ -883,6 +894,8 @@ export class SQLiteStorage implements ContextStorage {
   }
 
   async searchByTag(tag: string, project?: string, limit: number = 50, includeSuperseded: boolean = false): Promise<Observation[]> {
+    // Coerce to integer — consistent with search() and getRecent() contract.
+    const safeLimit = Math.floor(Math.max(1, Math.min(500, Number(limit))));
     // Tags are stored as JSON arrays (e.g. ["auth","database"]).
     // Use json_each() for exact value matching, the same pattern used in getTagTrend().
     // Superseded exclusion clause applied by default
@@ -899,7 +912,7 @@ export class SQLiteStorage implements ContextStorage {
         ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [tag, project + '%', limit];
+      params = [tag, project + '%', safeLimit];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -908,7 +921,7 @@ export class SQLiteStorage implements ContextStorage {
         ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [tag, limit];
+      params = [tag, safeLimit];
     }
 
     const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
