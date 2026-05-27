@@ -2749,20 +2749,41 @@ export class SQLiteStorage implements ContextStorage {
 
   /**
    * Get recent sessions with their observations, grouped for display.
+   *
+   * Uses two queries instead of 1 + N: one for sessions, one bulk fetch
+   * for all observations across all sessions grouped in JS. Previously
+   * called getSessionObservations() once per session, causing an N+1
+   * pattern on every SessionStart hook and context_list call.
    */
   async getRecentSessionsWithObservations(
     project: string,
     sessionLimit: number = 10
   ): Promise<Array<{ session: Session; observations: Observation[] }>> {
     const sessions = await this.getRecentSessions(project, sessionLimit);
-    const result: Array<{ session: Session; observations: Observation[] }> = [];
+    if (sessions.length === 0) return [];
 
+    const ids = sessions.map(s => s.id);
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id IN (SELECT value FROM json_each(?))
+        AND is_compacted = 0
+        AND superseded_by IS NULL
+      ORDER BY session_id, created_at ASC
+    `).all(JSON.stringify(ids)) as Array<Record<string, unknown>>;
+
+    const bySession = new Map<string, Observation[]>();
     for (const session of sessions) {
-      const observations = await this.getSessionObservations(session.id);
-      result.push({ session, observations });
+      bySession.set(session.id, []);
+    }
+    for (const row of rows) {
+      const obs = this.mapRow(row);
+      bySession.get(obs.session_id)?.push(obs);
     }
 
-    return result;
+    return sessions.map(session => ({
+      session,
+      observations: bySession.get(session.id) ?? [],
+    }));
   }
 
   /**
