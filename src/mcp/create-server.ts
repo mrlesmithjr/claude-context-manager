@@ -1010,6 +1010,7 @@ export function createContextManagerServer(
 
       for (const { session, observations } of sessionsWithObs) {
         const sessionTokens = observations.reduce((sum, o) => sum + o.token_estimate, 0);
+        // Always show at least one session even if it alone exceeds the budget.
         if (sessionsShown > 0 && budgetTokens + sessionTokens > effectiveBudget) {
           budgetTruncated = true;
           break;
@@ -1068,7 +1069,7 @@ export function createContextManagerServer(
 
       if (budgetTruncated) {
         lines.push('');
-        lines.push(`[Budget: showing ${sessionsShown} of ${sessionsWithObs.length} sessions — use context_search for full history]`);
+        lines.push(`[Budget: showing ${sessionsShown} of ${sessionsWithObs.length} sessions. Use context_search for full history.]`);
       }
 
       return {

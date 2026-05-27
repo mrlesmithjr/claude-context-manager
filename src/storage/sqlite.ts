@@ -694,7 +694,7 @@ export class SQLiteStorage implements ContextStorage {
 
     for (const { obs } of scoredRows) {
       if (obs.importance_score < 0.65) continue;
-      if (highTokens + obs.token_estimate > highBudget) break;
+      if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
       if (obs.id !== undefined) includedIds.add(obs.id);
       highTokens += obs.token_estimate;
@@ -707,7 +707,7 @@ export class SQLiteStorage implements ContextStorage {
 
     for (const { obs } of scoredRows) {
       if (obs.id !== undefined && includedIds.has(obs.id)) continue;
-      if (lowTokens + obs.token_estimate > remainingBudget) break;
+      if (lowTokens + obs.token_estimate > remainingBudget) continue;
       lowResults.push(obs);
       lowTokens += obs.token_estimate;
     }
@@ -954,7 +954,9 @@ export class SQLiteStorage implements ContextStorage {
     const avgTokensPerSession =
       sessionRow.count > 0 ? Math.round((baseRow.total_tokens || 0) / sessionRow.count) : 0;
 
-    // Budget fill: compute actual token count that getWithinBudget would return
+    // Budget fill: call getWithinBudget to get the actual tiered-allocation result.
+    // Fetches up to 500 rows and applies decay in-process — acceptable since context_stats
+    // is called infrequently (on-demand via MCP tool or CLI, not on a hot path).
     const budgetObs = await this.getWithinBudget(project ?? '', TOKEN_BUDGET);
     const budgetFillTokens = budgetObs.reduce((sum, o) => sum + o.token_estimate, 0);
 
