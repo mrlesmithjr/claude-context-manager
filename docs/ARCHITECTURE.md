@@ -545,7 +545,11 @@ flowchart TD
     P --> P5["calculateImportance()"]
     P --> P6["inferTags()  v0.8.6"]
 
-    P1 & P2 & P3 & P4 & P5 & P6 --> SUR["Surprise Scoring\ncapture-tool.ts"]
+    P5 --> LT{"detectLessonType()\nWrite/Edit/Bash errors only"}
+    LT -->|lesson found| LB["boost importance_score\nto ≥ 0.85 · add error tag"]
+    LT -->|no lesson| LN([continue])
+
+    P1 & P2 & P3 & P4 & P6 & LB & LN --> SUR["Surprise Scoring\ncapture-tool.ts"]
     SUR --> FE["incrementFileEncounter()\n7-day windowed count"]
     FE --> ADJ["adjust importance_score\ncap −0.15 to +0.20"]
 
@@ -567,7 +571,7 @@ flowchart TD
     S([session starts]) --> H["SessionStart Hook\ncontext-inject.ts"]
     H --> DB["createSession()\nin SQLite"]
     H --> CNT["count observations\nbuild status hint"]
-    CNT --> OUT[/"context-manager v0.8.6 active. N observations tracked..."/]
+    CNT --> OUT[/"context-manager vX.Y.Z active. N observations tracked..."/]
     OUT --> CC(["injected into Claude context\n~30 tokens"])
 
     NOTE["High-value context is delivered via\nauto-memory files written at session\nend by the Stop hook"]
@@ -585,7 +589,9 @@ flowchart TD
 
     N & I --> ES["endSession()\nsave insight observations"]
 
-    ES --> Q["getUnexportedHighImportance()\nWHERE importance_score ≥ 0.65\nAND exported_at IS NULL"]
+    ES --> D["extractDecisions()\nscan assistant messages\nwrite to decisions table"]
+
+    D --> Q["getUnexportedHighImportance()\nWHERE importance_score ≥ 0.65\nAND exported_at IS NULL"]
     Q --> EXP["Export Module\nmemory.ts"]
 
     EXP --> F1[format as dated markdown]
@@ -1048,6 +1054,8 @@ The uninstall script (`scripts/uninstall.js`):
 ## Web UI Dashboard
 
 Local web interface for browsing context observations and analytics. Implemented in v0.3.0, extended through v0.8.x.
+
+See [ADR-001: Web UI Dashboard](ADR-001-web-ui-dashboard.md) for the full design rationale and technology decisions.
 
 ### Features
 - **Sessions View**: Browse all Claude Code sessions with summaries and observation counts

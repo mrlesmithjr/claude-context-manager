@@ -131,7 +131,7 @@ Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server 
 | `context_search` | Search observations and prompts. Auto-routes to FTS5, vector, or hybrid based on query length. Supports `tag:X` prefix, temporal intent detection (current/historical), branch filtering, and fuzzy typo correction. Returns compact one-line results by default. |
 | `context_get` | Fetch full detail for specific observations by ID. Use after `context_search` to read complete content of results. Accepts up to 20 IDs. |
 | `context_timeline` | Show session context around specific observation IDs. Returns the matched observations plus neighboring observations from the same session, giving chronological context for what was happening around each result. |
-| `context_list` | List recent sessions with summaries and importance distribution |
+| `context_list` | List recent sessions with summaries and importance distribution. Applies a session-granularity token budget (`TOKEN_BUDGET * 0.8`); stops adding sessions when the limit is reached, always shows at least 1, and appends a truncation footer when sessions are omitted. |
 | `context_list_projects` | List all project paths that have observations, with counts and last activity. Useful for discovering project scopes before using `context_add`. |
 | `context_add` | Write a manual observation from any MCP client (Claude Desktop, etc.). Accepts `text` (required), `project`, `importance` ("high", "medium", "low", or float 0–1), and `tags` (comma-separated). |
 | `context_stats` | Show statistics for the current project: observation counts, token usage, importance distribution, vector search status |
@@ -344,7 +344,7 @@ flowchart LR
     db --> WEB
 ```
 
-For detailed design decisions, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For detailed design decisions, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). For the web UI dashboard technology rationale, see [docs/ADR-001-web-ui-dashboard.md](docs/ADR-001-web-ui-dashboard.md).
 
 ### Context visibility
 
