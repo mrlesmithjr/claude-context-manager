@@ -1312,7 +1312,7 @@ export class SQLiteStorage implements ContextStorage {
     return staleResult.changes;
   }
 
-  async vacuum(olderThanDays?: number, staleSessionHours = 2): Promise<{
+  async vacuum(olderThanDays?: number, staleSessionHours = 2, include_high = false): Promise<{
     observations: number;
     sessions: number;
     compacted: number;
@@ -1330,9 +1330,15 @@ export class SQLiteStorage implements ContextStorage {
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
       const cutoffISO = cutoffDate.toISOString();
 
+      // By default, protect high-importance, pinned, and lesson observations from deletion.
+      // Pass include_high=true to override and delete all matching observations.
+      const guardClause = include_high
+        ? ''
+        : ' AND importance_score < 0.65 AND pinned = 0 AND lesson_type IS NULL';
+
       const stmt = this.db.prepare(`
         DELETE FROM observations
-        WHERE created_at < ?
+        WHERE created_at < ?${guardClause}
       `);
 
       const result = stmt.run(cutoffISO);
@@ -1406,11 +1412,22 @@ export class SQLiteStorage implements ContextStorage {
     importance?: ImportanceLevel;
     olderThanDays?: number;
     dryRun?: boolean;
+    include_high?: boolean;
   }): Promise<{ deleted: number; preview?: string[] }> {
-    const { toolName, importance, olderThanDays, dryRun = false } = options;
+    const { toolName, importance, olderThanDays, dryRun = false, include_high = false } = options;
 
     const conditions: string[] = [];
     const params: unknown[] = [];
+
+    // By default, protect high-importance, pinned, and lesson observations.
+    // These guards are prepended so they apply to all four SQL paths (dry-run
+    // COUNT, dry-run preview SELECT, ID collection SELECT, and final DELETE)
+    // via the shared `where` string built below.
+    if (!include_high) {
+      conditions.push('importance_score < 0.65');
+      conditions.push('pinned = 0');
+      conditions.push('lesson_type IS NULL');
+    }
 
     if (olderThanDays !== undefined) {
       const cutoff = new Date();
@@ -1427,8 +1444,10 @@ export class SQLiteStorage implements ContextStorage {
       params.push(importance);
     }
 
-    // Require at least one filter — prevent accidental full wipe
-    if (conditions.length === 0) {
+    // Require at least one user-supplied filter — prevent accidental full wipe.
+    // The high-importance guard conditions do not count toward this requirement.
+    const userFilterCount = (olderThanDays !== undefined ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0);
+    if (userFilterCount === 0) {
       return { deleted: 0 };
     }
 
