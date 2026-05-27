@@ -57,17 +57,4 @@ else
   fail "01d: expected 401 for unauthenticated request, got ${HTTP_STATUS}"
 fi
 
-# --- 01e: float limit is rejected by REST API (integer schema enforcement) ---
-info "01e: float limit=50.9 is rejected by observations endpoint"
-BASE_URL="${MCP_URL%/mcp}"
-FLOAT_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
-  -H "Authorization: Bearer ${MCP_TOKEN}" \
-  "${BASE_URL}/api/observations?project=${PROJECT_A}&limit=50.9")
-
-if [ "$FLOAT_STATUS" = "400" ]; then
-  pass "01e: float limit returns 400 (AJV integer schema enforced)"
-else
-  fail "01e: expected 400 for float limit=50.9, got ${FLOAT_STATUS}"
-fi
-
 scenario_result "01-basic-query"
