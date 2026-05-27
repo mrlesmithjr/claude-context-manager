@@ -86,4 +86,9 @@ info "04g: stats include Token Economics section"
 assert_contains "$A_TEXT" "Token Economics" \
   "04g: project-a stats include Token Economics section"
 
+# --- 04h: budget_fill_tokens stat present in Token Economics ---
+info "04h: stats include Budget Fill line in Token Economics"
+assert_contains "$A_TEXT" "Budget Fill" \
+  "04h: project-a stats Token Economics section includes Budget Fill line"
+
 scenario_result "04-stats"

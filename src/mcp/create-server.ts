@@ -148,6 +148,12 @@ function formatStats(
   lines.push(
     `Avg per Session: ${stats.avg_tokens_per_session.toLocaleString()} tokens`
   );
+  const budgetPct = stats.token_budget > 0
+    ? Math.round((stats.budget_fill_tokens / stats.token_budget) * 100)
+    : 0;
+  lines.push(
+    `Budget Fill: ${stats.budget_fill_tokens.toLocaleString()} / ${stats.token_budget.toLocaleString()} tokens (${budgetPct}%)`
+  );
 
   if (Object.keys(stats.tokens_by_tool).length > 0) {
     lines.push('');

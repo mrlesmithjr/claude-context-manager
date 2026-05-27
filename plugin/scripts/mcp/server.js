@@ -34373,6 +34373,10 @@ function formatStats(stats, project, vectorStats, sessionEmbeddingStats) {
   lines.push(
     `Avg per Session: ${stats.avg_tokens_per_session.toLocaleString()} tokens`
   );
+  const budgetPct = stats.token_budget > 0 ? Math.round(stats.budget_fill_tokens / stats.token_budget * 100) : 0;
+  lines.push(
+    `Budget Fill: ${stats.budget_fill_tokens.toLocaleString()} / ${stats.token_budget.toLocaleString()} tokens (${budgetPct}%)`
+  );
   if (Object.keys(stats.tokens_by_tool).length > 0) {
     lines.push("");
     lines.push("=== Tokens by Tool ===");
@@ -34567,7 +34571,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.96" : "unknown"
+      version: true ? "0.8.97" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
