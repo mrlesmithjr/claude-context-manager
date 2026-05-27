@@ -1441,7 +1441,7 @@ export function createContextManagerServer(
 
   server.tool(
     'context_vacuum',
-    'Clean up old observations and optimize the context-manager database. Use for maintenance.',
+    'Clean up old observations and optimize the context-manager database. Use for maintenance. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.',
     {
       days: z
         .number()
@@ -1460,14 +1460,21 @@ export function createContextManagerServer(
         .describe(
           'Mark active sessions with no activity older than this many hours as complete (default: 2). Uses last_checkpoint_at when available, falls back to started_at.'
         ),
+      include_high: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'When true, bypass the protection guard and also delete high-importance (score >= 0.65), pinned, and lesson observations. Default: false.'
+        ),
     },
-    async ({ days, stale_session_hours }) => {
+    async ({ days, stale_session_hours, include_high }) => {
       if (isProxy) {
-        return proxyToolCall('context_vacuum', { days, stale_session_hours }, remoteUrl, remoteToken);
+        return proxyToolCall('context_vacuum', { days, stale_session_hours, include_high }, remoteUrl, remoteToken);
       }
 
       const db = await getDb();
-      const result = await db.vacuum(days, stale_session_hours);
+      const result = await db.vacuum(days, stale_session_hours, include_high);
 
       const lines: string[] = [];
       if (result.closedStaleSessions > 0) {
@@ -1499,7 +1506,7 @@ export function createContextManagerServer(
 
   server.tool(
     'context_prune',
-    'Targeted pruning of observations by tool name, importance, and/or age. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required.',
+    'Targeted pruning of observations by tool name, importance, and/or age. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.',
     {
       tool_name: z
         .string()
@@ -1519,8 +1526,15 @@ export function createContextManagerServer(
         .describe(
           'Preview count and sample observations without deleting. Default: false. Always run dry_run=true first.'
         ),
+      include_high: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'When true, bypass the protection guard and also delete high-importance (score >= 0.65), pinned, and lesson observations. Default: false.'
+        ),
     },
-    async ({ tool_name, importance, older_than_days, dry_run }) => {
+    async ({ tool_name, importance, older_than_days, dry_run, include_high }) => {
       if (!tool_name && !importance && older_than_days === undefined) {
         return {
           content: [
@@ -1533,7 +1547,7 @@ export function createContextManagerServer(
       }
 
       if (isProxy) {
-        return proxyToolCall('context_prune', { tool_name, importance, older_than_days, dry_run }, remoteUrl, remoteToken);
+        return proxyToolCall('context_prune', { tool_name, importance, older_than_days, dry_run, include_high }, remoteUrl, remoteToken);
       }
 
       const db = await getDb();
@@ -1542,6 +1556,7 @@ export function createContextManagerServer(
         importance: importance as ImportanceLevel | undefined,
         olderThanDays: older_than_days,
         dryRun: dry_run,
+        include_high,
       });
 
       const filters = [

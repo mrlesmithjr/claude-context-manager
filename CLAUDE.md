@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 27, 2026 (v0.8.96)
+**Last Updated**: May 27, 2026 (v0.8.103)
 
 ---
 
@@ -230,7 +230,7 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 5a | Conversation insights | Stop hook extracts top 10 assistant blocks as `Conversation` observations |
 | 6 | Auto-memory export | Score >= 0.65 exported to `memory/context-manager-activity.md` at Stop |
 | 8 | Vector search | sqlite-vec, session embeddings (enriched text), on-demand via `context_embed` |
-| 9 | Rule-based compaction | >7 days old, groups of 3+, never compacts high-importance |
+| 9 | Rule-based compaction | >7 days old, groups of 3+, never compacts high-importance. `context_vacuum` and `context_prune` also protect observations with `importance_score >= 0.65`, `pinned = 1`, or a `lesson_type` by default; pass `include_high: true` to override. |
 | 10 | Surprise scoring | First encounter +0.15; 7-day windowed count; cap [-0.15, +0.20] |
 | 11 | Observation relationships | `followed_by`, `same_file`, `cross_project_same_file` inferred at capture |
 | 12 | Retrieval routing | 1-2 words=keyword, 3-4=hybrid (RRF), 5+=semantic |

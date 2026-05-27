@@ -23135,9 +23135,9 @@ ${storedOutput}`;
     const compactedLast24hRow = this.db.prepare(compactedLast24hSql).get(
       ...project ? [project] : []
     );
-    const gcLast24hSql = project ? `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day') AND project LIKE ? || '%'` : `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day')`;
+    const gcLast24hSql = project ? `SELECT COUNT(*) as count FROM sessions WHERE summary = ? AND ended_at > datetime('now', '-1 day') AND project LIKE ? || '%'` : `SELECT COUNT(*) as count FROM sessions WHERE summary = ? AND ended_at > datetime('now', '-1 day')`;
     const gcLast24hRow = this.db.prepare(gcLast24hSql).get(
-      ...project ? [project] : []
+      ...project ? [GC_SESSION_SUMMARY, project] : [GC_SESSION_SUMMARY]
     );
     const eligibleSql = project ? `SELECT COALESCE(SUM(cnt), 0) as count FROM (SELECT COUNT(*) as cnt FROM observations WHERE created_at < datetime('now', '-7 days') AND importance != 'high' AND is_compacted = 0 AND project LIKE ? || '%' GROUP BY session_id, tool_name HAVING COUNT(*) >= 3)` : `SELECT COALESCE(SUM(cnt), 0) as count FROM (SELECT COUNT(*) as cnt FROM observations WHERE created_at < datetime('now', '-7 days') AND importance != 'high' AND is_compacted = 0 GROUP BY session_id, tool_name HAVING COUNT(*) >= 3)`;
     const eligibleRow = this.db.prepare(eligibleSql).get(
@@ -23299,7 +23299,7 @@ ${storedOutput}`;
       SET
         status = 'complete',
         ended_at = datetime('now'),
-        summary = '${GC_SESSION_SUMMARY}'
+        summary = ?
       WHERE status = 'active'
         AND ended_at IS NULL
         AND (
@@ -23309,19 +23309,20 @@ ${storedOutput}`;
           (last_checkpoint_at IS NULL
             AND started_at < ?)
         )
-    `).run(staleThresholdISO, staleThresholdISO);
+    `).run(GC_SESSION_SUMMARY, staleThresholdISO, staleThresholdISO);
     return staleResult.changes;
   }
-  async vacuum(olderThanDays, staleSessionHours = 2) {
+  async vacuum(olderThanDays, staleSessionHours = 2, include_high = false) {
     let deletedObservations = 0;
     const closedStaleSessions = await this.closeStaleActiveSessions(staleSessionHours);
     if (olderThanDays) {
       const cutoffDate = /* @__PURE__ */ new Date();
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
       const cutoffISO = cutoffDate.toISOString();
+      const guardClause = include_high ? "" : " AND importance_score < 0.65 AND pinned = 0 AND lesson_type IS NULL";
       const stmt = this.db.prepare(`
         DELETE FROM observations
-        WHERE created_at < ?
+        WHERE created_at < ?${guardClause}
       `);
       const result = stmt.run(cutoffISO);
       deletedObservations = result.changes;
@@ -23371,9 +23372,14 @@ ${storedOutput}`;
     };
   }
   async prune(options) {
-    const { toolName, importance, olderThanDays, dryRun = false } = options;
+    const { toolName, importance, olderThanDays, dryRun = false, include_high = false } = options;
     const conditions = [];
     const params = [];
+    if (!include_high) {
+      conditions.push("importance_score < 0.65");
+      conditions.push("pinned = 0");
+      conditions.push("lesson_type IS NULL");
+    }
     if (olderThanDays !== void 0) {
       const cutoff = /* @__PURE__ */ new Date();
       cutoff.setDate(cutoff.getDate() - olderThanDays);
@@ -23388,7 +23394,8 @@ ${storedOutput}`;
       conditions.push("importance = ?");
       params.push(importance);
     }
-    if (conditions.length === 0) {
+    const userFilterCount = (olderThanDays !== void 0 ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0);
+    if (userFilterCount === 0) {
       return { deleted: 0 };
     }
     const where = `WHERE ${conditions.join(" AND ")}`;
@@ -23706,7 +23713,6 @@ ${storedOutput}`;
     const groups = this.db.prepare(`
       SELECT session_id, tool_name, COUNT(*) as cnt,
              GROUP_CONCAT(id) as ids,
-             GROUP_CONCAT(REPLACE(files_touched, ',', ';'), '|') as all_files,
              MIN(created_at) as earliest,
              MAX(created_at) as latest,
              SUM(token_estimate) as total_tokens,
@@ -23733,11 +23739,16 @@ ${storedOutput}`;
     const deleteVec = this.vecEnabled ? this.db.prepare(
       `DELETE FROM vec_observations WHERE observation_id IN (SELECT value FROM json_each(?))`
     ) : null;
+    const fetchFilesStmt = this.db.prepare(
+      `SELECT files_touched FROM observations WHERE id IN (SELECT value FROM json_each(?))`
+    );
     const compact = this.db.transaction(() => {
       for (const group of groups) {
-        const fileEntries = group.all_files.split("|").flatMap((f) => {
+        const idList = group.ids.split(",").map(Number);
+        const fileRows = fetchFilesStmt.all(JSON.stringify(idList));
+        const fileEntries = fileRows.flatMap((row) => {
           try {
-            return JSON.parse(f);
+            return JSON.parse(row.files_touched || "[]");
           } catch {
             return [];
           }
@@ -23755,7 +23766,6 @@ ${storedOutput}`;
           tokenEstimate,
           group.earliest
         );
-        const idList = group.ids.split(",").map(Number);
         if (deleteVec) {
           deleteVec.run(JSON.stringify(idList));
         }
@@ -24357,15 +24367,36 @@ ${storedOutput}`;
   }
   /**
    * Get recent sessions with their observations, grouped for display.
+   *
+   * Uses two queries instead of 1 + N: one for sessions, one bulk fetch
+   * for all observations across all sessions grouped in JS. Previously
+   * called getSessionObservations() once per session, causing an N+1
+   * pattern on every SessionStart hook and context_list call.
    */
   async getRecentSessionsWithObservations(project, sessionLimit = 10) {
     const sessions = await this.getRecentSessions(project, sessionLimit);
-    const result = [];
+    if (sessions.length === 0)
+      return [];
+    const ids = sessions.map((s) => s.id);
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id IN (SELECT value FROM json_each(?))
+        AND is_compacted = 0
+        AND superseded_by IS NULL
+      ORDER BY session_id, created_at ASC
+    `).all(JSON.stringify(ids));
+    const bySession = /* @__PURE__ */ new Map();
     for (const session of sessions) {
-      const observations = await this.getSessionObservations(session.id);
-      result.push({ session, observations });
+      bySession.set(session.id, []);
     }
-    return result;
+    for (const row of rows) {
+      const obs = this.mapRow(row);
+      bySession.get(obs.session_id)?.push(obs);
+    }
+    return sessions.map((session) => ({
+      session,
+      observations: bySession.get(session.id) ?? []
+    }));
   }
   /**
    * Increment file encounter count and return the new count.
@@ -34641,7 +34672,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.102" : "unknown"
+      version: true ? "0.8.103" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -35385,21 +35416,24 @@ Topic file: ${result.filePath}` : ""}`
   );
   server.tool(
     "context_vacuum",
-    "Clean up old observations and optimize the context-manager database. Use for maintenance.",
+    "Clean up old observations and optimize the context-manager database. Use for maintenance. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.",
     {
       days: external_exports.number().int().min(1).max(3650).optional().describe(
         "Delete observations older than this many days (1-3650). Omit to only clean orphaned sessions and optimize."
       ),
       stale_session_hours: external_exports.number().int().min(1).optional().describe(
         "Mark active sessions with no activity older than this many hours as complete (default: 2). Uses last_checkpoint_at when available, falls back to started_at."
+      ),
+      include_high: external_exports.boolean().optional().default(false).describe(
+        "When true, bypass the protection guard and also delete high-importance (score >= 0.65), pinned, and lesson observations. Default: false."
       )
     },
-    async ({ days, stale_session_hours }) => {
+    async ({ days, stale_session_hours, include_high }) => {
       if (isProxy) {
-        return proxyToolCall("context_vacuum", { days, stale_session_hours }, remoteUrl, remoteToken);
+        return proxyToolCall("context_vacuum", { days, stale_session_hours, include_high }, remoteUrl, remoteToken);
       }
       const db = await getDb();
-      const result = await db.vacuum(days, stale_session_hours);
+      const result = await db.vacuum(days, stale_session_hours, include_high);
       const lines = [];
       if (result.closedStaleSessions > 0) {
         lines.push(`Closed ${result.closedStaleSessions} stale active session(s) with no Stop hook.`);
@@ -35428,16 +35462,19 @@ Topic file: ${result.filePath}` : ""}`
   );
   server.tool(
     "context_prune",
-    "Targeted pruning of observations by tool name, importance, and/or age. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required.",
+    "Targeted pruning of observations by tool name, importance, and/or age. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.",
     {
       tool_name: external_exports.string().optional().describe('Delete observations from this tool (e.g., "Bash", "Read", "Grep")'),
       importance: external_exports.enum(["high", "medium", "low"]).optional().describe('Delete observations at this importance level (e.g., "low")'),
       older_than_days: external_exports.number().optional().describe("Only delete observations older than this many days"),
       dry_run: external_exports.boolean().optional().describe(
         "Preview count and sample observations without deleting. Default: false. Always run dry_run=true first."
+      ),
+      include_high: external_exports.boolean().optional().default(false).describe(
+        "When true, bypass the protection guard and also delete high-importance (score >= 0.65), pinned, and lesson observations. Default: false."
       )
     },
-    async ({ tool_name, importance, older_than_days, dry_run }) => {
+    async ({ tool_name, importance, older_than_days, dry_run, include_high }) => {
       if (!tool_name && !importance && older_than_days === void 0) {
         return {
           content: [
@@ -35449,14 +35486,15 @@ Topic file: ${result.filePath}` : ""}`
         };
       }
       if (isProxy) {
-        return proxyToolCall("context_prune", { tool_name, importance, older_than_days, dry_run }, remoteUrl, remoteToken);
+        return proxyToolCall("context_prune", { tool_name, importance, older_than_days, dry_run, include_high }, remoteUrl, remoteToken);
       }
       const db = await getDb();
       const result = await db.prune({
         toolName: tool_name,
         importance,
         olderThanDays: older_than_days,
-        dryRun: dry_run
+        dryRun: dry_run,
+        include_high
       });
       const filters = [
         tool_name && `tool="${tool_name}"`,

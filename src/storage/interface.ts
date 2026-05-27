@@ -341,9 +341,10 @@ export interface ContextStorage {
    * Vacuum old observations and orphaned sessions
    * @param olderThanDays - Delete observations older than this many days (optional)
    * @param staleSessionHours - Mark active sessions with no activity older than this many hours as complete (default: 2)
+   * @param include_high - When true, bypass the high-importance protection guard and delete all matching observations (default: false)
    * @returns Count of deleted observations, orphaned sessions, and closed stale sessions
    */
-  vacuum(olderThanDays?: number, staleSessionHours?: number): Promise<{
+  vacuum(olderThanDays?: number, staleSessionHours?: number, include_high?: boolean): Promise<{
     observations: number;
     sessions: number;
     compacted: number;
@@ -360,6 +361,7 @@ export interface ContextStorage {
    * @param options.importance - Filter by importance level ("high" | "medium" | "low")
    * @param options.olderThanDays - Only prune observations older than this many days
    * @param options.dryRun - Preview count and samples without deleting (default: false)
+   * @param options.include_high - When true, bypass the high-importance protection guard (default: false)
    * @returns Count of deleted (or matching, if dry run) observations and optional samples
    */
   prune(options: {
@@ -367,6 +369,7 @@ export interface ContextStorage {
     importance?: ImportanceLevel;
     olderThanDays?: number;
     dryRun?: boolean;
+    include_high?: boolean;
   }): Promise<{ deleted: number; preview?: string[] }>;
 
   /**

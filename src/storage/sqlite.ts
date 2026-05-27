@@ -1054,10 +1054,10 @@ export class SQLiteStorage implements ContextStorage {
     ) as { count: number } | undefined;
 
     const gcLast24hSql = project
-      ? `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day') AND project LIKE ? || '%'`
-      : `SELECT COUNT(*) as count FROM sessions WHERE summary = '${GC_SESSION_SUMMARY}' AND ended_at > datetime('now', '-1 day')`;
+      ? `SELECT COUNT(*) as count FROM sessions WHERE summary = ? AND ended_at > datetime('now', '-1 day') AND project LIKE ? || '%'`
+      : `SELECT COUNT(*) as count FROM sessions WHERE summary = ? AND ended_at > datetime('now', '-1 day')`;
     const gcLast24hRow = this.db.prepare(gcLast24hSql).get(
-      ...(project ? [project] : [])
+      ...(project ? [GC_SESSION_SUMMARY, project] : [GC_SESSION_SUMMARY])
     ) as { count: number } | undefined;
 
     const eligibleSql = project
@@ -1297,7 +1297,7 @@ export class SQLiteStorage implements ContextStorage {
       SET
         status = 'complete',
         ended_at = datetime('now'),
-        summary = '${GC_SESSION_SUMMARY}'
+        summary = ?
       WHERE status = 'active'
         AND ended_at IS NULL
         AND (
@@ -1307,12 +1307,12 @@ export class SQLiteStorage implements ContextStorage {
           (last_checkpoint_at IS NULL
             AND started_at < ?)
         )
-    `).run(staleThresholdISO, staleThresholdISO);
+    `).run(GC_SESSION_SUMMARY, staleThresholdISO, staleThresholdISO);
 
     return staleResult.changes;
   }
 
-  async vacuum(olderThanDays?: number, staleSessionHours = 2): Promise<{
+  async vacuum(olderThanDays?: number, staleSessionHours = 2, include_high = false): Promise<{
     observations: number;
     sessions: number;
     compacted: number;
@@ -1330,9 +1330,15 @@ export class SQLiteStorage implements ContextStorage {
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
       const cutoffISO = cutoffDate.toISOString();
 
+      // By default, protect high-importance, pinned, and lesson observations from deletion.
+      // Pass include_high=true to override and delete all matching observations.
+      const guardClause = include_high
+        ? ''
+        : ' AND importance_score < 0.65 AND pinned = 0 AND lesson_type IS NULL';
+
       const stmt = this.db.prepare(`
         DELETE FROM observations
-        WHERE created_at < ?
+        WHERE created_at < ?${guardClause}
       `);
 
       const result = stmt.run(cutoffISO);
@@ -1406,11 +1412,22 @@ export class SQLiteStorage implements ContextStorage {
     importance?: ImportanceLevel;
     olderThanDays?: number;
     dryRun?: boolean;
+    include_high?: boolean;
   }): Promise<{ deleted: number; preview?: string[] }> {
-    const { toolName, importance, olderThanDays, dryRun = false } = options;
+    const { toolName, importance, olderThanDays, dryRun = false, include_high = false } = options;
 
     const conditions: string[] = [];
     const params: unknown[] = [];
+
+    // By default, protect high-importance, pinned, and lesson observations.
+    // These guards are prepended so they apply to all four SQL paths (dry-run
+    // COUNT, dry-run preview SELECT, ID collection SELECT, and final DELETE)
+    // via the shared `where` string built below.
+    if (!include_high) {
+      conditions.push('importance_score < 0.65');
+      conditions.push('pinned = 0');
+      conditions.push('lesson_type IS NULL');
+    }
 
     if (olderThanDays !== undefined) {
       const cutoff = new Date();
@@ -1427,8 +1444,10 @@ export class SQLiteStorage implements ContextStorage {
       params.push(importance);
     }
 
-    // Require at least one filter — prevent accidental full wipe
-    if (conditions.length === 0) {
+    // Require at least one user-supplied filter — prevent accidental full wipe.
+    // The high-importance guard conditions do not count toward this requirement.
+    const userFilterCount = (olderThanDays !== undefined ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0);
+    if (userFilterCount === 0) {
       return { deleted: 0 };
     }
 
@@ -1863,11 +1882,13 @@ export class SQLiteStorage implements ContextStorage {
     const cutoffISO = cutoffDate.toISOString();
 
     // Find groups of 3+ observations with same session + tool, older than cutoff
-    // Never compact high-importance or already-compacted observations
+    // Never compact high-importance or already-compacted observations.
+    // all_files is intentionally omitted here — GROUP_CONCAT(REPLACE(...)) corrupts
+    // JSON arrays that contain commas (all file paths), causing the catch block to
+    // discard all file data. Files are fetched per-group below instead.
     const groups = this.db.prepare(`
       SELECT session_id, tool_name, COUNT(*) as cnt,
              GROUP_CONCAT(id) as ids,
-             GROUP_CONCAT(REPLACE(files_touched, ',', ';'), '|') as all_files,
              MIN(created_at) as earliest,
              MAX(created_at) as latest,
              SUM(token_estimate) as total_tokens,
@@ -1883,7 +1904,6 @@ export class SQLiteStorage implements ContextStorage {
       tool_name: string;
       cnt: number;
       ids: string;
-      all_files: string;
       earliest: string;
       latest: string;
       total_tokens: number;
@@ -1913,16 +1933,25 @@ export class SQLiteStorage implements ContextStorage {
         )
       : null;
 
+    // Fetch files_touched for a group of observation IDs in one query.
+    // Prepared once outside the transaction loop for efficiency.
+    const fetchFilesStmt = this.db.prepare(
+      `SELECT files_touched FROM observations WHERE id IN (SELECT value FROM json_each(?))`
+    );
+
     const compact = this.db.transaction(() => {
       for (const group of groups) {
-        // Parse all files from the group
-        const fileEntries = group.all_files
-          .split('|')
-          .flatMap(f => {
-            try { return JSON.parse(f); }
-            catch { return []; }
-          })
-          .filter((f: string) => f && f.length > 0);
+        // Parse the id list once — reused for file fetch, vec delete, and originals delete.
+        const idList = group.ids.split(',').map(Number);
+
+        // Fetch and flatten files_touched for all observations in this group.
+        // Using a separate SELECT per group avoids GROUP_CONCAT corruption: any file path
+        // containing a comma (e.g. "/a,b/file.ts") would break the GROUP_CONCAT approach.
+        const fileRows = fetchFilesStmt.all(JSON.stringify(idList)) as Array<{ files_touched: string }>;
+        const fileEntries = fileRows.flatMap(row => {
+          try { return JSON.parse(row.files_touched || '[]') as string[]; }
+          catch { return []; }
+        }).filter(f => f && f.length > 0);
         const uniqueFiles = [...new Set(fileEntries)].slice(0, 10); // Cap at 10
 
         // Build compact summary
@@ -1944,7 +1973,6 @@ export class SQLiteStorage implements ContextStorage {
         );
 
         // Delete originals and their vector rows (compacted replacement inserted above)
-        const idList = group.ids.split(',').map(Number);
         if (deleteVec) {
           deleteVec.run(JSON.stringify(idList));
         }
@@ -2721,20 +2749,41 @@ export class SQLiteStorage implements ContextStorage {
 
   /**
    * Get recent sessions with their observations, grouped for display.
+   *
+   * Uses two queries instead of 1 + N: one for sessions, one bulk fetch
+   * for all observations across all sessions grouped in JS. Previously
+   * called getSessionObservations() once per session, causing an N+1
+   * pattern on every SessionStart hook and context_list call.
    */
   async getRecentSessionsWithObservations(
     project: string,
     sessionLimit: number = 10
   ): Promise<Array<{ session: Session; observations: Observation[] }>> {
     const sessions = await this.getRecentSessions(project, sessionLimit);
-    const result: Array<{ session: Session; observations: Observation[] }> = [];
+    if (sessions.length === 0) return [];
 
+    const ids = sessions.map(s => s.id);
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id IN (SELECT value FROM json_each(?))
+        AND is_compacted = 0
+        AND superseded_by IS NULL
+      ORDER BY session_id, created_at ASC
+    `).all(JSON.stringify(ids)) as Array<Record<string, unknown>>;
+
+    const bySession = new Map<string, Observation[]>();
     for (const session of sessions) {
-      const observations = await this.getSessionObservations(session.id);
-      result.push({ session, observations });
+      bySession.set(session.id, []);
+    }
+    for (const row of rows) {
+      const obs = this.mapRow(row);
+      bySession.get(obs.session_id)?.push(obs);
     }
 
-    return result;
+    return sessions.map(session => ({
+      session,
+      observations: bySession.get(session.id) ?? [],
+    }));
   }
 
   /**
