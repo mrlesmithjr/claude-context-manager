@@ -52,6 +52,12 @@ export interface SearchOptions {
    * Only applies when search() is called via the web API observations endpoint.
    */
   offset?: number;
+  /**
+   * Filter results to a specific tool name (e.g. "Write", "Edit", "Read").
+   * When provided, only observations with exactly this tool_name are returned.
+   * Filtering happens in SQL to ensure paginated results are dense (fixes #127).
+   */
+  toolName?: string;
 }
 export type RelationshipType = 'same_file' | 'followed_by' | 'cross_project_same_file';
 export type ObservationTag =
@@ -212,8 +218,9 @@ export interface ContextStorage {
    * @param project - Project path
    * @param limit - Maximum number of observations to return
    * @param offset - Number of observations to skip (for pagination)
+   * @param toolName - Optional tool name filter; filtering happens in SQL for correct pagination (fixes #127)
    */
-  getRecent(project: string, limit?: number, offset?: number): Promise<Observation[]>;
+  getRecent(project: string, limit?: number, offset?: number, toolName?: string): Promise<Observation[]>;
 
   /**
    * Get observations within a token budget using tiered allocation.

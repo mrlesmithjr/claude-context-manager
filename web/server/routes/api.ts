@@ -293,25 +293,22 @@ export async function registerApiRoutes(
           // Total reflects post-filtered count; no DB count available for tag queries
           total = observations.length;
         } else if (q || importance) {
-          // Full-text search with DB-level importance filter for correct pagination.
-          // Route the no-query+importance case through search() so importance
-          // filtering happens in SQL rather than in memory (avoids under-filled pages).
+          // Full-text search with DB-level importance and tool filters for correct pagination.
+          // Route the no-query+importance case through search() so filtering
+          // happens in SQL rather than in memory (avoids under-filled pages).
+          // toolName pushed into SQL so pages are dense (fixes #127).
           observations = await storage.search(q || '', {
             project,
             limit,
             offset,
             importance,
+            toolName: tool,
           });
-          if (tool) {
-            observations = observations.filter((obs) => obs.tool_name === tool);
-          }
           total = await storage.countObservations(project, tool, importance);
         } else {
-          // Plain recent observations -- no search query, no importance filter
-          observations = await storage.getRecent(project || '', limit, offset);
-          if (tool) {
-            observations = observations.filter((obs) => obs.tool_name === tool);
-          }
+          // Plain recent observations -- no search query, no importance filter.
+          // toolName pushed into SQL so pages are dense (fixes #127).
+          observations = await storage.getRecent(project || '', limit, offset, tool);
           total = await storage.countObservations(project, tool);
         }
 

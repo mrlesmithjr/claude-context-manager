@@ -60965,7 +60965,7 @@ function createContextManagerServer(storage, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.101" : "unknown"
+      version: true ? "0.8.102" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -62643,14 +62643,19 @@ ${storedOutput}`;
     }
     return insertedId;
   }
-  async getRecent(project, limit = 50, offset = 0) {
+  async getRecent(project, limit = 50, offset = 0, toolName) {
+    const toolClause = toolName ? " AND tool_name = ?" : "";
     const stmt = this.db.prepare(`
       SELECT * FROM observations
-      WHERE project LIKE ?
+      WHERE project LIKE ?${toolClause}
       ORDER BY created_at DESC
       LIMIT ? OFFSET ?
     `);
-    const rows = stmt.all(project + "%", limit, offset);
+    const params = [project + "%"];
+    if (toolName)
+      params.push(toolName);
+    params.push(limit, offset);
+    const rows = stmt.all(...params);
     return rows.map((row) => this.mapRow(row));
   }
   async getWithinBudget(project, tokenBudget) {
@@ -62705,58 +62710,68 @@ ${storedOutput}`;
     const includeSuperseded = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.include_superseded ?? false : false;
     const searchOffset = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.offset ?? 0 : 0;
     const importance = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.importance : void 0;
+    const toolName = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.toolName : void 0;
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     const hasBranchFilter = branchFilter !== void 0 && branchFilter !== "*";
     const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     const importanceClause = importance ? " AND o.importance = ?" : "";
+    const toolClause = toolName ? " AND o.tool_name = ?" : "";
     const limitParam = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50;
     const paginationClause = searchOffset > 0 ? `LIMIT ${limitParam} OFFSET ${searchOffset}` : `LIMIT ${limitParam}`;
     if (project && hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, project + "%", branchFilter];
       if (importance)
         params.push(importance);
+      if (toolName)
+        params.push(toolName);
     } else if (project) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, project + "%"];
       if (importance)
         params.push(importance);
+      if (toolName)
+        params.push(toolName);
     } else if (hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, branchFilter];
       if (importance)
         params.push(importance);
+      if (toolName)
+        params.push(toolName);
     } else {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery];
       if (importance)
         params.push(importance);
+      if (toolName)
+        params.push(toolName);
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
@@ -64850,8 +64865,8 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.101")
-    return "0.8.101";
+  if ("0.8.102")
+    return "0.8.102";
   try {
     const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version)
