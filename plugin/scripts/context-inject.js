@@ -2723,7 +2723,8 @@ function generateSessionId() {
 function validateSessionStartInput(input) {
   const obj = typeof input === "object" && input !== null ? input : {};
   const session_id = typeof obj.session_id === "string" && obj.session_id.length > 0 ? obj.session_id : generateSessionId();
-  const rawCwd = typeof obj.cwd === "string" && obj.cwd.length > 0 ? obj.cwd : process.cwd();
+  const hookCwd = typeof obj.cwd === "string" && obj.cwd.length > 0 ? obj.cwd : null;
+  const rawCwd = hookCwd ?? process.cwd();
   let validatedCwd;
   try {
     validatedCwd = validateProjectPath(rawCwd);
@@ -2731,7 +2732,10 @@ function validateSessionStartInput(input) {
     try {
       validatedCwd = validateProjectPath(process.cwd());
     } catch {
-      validatedCwd = homedir2();
+      const fallback = homedir2();
+      const inputDescription = hookCwd ? `'${hookCwd}'` : "(none \u2014 hook sent no cwd)";
+      console.error(`[context-manager] WARNING: could not validate project path ${inputDescription} or process.cwd(), falling back to home directory. Observations will be scoped to ${fallback}`);
+      validatedCwd = fallback;
     }
   }
   return {
@@ -2914,11 +2918,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.103") {
+    if (installedVersion !== "0.8.105") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.103"}
+   Source:    v${"0.8.105"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2932,10 +2936,10 @@ var PLUGIN_VERSION_FILE = join2(homedir4(), ".claude-context", ".plugin-version"
 function checkPostUpdate() {
   try {
     const stored = existsSync(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.103")
+    if (stored === "0.8.105")
       return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.103"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.105"}. Hooks active.`;
   } catch {
     return "";
   }
@@ -2943,7 +2947,7 @@ function checkPostUpdate() {
 function markVersionActivated() {
   try {
     mkdirSync2(join2(homedir4(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.103", "utf-8");
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.105", "utf-8");
   } catch {
   }
 }
@@ -3012,11 +3016,12 @@ async function main() {
       const updateNotice2 = checkPostUpdate();
       const versionWarning2 = checkVersionMismatch();
       const lines2 = [];
+      let noticeWasInjected2 = false;
       if (updateNotice2) {
         const serverMsg = `${updateNotice2} Server may need restart \u2014 check ${remoteUrl}/health`;
         console.error(serverMsg);
         lines2.push(serverMsg);
-        markVersionActivated();
+        noticeWasInjected2 = true;
       }
       if (versionWarning2)
         lines2.push(versionWarning2);
@@ -3025,7 +3030,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.103"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.105"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3090,14 +3095,9 @@ async function main() {
           additionalContext: context2
         }
       });
-      return;
-    }
-    {
-      const updateNotice2 = checkPostUpdate();
-      if (updateNotice2) {
-        console.error(updateNotice2);
+      if (noticeWasInjected2)
         markVersionActivated();
-      }
+      return;
     }
     if (!__nativeModulesAvailable) {
       console.error(NO_NATIVE_ERROR);
@@ -3120,16 +3120,17 @@ async function main() {
     const updateNotice = checkPostUpdate();
     const versionWarning = checkVersionMismatch();
     const lines = [];
+    let noticeWasInjected = false;
     if (updateNotice) {
       console.error(updateNotice);
       lines.push(updateNotice);
-      markVersionActivated();
+      noticeWasInjected = true;
     }
     if (versionWarning) {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.103"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.105"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
@@ -3193,6 +3194,8 @@ async function main() {
         additionalContext: context
       }
     });
+    if (noticeWasInjected)
+      markVersionActivated();
   } catch (error) {
     console.error("[context-manager] Error:", error);
     await writeResponse({

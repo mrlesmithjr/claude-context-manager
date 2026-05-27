@@ -266,11 +266,12 @@ async function main() {
       const updateNotice = checkPostUpdate();
       const versionWarning = checkVersionMismatch();
       const lines: string[] = [];
+      let noticeWasInjected = false;
       if (updateNotice) {
         const serverMsg = `${updateNotice} Server may need restart — check ${remoteUrl}/health`;
-        console.error(serverMsg);
-        lines.push(serverMsg);
-        markVersionActivated();
+        console.error(serverMsg);      // surface in hook stderr for debugging
+        lines.push(serverMsg);         // inject into additionalContext so Claude sees it
+        noticeWasInjected = true;
       }
       if (versionWarning) lines.push(versionWarning);
 
@@ -372,19 +373,14 @@ async function main() {
           additionalContext: context,
         },
       });
+      // Stamp version file only after response is successfully written so a
+      // crash between markVersionActivated() and writeResponse() cannot
+      // silently consume the notice without the user seeing it.
+      if (noticeWasInjected) markVersionActivated();
       return;
     }
 
     // --- Local mode: direct SQLite access ---
-    // Post-update notification — fires even when native modules are absent
-    {
-      const updateNotice = checkPostUpdate();
-      if (updateNotice) {
-        console.error(updateNotice);
-        markVersionActivated();
-      }
-    }
-
     if (!__nativeModulesAvailable) {
       console.error(NO_NATIVE_ERROR);
       await writeResponse({
@@ -420,10 +416,11 @@ async function main() {
 
     // Build status hint
     const lines: string[] = [];
+    let noticeWasInjected = false;
     if (updateNotice) {
-      console.error(updateNotice);
-      lines.push(updateNotice);
-      markVersionActivated();
+      console.error(updateNotice);      // surface in hook stderr for debugging
+      lines.push(updateNotice);         // inject into additionalContext so Claude sees it
+      noticeWasInjected = true;
     }
     if (versionWarning) {
       lines.push(versionWarning);
@@ -515,6 +512,10 @@ async function main() {
         additionalContext: context
       }
     });
+    // Stamp version file only after response is successfully written so a
+    // crash between markVersionActivated() and writeResponse() cannot
+    // silently consume the notice without the user seeing it.
+    if (noticeWasInjected) markVersionActivated();
   } catch (error) {
     // Fail silently - never block Claude Code
     console.error('[context-manager] Error:', error);
