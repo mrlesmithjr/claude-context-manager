@@ -50092,6 +50092,78 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
       reply.status(500).send({ error: "Failed to retrieve projects" });
     }
   });
+  fastify.get(
+    "/api/decisions",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
+            q: { type: "string", maxLength: MAX_QUERY_LEN },
+            limit: { type: "number", minimum: 1, maximum: 50 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { project, q, limit = 20 } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
+      try {
+        const decisions = await storage.searchDecisions(project || "/", q, limit);
+        reply.send({ decisions, total: decisions.length });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Failed to retrieve decisions" });
+      }
+    }
+  );
+  fastify.get(
+    "/api/lessons",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
+            q: { type: "string", maxLength: MAX_QUERY_LEN },
+            lesson_type: {
+              type: "string",
+              enum: ["error", "build_failure", "test_failure", "permission_denied"]
+            },
+            limit: { type: "number", minimum: 1, maximum: 50 },
+            days: { type: "number", minimum: 1, maximum: 365 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { project, q, lesson_type, limit = 20, days } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
+      const since = days ? new Date(Date.now() - days * 864e5).toISOString() : void 0;
+      try {
+        const lessons = await storage.getLessons(project, q, lesson_type, limit, since);
+        reply.send({ lessons, total: lessons.length });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Failed to retrieve lessons" });
+      }
+    }
+  );
   fastify.post("/api/import", async (request, reply) => {
     let data;
     try {

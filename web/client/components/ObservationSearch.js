@@ -5,27 +5,7 @@
  */
 
 import { html, Component } from '/vendor/preact-htm.js';
-
-/**
- * Format a date as relative time (e.g., "2 hours ago")
- */
-function formatRelativeTime(dateStr) {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now - date;
-  const diffSec = Math.floor(diffMs / 1000);
-  const diffMin = Math.floor(diffSec / 60);
-  const diffHour = Math.floor(diffMin / 60);
-  const diffDay = Math.floor(diffHour / 24);
-
-  if (diffSec < 60) return 'just now';
-  if (diffMin < 60) return `${diffMin}m ago`;
-  if (diffHour < 24) return `${diffHour}h ago`;
-  if (diffDay < 7) return `${diffDay}d ago`;
-
-  // Format as date for older entries
-  return date.toLocaleDateString();
-}
+import { formatRelativeTime, parseTags, getImportanceBadge, escapeHtml as escapeHtmlUtil } from './utils.js';
 
 /**
  * Get badge color for tool type
@@ -46,19 +26,8 @@ function getToolColor(toolName) {
   return colors[toolName] || 'bg-gray-500/20 text-gray-400';
 }
 
-/**
- * Escape HTML special characters to prevent XSS.
- * Must be applied before inserting any user-derived or stored content
- * into dangerouslySetInnerHTML.
- */
-function escapeHtml(str) {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
-}
+// Local alias so highlightMatches can reference escapeHtml without change.
+const escapeHtml = escapeHtmlUtil;
 
 /**
  * Highlight search matches in text.
@@ -324,6 +293,24 @@ export class ObservationSearch extends Component {
                   ${obs.session_id.slice(0, 8)}...
                 </span>
               `}
+              ${(() => {
+                const { label, colorClass } = getImportanceBadge(obs.importance, obs.importance_score);
+                return label ? html`
+                  <span class="px-2 py-0.5 text-xs font-semibold rounded ${colorClass}">
+                    ${label}
+                  </span>
+                ` : null;
+              })()}
+              ${parseTags(obs.tags).map((tag) => html`
+                <span class="px-2 py-0.5 text-xs rounded bg-indigo-500/20 text-indigo-300">
+                  ${tag}
+                </span>
+              `)}
+              ${obs.branch ? html`
+                <span class="px-2 py-0.5 text-xs rounded bg-gray-600/50 text-gray-400">
+                  &#x2387; ${obs.branch}
+                </span>
+              ` : null}
             </div>
 
             <!-- Token count -->
