@@ -24,7 +24,7 @@
 
 import { SQLiteStorage } from '../../src/storage/sqlite.js';
 import { validateSessionStartInput } from '../../src/utils/validation.js';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import {
@@ -132,6 +132,39 @@ function checkVersionMismatch(): string {
 }
 
 
+const PLUGIN_VERSION_FILE = join(homedir(), '.claude-context', '.plugin-version');
+
+/**
+ * Detect first session after a plugin update.
+ * Returns a notice string if the stored version differs from PLUGIN_VERSION,
+ * empty string if already activated.
+ */
+function checkPostUpdate(): string {
+  try {
+    const stored = existsSync(PLUGIN_VERSION_FILE)
+      ? readFileSync(PLUGIN_VERSION_FILE, 'utf-8').trim()
+      : '';
+    if (stored === PLUGIN_VERSION) return '';
+    const verb = stored === '' ? 'Installed' : 'Updated';
+    return `[context-manager] ${verb} v${PLUGIN_VERSION}. Hooks active.`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Persist the current version so the update notice fires only once.
+ * Call after queuing the notice into lines[].
+ */
+function markVersionActivated(): void {
+  try {
+    mkdirSync(join(homedir(), '.claude-context'), { recursive: true });
+    writeFileSync(PLUGIN_VERSION_FILE, PLUGIN_VERSION, 'utf-8');
+  } catch {
+    // Non-critical — fail silently
+  }
+}
+
 // Maximum characters of server memory content to inject into additionalContext.
 // Keeps the session start hint within a reasonable token budget (~750 tokens).
 const REMOTE_MEMORY_INJECT_MAX = 3000;
@@ -229,8 +262,16 @@ async function main() {
       }
 
       // Build remote status hint
+      // Post-update notification — fires once, first session after /plugin update
+      const updateNotice = checkPostUpdate();
       const versionWarning = checkVersionMismatch();
       const lines: string[] = [];
+      if (updateNotice) {
+        const serverMsg = `${updateNotice} Server may need restart — check ${remoteUrl}/health`;
+        console.error(serverMsg);
+        lines.push(serverMsg);
+        markVersionActivated();
+      }
       if (versionWarning) lines.push(versionWarning);
 
       // Get observation count from remote via context_stats.
@@ -335,6 +376,15 @@ async function main() {
     }
 
     // --- Local mode: direct SQLite access ---
+    // Post-update notification — fires even when native modules are absent
+    {
+      const updateNotice = checkPostUpdate();
+      if (updateNotice) {
+        console.error(updateNotice);
+        markVersionActivated();
+      }
+    }
+
     if (!__nativeModulesAvailable) {
       console.error(NO_NATIVE_ERROR);
       await writeResponse({
@@ -363,11 +413,18 @@ async function main() {
     // Get observation count for status hint
     const count = await storage.countObservations(input.cwd);
 
+    // Post-update notification — fires once, first session after /plugin update
+    const updateNotice = checkPostUpdate();
     // Check for version mismatch
     const versionWarning = checkVersionMismatch();
 
     // Build status hint
     const lines: string[] = [];
+    if (updateNotice) {
+      console.error(updateNotice);
+      lines.push(updateNotice);
+      markVersionActivated();
+    }
     if (versionWarning) {
       lines.push(versionWarning);
     }

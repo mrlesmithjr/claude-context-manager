@@ -432,7 +432,7 @@ release:
 	echo "[release] Waiting for CI on PR #$$PR_NUM (polling every 10s)..."; \
 	sleep 5; \
 	while gh pr checks "$$PR_NUM" \
-			--repo mrlesmithjr/claude-context-manager 2>&1 | grep -q "pending"; do \
+			--repo mrlesmithjr/claude-context-manager 2>&1 | grep -qE "pending|queued"; do \
 		printf "."; sleep 10; \
 	done; \
 	echo ""; \
