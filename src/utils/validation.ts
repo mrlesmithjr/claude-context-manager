@@ -129,10 +129,11 @@ export function validateSessionStartInput(input: unknown): SessionStartInput {
     ? obj.session_id
     : generateSessionId();
 
-  // cwd is optional - use process.cwd() if not provided
-  const rawCwd = (typeof obj.cwd === 'string' && obj.cwd.length > 0)
-    ? obj.cwd
-    : process.cwd();
+  // cwd is optional - use process.cwd() if not provided.
+  // Preserve the original hook input separately so warning messages can
+  // accurately describe what the hook actually sent vs. what cwd() returned.
+  const hookCwd = (typeof obj.cwd === 'string' && obj.cwd.length > 0) ? obj.cwd : null;
+  const rawCwd = hookCwd ?? process.cwd();
 
   // Try to validate project path. Fall back to process.cwd() (never raw input)
   // so the prefix-matching storage queries are scoped to the actual process
@@ -146,7 +147,10 @@ export function validateSessionStartInput(input: unknown): SessionStartInput {
     try {
       validatedCwd = validateProjectPath(process.cwd());
     } catch {
-      validatedCwd = homedir();
+      const fallback = homedir();
+      const inputDescription = hookCwd ? `'${hookCwd}'` : '(none — hook sent no cwd)';
+      console.error(`[context-manager] WARNING: could not validate project path ${inputDescription} or process.cwd(), falling back to home directory. Observations will be scoped to ${fallback}`);
+      validatedCwd = fallback;
     }
   }
 

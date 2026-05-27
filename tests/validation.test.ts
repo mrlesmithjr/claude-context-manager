@@ -9,7 +9,7 @@
  * ~/Projects or ~/Dev may not exist on every machine, so we avoid them.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { homedir } from 'os';
 import path from 'path';
 import { mkdtempSync, rmdirSync } from 'fs';
@@ -92,6 +92,44 @@ describe('validateSessionStartInput', () => {
     // cwd should be some allowed path (process.cwd() or homedir())
     expect(result.cwd).toBeTruthy();
     expect(result.cwd.startsWith(HOME)).toBe(true);
+  });
+
+  it('emits a console.error warning when both hookCwd and process.cwd() fail validation', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const originalCwd = process.cwd;
+    try {
+      // Force process.cwd() to return an invalid path so both fallbacks fail
+      process.cwd = () => '/etc/no-allowed-root';
+      validateSessionStartInput({ session_id: 'warn-test', cwd: '/etc/invalid' });
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining('[context-manager] WARNING')
+      );
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining('/etc/invalid')
+      );
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining('process.cwd()')
+      );
+    } finally {
+      process.cwd = originalCwd;
+      spy.mockRestore();
+    }
+  });
+
+  it('emits a warning describing missing cwd when hook sends no cwd and process.cwd() also fails', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const originalCwd = process.cwd;
+    try {
+      process.cwd = () => '/etc/no-allowed-root';
+      // No cwd in input — hookCwd will be null
+      validateSessionStartInput({ session_id: 'warn-no-cwd' });
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining('(none — hook sent no cwd)')
+      );
+    } finally {
+      process.cwd = originalCwd;
+      spy.mockRestore();
+    }
   });
 
   it('handles empty object — generates session_id and uses process.cwd()', () => {
