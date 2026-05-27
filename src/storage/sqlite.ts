@@ -661,36 +661,58 @@ export class SQLiteStorage implements ContextStorage {
     project: string,
     tokenBudget: number
   ): Promise<Observation[]> {
-    // Apply 80% safety margin
     const effectiveBudget = Math.floor(tokenBudget * 0.8);
+    const HIGH_IMPORTANCE_ALLOCATION = 0.6;
 
     // Use LIKE for prefix matching (parent directory sees children).
-    // LIMIT 500 caps memory usage on mature databases — the budget accumulator
-    // stops well before this ceiling, so no relevant observations are lost.
+    // LIMIT 500 caps memory usage on mature databases.
+    // Exclude compacted observations and superseded facts from budget calculation.
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
+        AND is_compacted = 0
+        AND superseded_by IS NULL
       ORDER BY importance_score DESC, created_at DESC
       LIMIT 500
     `);
 
     const rows = stmt.all(project + '%') as Array<Record<string, unknown>>;
 
-    // Accumulate observations until budget exceeded
-    const results: Observation[] = [];
-    let totalTokens = 0;
+    // Apply decay transiently for ranking — consistent with search() behavior.
+    // The adjusted score is never written to the DB.
+    const scoredRows = rows.map(row => {
+      const obs = this.mapRow(row);
+      return { obs, score: applyDecay(obs) };
+    });
+    scoredRows.sort((a, b) => b.score - a.score);
 
-    for (const row of rows) {
-      const tokenEstimate = row.token_estimate as number;
-      if (totalTokens + tokenEstimate > effectiveBudget) {
-        break;
-      }
+    // Pass 1: fill up to 60% of budget from high-importance observations (score >= 0.65)
+    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * effectiveBudget);
+    const highResults: Observation[] = [];
+    const includedIds = new Set<number>();
+    let highTokens = 0;
 
-      results.push(this.mapRow(row));
-      totalTokens += tokenEstimate;
+    for (const { obs } of scoredRows) {
+      if (obs.importance_score < 0.65) continue;
+      if (highTokens + obs.token_estimate > highBudget) continue;
+      highResults.push(obs);
+      if (obs.id !== undefined) includedIds.add(obs.id);
+      highTokens += obs.token_estimate;
     }
 
-    return results;
+    // Pass 2: fill remaining budget from everything else (sorted by decayed score)
+    const remainingBudget = effectiveBudget - highTokens;
+    const lowResults: Observation[] = [];
+    let lowTokens = 0;
+
+    for (const { obs } of scoredRows) {
+      if (obs.id !== undefined && includedIds.has(obs.id)) continue;
+      if (lowTokens + obs.token_estimate > remainingBudget) continue;
+      lowResults.push(obs);
+      lowTokens += obs.token_estimate;
+    }
+
+    return [...highResults, ...lowResults];
   }
 
   async search(query: string, projectOrOptions?: string | SearchOptions): Promise<Observation[]> {
@@ -932,38 +954,11 @@ export class SQLiteStorage implements ContextStorage {
     const avgTokensPerSession =
       sessionRow.count > 0 ? Math.round((baseRow.total_tokens || 0) / sessionRow.count) : 0;
 
-    // Typical injection: get median of recent injection sizes
-    // Approximated by looking at what would be injected for recent sessions
-    const recentSql = project
-      ? `
-        SELECT SUM(token_estimate) as session_tokens
-        FROM observations
-        WHERE project LIKE ? || '%'
-        GROUP BY session_id
-        ORDER BY MAX(created_at) DESC
-        LIMIT 10
-      `
-      : `
-        SELECT SUM(token_estimate) as session_tokens
-        FROM observations
-        GROUP BY session_id
-        ORDER BY MAX(created_at) DESC
-        LIMIT 10
-      `;
-
-    const recentRows = this.db.prepare(recentSql).all(
-      ...(project ? [project] : [])
-    ) as Array<{ session_tokens: number }>;
-
-    // Typical injection is roughly min(avg recent session tokens, budget)
-    const avgRecentTokens =
-      recentRows.length > 0
-        ? Math.round(
-            recentRows.reduce((sum, r) => sum + r.session_tokens, 0) /
-              recentRows.length
-          )
-        : 0;
-    const typicalInjection = Math.min(avgRecentTokens, TOKEN_BUDGET);
+    // Budget fill: call getWithinBudget to get the actual tiered-allocation result.
+    // Fetches up to 500 rows and applies decay in-process — acceptable since context_stats
+    // is called infrequently (on-demand via MCP tool or CLI, not on a hot path).
+    const budgetObs = await this.getWithinBudget(project ?? '', TOKEN_BUDGET);
+    const budgetFillTokens = budgetObs.reduce((sum, o) => sum + o.token_estimate, 0);
 
     // Importance distribution
     const importanceSql = project
@@ -1047,7 +1042,7 @@ export class SQLiteStorage implements ContextStorage {
       avg_tokens_per_session: avgTokensPerSession,
       tokens_by_tool: tokensByTool,
       token_budget: TOKEN_BUDGET,
-      typical_injection_tokens: typicalInjection,
+      budget_fill_tokens: budgetFillTokens,
       importance_counts: importanceCounts,
       compacted_count: compactedRow?.compacted_count || 0,
       compacted_original_count: compactedRow?.original_count || 0,
@@ -1676,6 +1671,8 @@ export class SQLiteStorage implements ContextStorage {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE session_id = ?
+        AND is_compacted = 0
+        AND superseded_by IS NULL
       ORDER BY created_at ASC
     `);
 

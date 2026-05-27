@@ -138,7 +138,7 @@ export interface Stats {
   avg_tokens_per_session: number;
   tokens_by_tool: Record<string, number>;
   token_budget: number;
-  typical_injection_tokens: number;
+  budget_fill_tokens: number;
   // Importance distribution
   importance_counts: { high: number; medium: number; low: number };
   // Compaction stats
@@ -204,9 +204,10 @@ export interface ContextStorage {
   getRecent(project: string, limit: number): Promise<Observation[]>;
 
   /**
-   * Get observations within a token budget
-   * @param project - Project path
-   * @param tokenBudget - Maximum tokens to return
+   * Get observations within a token budget using tiered allocation.
+   * Applies time-weighted decay before ranking. First pass fills 60% of the
+   * effective budget (tokenBudget * 0.8) from observations with importance_score >= 0.65.
+   * Second pass fills the remainder from all other observations sorted by decayed score.
    */
   getWithinBudget(project: string, tokenBudget: number): Promise<Observation[]>;
 

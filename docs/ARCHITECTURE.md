@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: May 26, 2026 (v0.8.95)
+**Last Updated**: May 27, 2026 (v0.8.96)
 
 ---
 
@@ -853,6 +853,25 @@ effective_score = (base_importance * 0.60) + (recency * 0.25) + (log_frequency *
 
 Decay is applied only during search scoring, not stored back to the DB. The stored `importance_score` reflects capture-time value.
 
+### Tiered Recall Budget
+
+`getWithinBudget()` and `getSessionObservations()` both filter `AND is_compacted = 0 AND superseded_by IS NULL` at the SQL level so compacted summaries and superseded facts never count against the budget or appear in session views.
+
+`getWithinBudget()` applies `applyDecay()` before ranking (consistent with `search()`), then allocates in two passes:
+
+1. **High-importance pass** (60% of effective budget): observations with `importance_score >= 0.65`, sorted by decayed score descending.
+2. **Remainder pass** (40% of effective budget): all other observations, sorted by decayed score descending.
+
+Both passes use `continue` on overflow rather than `break`, so a smaller observation later in the sort order is included even when a larger predecessor was skipped.
+
+`context_list` reads `CONTEXT_MANAGER_TOKEN_BUDGET` and applies a `TOKEN_BUDGET * 0.8` session-boundary stop: once adding the next session would exceed the limit, it stops. At least one session is always shown even if it alone exceeds the limit. When truncated, a footer is appended:
+
+```
+[Budget: showing N of M sessions. Use context_search for full history.]
+```
+
+`budget_fill_tokens` in the `Stats` interface (renamed from `typical_injection_tokens`) is computed by actually calling `getWithinBudget()` for the configured budget and summing the returned token estimates, so the value in `context_stats` and the web UI reflects real allocation capacity rather than a heuristic average of session sizes.
+
 ### Decisions Entity
 
 The Stop hook calls `extractDecisions()` to scan assistant messages for architectural and technical decisions. Each qualifying decision is stored in the `decisions` table with:
@@ -934,7 +953,7 @@ All variables are read from `~/.claude-context/.env` at hook and MCP server star
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONTEXT_MANAGER_DB` | `~/.claude-context/context.db` | Database path |
-| `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens injected at session start |
+| `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens per MCP recall tool response (context_list, context_search) |
 | `CONTEXT_MANAGER_PORT` | `3847` | Web dashboard port |
 | `CONTEXT_MANAGER_HOST` | `localhost` | Web dashboard bind address |
 | `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic/hybrid results; FTS5 results are never filtered |
@@ -1051,4 +1070,4 @@ See `web/server/index.ts` for server implementation and `web/client/index.html` 
 
 ---
 
-**Last Updated**: May 26, 2026 (v0.8.95)
+**Last Updated**: May 27, 2026 (v0.8.96)

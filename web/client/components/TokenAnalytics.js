@@ -596,7 +596,7 @@ export class TokenAnalytics extends Component {
     if (!stats) return null;
 
     const budgetUtilization =
-      stats.token_budget > 0 ? (stats.typical_injection_tokens / stats.token_budget) * 100 : 0;
+      stats.token_budget > 0 ? (stats.budget_fill_tokens / stats.token_budget) * 100 : 0;
 
     return html`
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -639,7 +639,7 @@ export class TokenAnalytics extends Component {
           <div class="text-gray-400 text-sm mb-1">Token Budget Utilization</div>
           <div class="flex items-baseline gap-2">
             <div class="text-2xl font-bold text-white">
-              ${formatLargeNumber(stats.typical_injection_tokens)}
+              ${formatLargeNumber(stats.budget_fill_tokens)}
             </div>
             <div class="text-sm text-gray-500">
               / ${formatLargeNumber(stats.token_budget)} budget

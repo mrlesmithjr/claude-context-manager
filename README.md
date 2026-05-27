@@ -111,7 +111,7 @@ Environment variables (all optional):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONTEXT_MANAGER_DB` | `~/.claude-context/context.db` | Database path |
-| `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens injected at session start |
+| `CONTEXT_MANAGER_TOKEN_BUDGET` | `4000` | Max tokens per MCP recall tool response (context_list, context_search) |
 | `CONTEXT_MANAGER_PORT` | `3847` | Web dashboard port |
 | `CONTEXT_MANAGER_HOST` | `localhost` | Web dashboard host |
 | `CONTEXT_SEARCH_MIN_SCORE` | `0.25` | Minimum cosine similarity for semantic and hybrid search results; FTS5 results are never filtered |
