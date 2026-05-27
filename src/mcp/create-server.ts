@@ -998,9 +998,24 @@ export function createContextManagerServer(
         };
       }
 
+      const parsedBudget = parseInt(process.env.CONTEXT_MANAGER_TOKEN_BUDGET || '4000', 10);
+      const TOKEN_BUDGET_LIST = Number.isFinite(parsedBudget) && parsedBudget > 0 && parsedBudget <= 100000 ? parsedBudget : 4000;
+      const effectiveBudget = Math.floor(TOKEN_BUDGET_LIST * 0.8);
+
+      let budgetTokens = 0;
+      let sessionsShown = 0;
+      let budgetTruncated = false;
+
       const lines: string[] = [];
 
       for (const { session, observations } of sessionsWithObs) {
+        const sessionTokens = observations.reduce((sum, o) => sum + o.token_estimate, 0);
+        if (sessionsShown > 0 && budgetTokens + sessionTokens > effectiveBudget) {
+          budgetTruncated = true;
+          break;
+        }
+        budgetTokens += sessionTokens;
+        sessionsShown++;
         const shortId = session.id.substring(0, 8);
         const date = formatShortDate(session.started_at);
         const duration = computeSessionDuration(session);
@@ -1049,6 +1064,11 @@ export function createContextManagerServer(
         }
 
         lines.push('');
+      }
+
+      if (budgetTruncated) {
+        lines.push('');
+        lines.push(`[Budget: showing ${sessionsShown} of ${sessionsWithObs.length} sessions — use context_search for full history]`);
       }
 
       return {
