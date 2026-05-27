@@ -385,6 +385,9 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add token_index table for fuzzy search correction
     this.migrateAddTokenIndex();
+
+    // Migration: add partial index for getWithinBudget() to avoid full table scan
+    this.migrateAddBudgetIndex();
   }
 
   /**
@@ -3500,6 +3503,40 @@ export class SQLiteStorage implements ContextStorage {
     `);
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_token_index_frequency ON token_index(frequency DESC);
+    `);
+  }
+
+  /**
+   * Add partial index for getWithinBudget() query plan.
+   *
+   * Root cause of the full-table scan: idx_observations_project_score covers
+   * (project, importance_score DESC, created_at DESC) but does not include
+   * is_compacted or superseded_by. To evaluate those filters, SQLite must
+   * fetch the full row for every index entry — a random-read overhead that
+   * the cost model rates worse than a sequential table scan when the filters
+   * have low selectivity (most observations are active and non-superseded).
+   *
+   * A partial index bakes the boolean conditions into the index definition.
+   * The planner sees only pre-filtered rows, eliminating the per-row fetch
+   * for those predicates and enabling a direct range scan on (project,
+   * importance_score, created_at).
+   *
+   * USE TEMP B-TREE FOR ORDER BY remains because the LIKE range scan on
+   * project cannot guarantee sort order across multiple prefix values.
+   * This is expected and acceptable; the B-tree sort runs on the already-
+   * narrowed partial index rowset, not the full table.
+   *
+   * The existing idx_observations_project_score is retained -- it serves
+   * query paths that sort by importance_score without the boolean equality
+   * predicates (tag search, semantic search paths). The partial index takes
+   * precedence for getWithinBudget() because the planner prefers the
+   * narrower rowset.
+   */
+  private migrateAddBudgetIndex(): void {
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_budget
+      ON observations(project, importance_score DESC, created_at DESC)
+      WHERE is_compacted = 0 AND superseded_by IS NULL
     `);
   }
 

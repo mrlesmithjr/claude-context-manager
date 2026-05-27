@@ -312,6 +312,7 @@ var SQLiteStorage = class {
     this.migrateAddBranchColumn();
     this.migrateAddSupersededBy();
     this.migrateAddTokenIndex();
+    this.migrateAddBudgetIndex();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -2633,6 +2634,39 @@ ${storedOutput}`;
     `);
   }
   /**
+   * Add partial index for getWithinBudget() query plan.
+   *
+   * Root cause of the full-table scan: idx_observations_project_score covers
+   * (project, importance_score DESC, created_at DESC) but does not include
+   * is_compacted or superseded_by. To evaluate those filters, SQLite must
+   * fetch the full row for every index entry — a random-read overhead that
+   * the cost model rates worse than a sequential table scan when the filters
+   * have low selectivity (most observations are active and non-superseded).
+   *
+   * A partial index bakes the boolean conditions into the index definition.
+   * The planner sees only pre-filtered rows, eliminating the per-row fetch
+   * for those predicates and enabling a direct range scan on (project,
+   * importance_score, created_at).
+   *
+   * USE TEMP B-TREE FOR ORDER BY remains because the LIKE range scan on
+   * project cannot guarantee sort order across multiple prefix values.
+   * This is expected and acceptable; the B-tree sort runs on the already-
+   * narrowed partial index rowset, not the full table.
+   *
+   * The existing idx_observations_project_score is retained -- it serves
+   * query paths that sort by importance_score without the boolean equality
+   * predicates (tag search, semantic search paths). The partial index takes
+   * precedence for getWithinBudget() because the planner prefers the
+   * narrower rowset.
+   */
+  migrateAddBudgetIndex() {
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_budget
+      ON observations(project, importance_score DESC, created_at DESC)
+      WHERE is_compacted = 0 AND superseded_by IS NULL
+    `);
+  }
+  /**
    * Add tokens to the token_index, incrementing frequency on conflict.
    * Runs as a transaction for efficiency. Tokens are already normalized.
    */
@@ -2925,11 +2959,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.106") {
+    if (installedVersion !== "0.8.107") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.106"}
+   Source:    v${"0.8.107"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2943,10 +2977,10 @@ var PLUGIN_VERSION_FILE = join2(homedir4(), ".claude-context", ".plugin-version"
 function checkPostUpdate() {
   try {
     const stored = existsSync(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.106")
+    if (stored === "0.8.107")
       return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.106"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.107"}. Hooks active.`;
   } catch {
     return "";
   }
@@ -2954,7 +2988,7 @@ function checkPostUpdate() {
 function markVersionActivated() {
   try {
     mkdirSync2(join2(homedir4(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.106", "utf-8");
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.107", "utf-8");
   } catch {
   }
 }
@@ -3037,7 +3071,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.106"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.107"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3137,7 +3171,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.106"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.107"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

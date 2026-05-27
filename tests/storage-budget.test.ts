@@ -202,6 +202,16 @@ describe('getWithinBudget', () => {
     expect(resultIds).toContain(idC);
   });
 
+  it('idx_observations_budget partial index exists after initialize()', () => {
+    // Verifies the migrateAddBudgetIndex() migration ran. The index must exist
+    // for getWithinBudget() to avoid a full table scan on mature databases.
+    const indexes = storage.rawDb
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_observations_budget'")
+      .all() as Array<{ name: string }>;
+    expect(indexes).toHaveLength(1);
+    expect(indexes[0]!.name).toBe('idx_observations_budget');
+  });
+
   it('uses prefix matching — parent project path sees child project observations', async () => {
     const sessionId = randomUUID();
     await storage.createSession(sessionId, '/test/project/child');
