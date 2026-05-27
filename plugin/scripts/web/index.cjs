@@ -47673,14 +47673,19 @@ ${storedOutput}`;
     }
     return insertedId;
   }
-  async getRecent(project, limit = 50, offset = 0) {
+  async getRecent(project, limit = 50, offset = 0, toolName) {
+    const toolClause = toolName ? " AND tool_name = ?" : "";
     const stmt = this.db.prepare(`
       SELECT * FROM observations
-      WHERE project LIKE ?
+      WHERE project LIKE ?${toolClause}
       ORDER BY created_at DESC
       LIMIT ? OFFSET ?
     `);
-    const rows = stmt.all(project + "%", limit, offset);
+    const params = [project + "%"];
+    if (toolName)
+      params.push(toolName);
+    params.push(limit, offset);
+    const rows = stmt.all(...params);
     return rows.map((row) => this.mapRow(row));
   }
   async getWithinBudget(project, tokenBudget) {
@@ -47735,58 +47740,68 @@ ${storedOutput}`;
     const includeSuperseded = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.include_superseded ?? false : false;
     const searchOffset = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.offset ?? 0 : 0;
     const importance = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.importance : void 0;
+    const toolName = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.toolName : void 0;
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     const hasBranchFilter = branchFilter !== void 0 && branchFilter !== "*";
     const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     const importanceClause = importance ? " AND o.importance = ?" : "";
+    const toolClause = toolName ? " AND o.tool_name = ?" : "";
     const limitParam = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50;
     const paginationClause = searchOffset > 0 ? `LIMIT ${limitParam} OFFSET ${searchOffset}` : `LIMIT ${limitParam}`;
     if (project && hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, project + "%", branchFilter];
       if (importance)
         params.push(importance);
+      if (toolName)
+        params.push(toolName);
     } else if (project) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, project + "%"];
       if (importance)
         params.push(importance);
+      if (toolName)
+        params.push(toolName);
     } else if (hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, branchFilter];
       if (importance)
         params.push(importance);
+      if (toolName)
+        params.push(toolName);
     } else {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery];
       if (importance)
         params.push(importance);
+      if (toolName)
+        params.push(toolName);
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
@@ -49970,17 +49985,12 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
             project,
             limit,
             offset,
-            importance
+            importance,
+            toolName: tool
           });
-          if (tool) {
-            observations = observations.filter((obs) => obs.tool_name === tool);
-          }
           total = await storage.countObservations(project, tool, importance);
         } else {
-          observations = await storage.getRecent(project || "", limit, offset);
-          if (tool) {
-            observations = observations.filter((obs) => obs.tool_name === tool);
-          }
+          observations = await storage.getRecent(project || "", limit, offset, tool);
           total = await storage.countObservations(project, tool);
         }
         reply.send({

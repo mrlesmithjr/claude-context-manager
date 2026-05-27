@@ -644,16 +644,22 @@ export class SQLiteStorage implements ContextStorage {
     return insertedId;
   }
 
-  async getRecent(project: string, limit: number = 50, offset: number = 0): Promise<Observation[]> {
-    // Use LIKE for prefix matching (parent directory sees children)
+  async getRecent(project: string, limit: number = 50, offset: number = 0, toolName?: string): Promise<Observation[]> {
+    // Use LIKE for prefix matching (parent directory sees children).
+    // Tool filter pushed into SQL so paginated results are dense (fixes #127).
+    const toolClause = toolName ? ' AND tool_name = ?' : '';
     const stmt = this.db.prepare(`
       SELECT * FROM observations
-      WHERE project LIKE ?
+      WHERE project LIKE ?${toolClause}
       ORDER BY created_at DESC
       LIMIT ? OFFSET ?
     `);
 
-    const rows = stmt.all(project + '%', limit, offset) as Array<Record<string, unknown>>;
+    const params: unknown[] = [project + '%'];
+    if (toolName) params.push(toolName);
+    params.push(limit, offset);
+
+    const rows = stmt.all(...params) as Array<Record<string, unknown>>;
     return rows.map(row => this.mapRow(row));
   }
 
@@ -742,6 +748,10 @@ export class SQLiteStorage implements ContextStorage {
     const importance = typeof projectOrOptions === 'object' && projectOrOptions !== null
       ? projectOrOptions.importance
       : undefined;
+    // toolName: exact match filter pushed into SQL for dense pagination (fixes #127)
+    const toolName = typeof projectOrOptions === 'object' && projectOrOptions !== null
+      ? projectOrOptions.toolName
+      : undefined;
 
     let sql: string;
     let params: unknown[];
@@ -760,6 +770,8 @@ export class SQLiteStorage implements ContextStorage {
     const supersededClause = includeSuperseded ? '' : ' AND o.superseded_by IS NULL';
     // Importance filter clause (refs #131)
     const importanceClause = importance ? ' AND o.importance = ?' : '';
+    // Tool name filter clause (fixes #127)
+    const toolClause = toolName ? ' AND o.tool_name = ?' : '';
     // Limit and offset for FTS queries (searchOffset only non-zero when called via web API)
     const limitParam = typeof projectOrOptions === 'object' && projectOrOptions !== null
       ? (projectOrOptions.limit ?? 50)
@@ -770,44 +782,48 @@ export class SQLiteStorage implements ContextStorage {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, project + '%', branchFilter];
       if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     } else if (project) {
       // Use LIKE for prefix matching (parent directory sees children)
       // FTS5 requires full table name in MATCH clause (aliases don't work)
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, project + '%'];
       if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     } else if (hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, branchFilter];
       if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     } else {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ?${importanceClause}${supersededClause}
+        WHERE observations_fts MATCH ?${importanceClause}${toolClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery];
       if (importance) params.push(importance);
+      if (toolName) params.push(toolName);
     }
 
     const stmt = this.db.prepare(sql);
