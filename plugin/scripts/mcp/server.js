@@ -22663,6 +22663,7 @@ var SQLiteStorage = class {
     this.migrateAddBranchColumn();
     this.migrateAddSupersededBy();
     this.migrateAddTokenIndex();
+    this.migrateAddBudgetIndex();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -22857,6 +22858,8 @@ ${storedOutput}`;
     return insertedId;
   }
   async getRecent(project, limit = 50, offset = 0, toolName) {
+    const safeLimit = Math.floor(Math.max(1, Math.min(500, Number(limit))));
+    const safeOffset = Math.floor(Math.max(0, Number(offset)));
     const toolClause = toolName ? " AND tool_name = ?" : "";
     const stmt = this.db.prepare(`
       SELECT * FROM observations
@@ -22867,7 +22870,7 @@ ${storedOutput}`;
     const params = [project + "%"];
     if (toolName)
       params.push(toolName);
-    params.push(limit, offset);
+    params.push(safeLimit, safeOffset);
     const rows = stmt.all(...params);
     return rows.map((row) => this.mapRow(row));
   }
@@ -22921,7 +22924,9 @@ ${storedOutput}`;
     const skipDecay = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.skipDecay ?? false : false;
     const branchFilter = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.branch : void 0;
     const includeSuperseded = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.include_superseded ?? false : false;
-    const searchOffset = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.offset ?? 0 : 0;
+    const searchOffset = Math.floor(Math.max(0, Number(
+      typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.offset ?? 0 : 0
+    )));
     const importance = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.importance : void 0;
     const toolName = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.toolName : void 0;
     let sql;
@@ -22931,7 +22936,9 @@ ${storedOutput}`;
     const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     const importanceClause = importance ? " AND o.importance = ?" : "";
     const toolClause = toolName ? " AND o.tool_name = ?" : "";
-    const limitParam = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50;
+    const limitParam = Math.floor(Math.max(1, Math.min(500, Number(
+      typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50
+    ))));
     const paginationClause = searchOffset > 0 ? `LIMIT ${limitParam} OFFSET ${searchOffset}` : `LIMIT ${limitParam}`;
     if (project && hasBranchFilter) {
       sql = `
@@ -23019,6 +23026,7 @@ ${storedOutput}`;
     return results;
   }
   async searchByTag(tag, project, limit = 50, includeSuperseded = false) {
+    const safeLimit = Math.floor(Math.max(1, Math.min(500, Number(limit))));
     const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     let sql;
     let params;
@@ -23031,7 +23039,7 @@ ${storedOutput}`;
         ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [tag, project + "%", limit];
+      params = [tag, project + "%", safeLimit];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -23040,7 +23048,7 @@ ${storedOutput}`;
         ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [tag, limit];
+      params = [tag, safeLimit];
     }
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
@@ -24974,6 +24982,39 @@ ${storedOutput}`;
     `);
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_token_index_frequency ON token_index(frequency DESC);
+    `);
+  }
+  /**
+   * Add partial index for getWithinBudget() query plan.
+   *
+   * Root cause of the full-table scan: idx_observations_project_score covers
+   * (project, importance_score DESC, created_at DESC) but does not include
+   * is_compacted or superseded_by. To evaluate those filters, SQLite must
+   * fetch the full row for every index entry — a random-read overhead that
+   * the cost model rates worse than a sequential table scan when the filters
+   * have low selectivity (most observations are active and non-superseded).
+   *
+   * A partial index bakes the boolean conditions into the index definition.
+   * The planner sees only pre-filtered rows, eliminating the per-row fetch
+   * for those predicates and enabling a direct range scan on (project,
+   * importance_score, created_at).
+   *
+   * USE TEMP B-TREE FOR ORDER BY remains because the LIKE range scan on
+   * project cannot guarantee sort order across multiple prefix values.
+   * This is expected and acceptable; the B-tree sort runs on the already-
+   * narrowed partial index rowset, not the full table.
+   *
+   * The existing idx_observations_project_score is retained -- it serves
+   * query paths that sort by importance_score without the boolean equality
+   * predicates (tag search, semantic search paths). The partial index takes
+   * precedence for getWithinBudget() because the planner prefers the
+   * narrower rowset.
+   */
+  migrateAddBudgetIndex() {
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_budget
+      ON observations(project, importance_score DESC, created_at DESC)
+      WHERE is_compacted = 0 AND superseded_by IS NULL
     `);
   }
   /**
@@ -34672,7 +34713,7 @@ function createContextManagerServer(storage2, options = {}) {
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.103" : "unknown"
+      version: true ? "0.8.108" : "unknown"
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
