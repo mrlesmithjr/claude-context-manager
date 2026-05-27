@@ -12,6 +12,7 @@ import { TokenAnalytics } from './components/TokenAnalytics.js';
 import { ImportPanel } from './components/ImportPanel.js';
 import { DecisionLog } from './components/DecisionLog.js';
 import { LessonsView } from './components/LessonsView.js';
+import { AdminPanel } from './components/AdminPanel.js';
 
 /**
  * Authenticated fetch helper.
@@ -58,7 +59,7 @@ class App extends Component {
 
   updateRouteFromHash() {
     const hash = window.location.hash.slice(1) || 'sessions';
-    const validRoutes = ['sessions', 'search', 'decisions', 'lessons', 'analytics', 'import'];
+    const validRoutes = ['sessions', 'search', 'decisions', 'lessons', 'analytics', 'admin', 'import'];
     const route = validRoutes.includes(hash) ? hash : 'sessions';
     this.setState({ currentRoute: route });
   }
@@ -102,6 +103,8 @@ class App extends Component {
         return html`<${LessonsView} project=${selectedProject} projectRequired=${isNetworkMode} />`;
       case 'analytics':
         return html`<${TokenAnalytics} project=${selectedProject} projectRequired=${isNetworkMode} />`;
+      case 'admin':
+        return html`<${AdminPanel} project=${selectedProject} projectRequired=${isNetworkMode} />`;
       case 'import':
         return html`<${ImportPanel} />`;
       default:
@@ -167,7 +170,7 @@ class App extends Component {
         <nav class="bg-gray-800 border-b border-gray-700">
           <div class="container mx-auto px-4">
             <div class="flex space-x-1">
-              ${['sessions', 'search', 'decisions', 'lessons', 'analytics', 'import'].map(
+              ${['sessions', 'search', 'decisions', 'lessons', 'analytics', 'admin', 'import'].map(
                 (route) => html`
                   <button
                     class="${currentRoute === route

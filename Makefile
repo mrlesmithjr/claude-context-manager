@@ -443,7 +443,7 @@ release:
 		exit 1; \
 	fi; \
 	echo "[release] CI passed. Merging PR #$$PR_NUM..."; \
-	if ! gh pr merge "$$PR_NUM" --repo mrlesmithjr/claude-context-manager --squash; then \
+	if ! gh pr merge "$$PR_NUM" --repo mrlesmithjr/claude-context-manager --squash --admin; then \
 		echo "ERROR: PR merge failed. Check for conflicts: gh pr view $$PR_NUM"; \
 		exit 1; \
 	fi; \

@@ -1,5 +1,6 @@
 /**
  * API Routes for Context Manager Web Dashboard
+ * refs #131
  */
 
 import fs from 'fs';
@@ -18,12 +19,21 @@ interface SessionsQuerystring {
   status?: 'active' | 'complete';
   limit?: number;
   offset?: number;
+  branch?: string;
+}
+
+interface SessionsBranchesQuerystring {
+  project?: string;
 }
 
 interface ObservationsQuerystring {
   q?: string;
   project?: string;
   tool?: string;
+  /** Filter by importance level: 'high' | 'medium' | 'low' */
+  importance?: 'high' | 'medium' | 'low';
+  /** Filter by tag (exact match). When provided, searchByTag is used instead of normal search. */
+  tag?: string;
   limit?: number;
   offset?: number;
 }
@@ -67,6 +77,17 @@ interface LessonsQuerystring {
   days?: number;
 }
 
+interface PruneBody {
+  toolName?: string;
+  importance?: 'high' | 'medium' | 'low';
+  olderThanDays?: number;
+  dryRun?: boolean;
+}
+
+interface VacuumBody {
+  olderThanDays?: number;
+}
+
 // Minimum project path depth required in network mode (non-localhost).
 // Prevents "project=/" or "project=/Users" from exposing all data.
 // Set CONTEXT_MANAGER_PROJECT_PREFIX to require a specific prefix
@@ -92,6 +113,42 @@ export async function registerApiRoutes(
   storage: ContextStorage,
   isNetworkMode: boolean = false
 ) {
+  // GET /api/sessions/branches - Get distinct branch names for a project (refs #131)
+  // IMPORTANT: registered BEFORE /api/sessions/:id to prevent Fastify capturing 'branches' as a session ID
+  fastify.get<{ Querystring: SessionsBranchesQuerystring }>(
+    '/api/sessions/branches',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { project } = request.query;
+
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
+
+      try {
+        const branches = await storage.getDistinctBranches(project || '/');
+        reply.send({ branches });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: 'Failed to retrieve branches' });
+      }
+    }
+  );
+
   // GET /api/sessions - List sessions with filtering
   fastify.get<{ Querystring: SessionsQuerystring }>(
     '/api/sessions',
@@ -104,12 +161,13 @@ export async function registerApiRoutes(
             status: { type: 'string', enum: ['active', 'complete'] },
             limit: { type: 'number', minimum: 1, maximum: 200 },
             offset: { type: 'number', minimum: 0 },
+            branch: { type: 'string', maxLength: 255 },
           },
         },
       },
     },
     async (request, reply) => {
-      const { project, status, limit = 50, offset = 0 } = request.query;
+      const { project, status, limit = 50, offset = 0, branch } = request.query;
 
       if (isNetworkMode && !project) {
         reply.status(400).send({ error: 'project parameter is required in network mode' });
@@ -124,12 +182,13 @@ export async function registerApiRoutes(
         // Get total count and paginated sessions with observation stats in two
         // queries instead of the previous N+1 pattern (1 + N per session).
         const [total, sessions] = await Promise.all([
-          storage.countSessions(project, status),
+          storage.countSessions(project, status, branch),
           storage.getRecentSessionsWithCounts(
             project || '/',
             limit,
             offset,
-            status
+            status,
+            branch
           ),
         ]);
 
@@ -184,7 +243,7 @@ export async function registerApiRoutes(
     }
   );
 
-  // GET /api/observations - Search/list observations
+  // GET /api/observations - Search/list observations (refs #131: added importance and tag filters)
   fastify.get<{ Querystring: ObservationsQuerystring }>(
     '/api/observations',
     {
@@ -195,6 +254,8 @@ export async function registerApiRoutes(
             q: { type: 'string', maxLength: MAX_QUERY_LEN },
             project: { type: 'string', maxLength: MAX_PROJECT_LEN },
             tool: { type: 'string', maxLength: MAX_TOOL_LEN },
+            importance: { type: 'string', enum: ['high', 'medium', 'low'] },
+            tag: { type: 'string', maxLength: 64 },
             limit: { type: 'number', minimum: 1, maximum: 200 },
             offset: { type: 'number', minimum: 0 },
           },
@@ -202,7 +263,7 @@ export async function registerApiRoutes(
       },
     },
     async (request, reply) => {
-      const { q, project, tool, limit = 50, offset = 0 } = request.query;
+      const { q, project, tool, importance, tag, limit = 50, offset = 0 } = request.query;
 
       if (isNetworkMode && !project) {
         reply.status(400).send({ error: 'project parameter is required in network mode' });
@@ -216,29 +277,43 @@ export async function registerApiRoutes(
       try {
         let observations;
 
-        if (q) {
-          // Full-text search with pagination
-          observations = await storage.search(q, {
+        let total: number;
+
+        if (tag) {
+          // Tag-based search: searchByTag has no importance/tool awareness, so
+          // post-filter in memory. Pagination is not supported for tag queries
+          // (searchByTag applies LIMIT before post-filtering).
+          observations = await storage.searchByTag(tag, project, limit);
+          if (tool) {
+            observations = observations.filter((obs) => obs.tool_name === tool);
+          }
+          if (importance) {
+            observations = observations.filter((obs) => obs.importance === importance);
+          }
+          // Total reflects post-filtered count; no DB count available for tag queries
+          total = observations.length;
+        } else if (q || importance) {
+          // Full-text search with DB-level importance filter for correct pagination.
+          // Route the no-query+importance case through search() so importance
+          // filtering happens in SQL rather than in memory (avoids under-filled pages).
+          observations = await storage.search(q || '', {
             project,
             limit,
             offset,
+            importance,
           });
+          if (tool) {
+            observations = observations.filter((obs) => obs.tool_name === tool);
+          }
+          total = await storage.countObservations(project, tool, importance);
         } else {
-          // Get recent observations with proper LIMIT/OFFSET
-          observations = await storage.getRecent(
-            project || '',
-            limit,
-            offset
-          );
+          // Plain recent observations -- no search query, no importance filter
+          observations = await storage.getRecent(project || '', limit, offset);
+          if (tool) {
+            observations = observations.filter((obs) => obs.tool_name === tool);
+          }
+          total = await storage.countObservations(project, tool);
         }
-
-        // Filter by tool if specified
-        if (tool) {
-          observations = observations.filter((obs) => obs.tool_name === tool);
-        }
-
-        // Get total count
-        const total = await storage.countObservations(project, tool);
 
         reply.send({
           observations,
@@ -522,6 +597,73 @@ export async function registerApiRoutes(
       } catch (error) {
         fastify.log.error(error);
         reply.status(500).send({ error: 'Failed to retrieve lessons' });
+      }
+    }
+  );
+
+  // POST /api/admin/prune — targeted pruning of observations by tool, importance, and/or age (refs #131)
+  fastify.post<{ Body: PruneBody }>(
+    '/api/admin/prune',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            toolName: { type: 'string', maxLength: 64 },
+            importance: { type: 'string', enum: ['high', 'medium', 'low'] },
+            olderThanDays: { type: 'number', minimum: 1 },
+            dryRun: { type: 'boolean' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { toolName, importance, olderThanDays, dryRun } = request.body ?? {};
+
+      // Require at least one filter to prevent accidental full wipe
+      if (!toolName && !importance && !olderThanDays) {
+        reply.status(400).send({ error: 'At least one filter (toolName, importance, or olderThanDays) is required' });
+        return;
+      }
+
+      try {
+        const result = await storage.prune({
+          toolName,
+          importance,
+          olderThanDays,
+          dryRun: dryRun ?? false,
+        });
+        reply.send(result);
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: 'Prune operation failed' });
+      }
+    }
+  );
+
+  // POST /api/admin/vacuum — vacuum old observations and orphaned sessions (refs #131)
+  // Note: SQLite VACUUM acquires an exclusive lock; concurrent requests will fail during the operation.
+  fastify.post<{ Body: VacuumBody }>(
+    '/api/admin/vacuum',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            olderThanDays: { type: 'number', minimum: 1 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { olderThanDays } = request.body ?? {};
+
+      try {
+        const result = await storage.vacuum(olderThanDays);
+        reply.send(result);
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: 'Vacuum operation failed' });
       }
     }
   );
