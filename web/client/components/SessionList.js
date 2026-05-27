@@ -2,6 +2,7 @@
  * SessionList Component
  *
  * Displays paginated list of sessions with expand/collapse detail view.
+ * refs #131
  */
 
 import { html, Component } from '/vendor/preact-htm.js';
@@ -42,12 +43,15 @@ export class SessionList extends Component {
       expandedSession: null,
       sessionDetail: null,
       loadingDetail: false,
+      branches: [],
+      selectedBranch: '',
     };
   }
 
   componentDidMount() {
     // In network mode, skip the initial fetch until a project is selected
     if (this.props.projectRequired && !this.props.project) return;
+    this.loadBranches();
     this.loadSessions();
   }
 
@@ -56,15 +60,43 @@ export class SessionList extends Component {
     if (prevProps.project !== this.props.project) {
       // In network mode, skip the fetch if no project is selected
       if (this.props.projectRequired && !this.props.project) return;
-      this.setState({ offset: 0 }, () => this.loadSessions());
+      this.setState({ offset: 0, selectedBranch: '', branches: [] }, () => {
+        this.loadBranches();
+        this.loadSessions();
+      });
     }
   }
+
+  async loadBranches() {
+    // Guard: do not fetch without a project in network mode
+    if (this.props.projectRequired && !this.props.project) return;
+
+    const { project } = this.props;
+
+    try {
+      const params = new URLSearchParams();
+      if (project) params.append('project', project);
+
+      const response = await apiFetch(`/api/sessions/branches?${params}`);
+      if (!response.ok) return; // silently ignore — branch filter is optional
+
+      const data = await response.json();
+      this.setState({ branches: data.branches || [] });
+    } catch (error) {
+      console.error('Failed to load branches:', error);
+    }
+  }
+
+  handleBranchChange = (e) => {
+    const selectedBranch = e.target.value;
+    this.setState({ selectedBranch, offset: 0 }, () => this.loadSessions());
+  };
 
   async loadSessions() {
     // Guard: do not fetch without a project in network mode
     if (this.props.projectRequired && !this.props.project) return;
 
-    const { limit, offset } = this.state;
+    const { limit, offset, selectedBranch } = this.state;
     const { project } = this.props;
 
     this.setState({ loading: true, error: null });
@@ -72,6 +104,7 @@ export class SessionList extends Component {
     try {
       const params = new URLSearchParams({ limit, offset });
       if (project) params.append('project', project);
+      if (selectedBranch) params.append('branch', selectedBranch);
 
       const response = await apiFetch(`/api/sessions?${params}`);
       if (!response.ok) throw new Error('Failed to load sessions');
@@ -305,6 +338,31 @@ export class SessionList extends Component {
     `;
   }
 
+  renderBranchFilter() {
+    const { branches, selectedBranch } = this.state;
+    if (!branches || branches.length === 0) return null;
+
+    return html`
+      <div class="bg-gray-800 rounded-lg p-4 mb-4">
+        <div class="flex items-center gap-3">
+          <label for="branch-filter" class="text-sm font-medium text-gray-400 whitespace-nowrap">
+            Branch
+          </label>
+          <select
+            id="branch-filter"
+            class="bg-gray-700 text-white border border-gray-600 rounded px-3 py-1.5 text-sm
+                   focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            onChange=${this.handleBranchChange}
+            value=${selectedBranch}
+          >
+            <option value="">All branches</option>
+            ${branches.map((b) => html`<option value=${b}>${b}</option>`)}
+          </select>
+        </div>
+      </div>
+    `;
+  }
+
   render() {
     const { sessions, total, limit, offset, loading, error } = this.state;
 
@@ -341,9 +399,12 @@ export class SessionList extends Component {
 
     if (sessions.length === 0) {
       return html`
-        <div class="text-center py-20">
-          <div class="text-gray-500 text-lg">No sessions found</div>
-          <div class="text-gray-600 text-sm mt-2">Try adjusting your filters</div>
+        <div>
+          ${this.renderBranchFilter()}
+          <div class="text-center py-20">
+            <div class="text-gray-500 text-lg">No sessions found</div>
+            <div class="text-gray-600 text-sm mt-2">Try adjusting your filters</div>
+          </div>
         </div>
       `;
     }
@@ -353,6 +414,8 @@ export class SessionList extends Component {
 
     return html`
       <div>
+        ${this.renderBranchFilter()}
+
         <!-- Session list -->
         <div class="mb-6">
           ${sessions.map((session) => this.renderSessionRow(session))}

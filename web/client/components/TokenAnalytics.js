@@ -2,6 +2,7 @@
  * TokenAnalytics Component
  *
  * Analytics dashboard with charts and statistics.
+ * refs #131
  */
 
 import { html, Component } from '/vendor/preact-htm.js';
@@ -670,6 +671,109 @@ export class TokenAnalytics extends Component {
     `;
   }
 
+  renderImportanceCards() {
+    const { stats } = this.state;
+    if (!stats || !stats.importance_counts) return null;
+
+    const { high, medium, low } = stats.importance_counts;
+    const total = (high || 0) + (medium || 0) + (low || 0);
+
+    const pct = (n) => (total > 0 ? ((n / total) * 100).toFixed(1) : '0.0');
+
+    return html`
+      <h3 class="text-sm font-medium text-gray-400 mb-3 mt-6">Importance Distribution</h3>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <!-- High -->
+        <div class="bg-gray-800 rounded-lg p-4">
+          <div class="text-red-400 text-sm mb-1">High</div>
+          <div class="text-2xl font-bold text-white">${(high || 0).toLocaleString()}</div>
+          <div class="mt-2">
+            <div class="bg-gray-700 rounded-full h-2 overflow-hidden">
+              <div
+                class="bg-red-500"
+                style="width: ${pct(high || 0)}%; height: 100%;"
+              ></div>
+            </div>
+            <div class="text-xs text-gray-500 mt-1">${pct(high || 0)}% of total</div>
+          </div>
+        </div>
+        <!-- Medium -->
+        <div class="bg-gray-800 rounded-lg p-4">
+          <div class="text-yellow-400 text-sm mb-1">Medium</div>
+          <div class="text-2xl font-bold text-white">${(medium || 0).toLocaleString()}</div>
+          <div class="mt-2">
+            <div class="bg-gray-700 rounded-full h-2 overflow-hidden">
+              <div
+                class="bg-yellow-500"
+                style="width: ${pct(medium || 0)}%; height: 100%;"
+              ></div>
+            </div>
+            <div class="text-xs text-gray-500 mt-1">${pct(medium || 0)}% of total</div>
+          </div>
+        </div>
+        <!-- Low -->
+        <div class="bg-gray-800 rounded-lg p-4">
+          <div class="text-gray-400 text-sm mb-1">Low</div>
+          <div class="text-2xl font-bold text-white">${(low || 0).toLocaleString()}</div>
+          <div class="mt-2">
+            <div class="bg-gray-700 rounded-full h-2 overflow-hidden">
+              <div
+                class="bg-gray-500"
+                style="width: ${pct(low || 0)}%; height: 100%;"
+              ></div>
+            </div>
+            <div class="text-xs text-gray-500 mt-1">${pct(low || 0)}% of total</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  renderDbHealthCards() {
+    const { stats } = this.state;
+    if (!stats) return null;
+
+    const cards = [
+      {
+        label: 'observations ready',
+        title: 'Compaction Eligible',
+        value: stats.next_compaction_eligible ?? 0,
+        colorClass: 'text-blue-400',
+      },
+      {
+        label: 'compacted groups',
+        title: 'Compacted (24h)',
+        value: stats.compacted_last_24h ?? 0,
+        colorClass: 'text-green-400',
+      },
+      {
+        label: 'sessions closed',
+        title: 'GC Sessions (24h)',
+        value: stats.sessions_gc_last_24h ?? 0,
+        colorClass: 'text-yellow-400',
+      },
+      {
+        label: 'total groups',
+        title: 'Total Compacted Groups',
+        value: stats.compacted_count ?? 0,
+        colorClass: 'text-purple-400',
+      },
+    ];
+
+    return html`
+      <h3 class="text-sm font-medium text-gray-400 mb-3 mt-6">Database Health</h3>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        ${cards.map((card) => html`
+          <div class="bg-gray-800 rounded-lg p-4">
+            <div class="${card.colorClass} text-sm mb-1">${card.title}</div>
+            <div class="text-2xl font-bold text-white">${card.value.toLocaleString()}</div>
+            <div class="text-xs text-gray-500 mt-1">${card.label}</div>
+          </div>
+        `)}
+      </div>
+    `;
+  }
+
   renderTimeframeSelector() {
     const { days } = this.state;
 
@@ -740,6 +844,10 @@ export class TokenAnalytics extends Component {
     return html`
       <div>
         ${this.renderSummaryCards()}
+
+        ${this.renderImportanceCards()}
+
+        ${this.renderDbHealthCards()}
 
         ${this.renderTimeframeSelector()}
 

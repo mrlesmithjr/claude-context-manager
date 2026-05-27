@@ -2,6 +2,7 @@
  * ObservationSearch Component
  *
  * Full-text search interface for observations with tool filtering.
+ * refs #131
  */
 
 import { html, Component } from '/vendor/preact-htm.js';
@@ -51,6 +52,8 @@ export class ObservationSearch extends Component {
     this.state = {
       query: '',
       selectedTool: '',
+      selectedImportance: '',
+      selectedTag: '',
       observations: [],
       tools: [], // Will be dynamically populated
       total: 0,
@@ -139,8 +142,26 @@ export class ObservationSearch extends Component {
     });
   };
 
+  handleImportanceChange = (e) => {
+    const importance = e.target.value;
+    this.setState({ selectedImportance: importance, offset: 0 }, () => {
+      if (this.state.hasSearched) {
+        this.performSearch();
+      }
+    });
+  };
+
+  handleTagChange = (e) => {
+    const tag = e.target.value;
+    this.setState({ selectedTag: tag, offset: 0 });
+    if (this.state.hasSearched) {
+      if (this.debounceTimer) clearTimeout(this.debounceTimer);
+      this.debounceTimer = setTimeout(() => this.performSearch(), 300);
+    }
+  };
+
   async performSearch() {
-    const { query, selectedTool, limit, offset } = this.state;
+    const { query, selectedTool, selectedImportance, selectedTag, limit, offset } = this.state;
     const { project } = this.props;
 
     this.setState({ loading: true, error: null, hasSearched: true });
@@ -150,6 +171,8 @@ export class ObservationSearch extends Component {
       if (query.trim()) params.append('q', query.trim());
       if (project) params.append('project', project);
       if (selectedTool) params.append('tool', selectedTool);
+      if (selectedImportance) params.append('importance', selectedImportance);
+      if (selectedTag) params.append('tag', selectedTag);
 
       const response = await apiFetch(`/api/observations?${params}`);
       if (!response.ok) throw new Error('Failed to search observations');
@@ -191,11 +214,11 @@ export class ObservationSearch extends Component {
   };
 
   renderSearchControls() {
-    const { query, selectedTool, tools } = this.state;
+    const { query, selectedTool, selectedImportance, selectedTag, tools } = this.state;
 
     return html`
       <div class="bg-gray-800 rounded-lg p-4 mb-6">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <!-- Search Input -->
           <div>
             <label for="search-query" class="block text-sm font-medium text-gray-400 mb-2">
@@ -252,6 +275,49 @@ export class ObservationSearch extends Component {
                 </svg>
               </div>
             </div>
+          </div>
+
+          <!-- Importance Filter -->
+          <div>
+            <label for="importance-filter" class="block text-sm font-medium text-gray-400 mb-2">
+              Filter by Importance
+            </label>
+            <div class="relative">
+              <select
+                id="importance-filter"
+                class="w-full bg-gray-700 text-white border border-gray-600 rounded px-4 py-2
+                       focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                onChange=${this.handleImportanceChange}
+                value=${selectedImportance}
+              >
+                <option value="">All</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+              <!-- Dropdown icon -->
+              <div class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tag Filter -->
+          <div>
+            <label for="tag-filter" class="block text-sm font-medium text-gray-400 mb-2">
+              Filter by Tag
+            </label>
+            <input
+              id="tag-filter"
+              type="text"
+              class="w-full bg-gray-700 text-white border border-gray-600 rounded px-4 py-2
+                     focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="e.g. auth"
+              value=${selectedTag}
+              onInput=${this.handleTagChange}
+            />
           </div>
         </div>
       </div>

@@ -47734,49 +47734,59 @@ ${storedOutput}`;
     const branchFilter = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.branch : void 0;
     const includeSuperseded = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.include_superseded ?? false : false;
     const searchOffset = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.offset ?? 0 : 0;
+    const importance = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.importance : void 0;
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
     const hasBranchFilter = branchFilter !== void 0 && branchFilter !== "*";
     const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
+    const importanceClause = importance ? " AND o.importance = ?" : "";
     const limitParam = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50;
     const paginationClause = searchOffset > 0 ? `LIMIT ${limitParam} OFFSET ${searchOffset}` : `LIMIT ${limitParam}`;
     if (project && hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, project + "%", branchFilter];
+      if (importance)
+        params.push(importance);
     } else if (project) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ?${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, project + "%"];
+      if (importance)
+        params.push(importance);
     } else if (hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.branch = ?${supersededClause}
+        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, branchFilter];
+      if (importance)
+        params.push(importance);
     } else {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ?${supersededClause}
+        WHERE observations_fts MATCH ?${importanceClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery];
+      if (importance)
+        params.push(importance);
     }
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params);
@@ -48037,8 +48047,17 @@ ${storedOutput}`;
       branch: row.branch ?? null
     }));
   }
-  async getRecentSessionsWithCounts(project, limit, offset, status) {
+  async getDistinctBranches(project) {
+    const rows = this.db.prepare(`
+      SELECT DISTINCT branch FROM sessions
+      WHERE project LIKE ? || '%' AND branch IS NOT NULL AND branch != ''
+      ORDER BY branch ASC
+    `).all(project);
+    return rows.map((r) => r.branch);
+  }
+  async getRecentSessionsWithCounts(project, limit, offset, status, branch) {
     const statusClause = status ? "AND s.status = ?" : "";
+    const branchClause = branch ? "AND s.branch = ?" : "";
     const sql = `
       SELECT
         s.id, s.project, s.started_at, s.ended_at,
@@ -48049,11 +48068,17 @@ ${storedOutput}`;
       LEFT JOIN observations o ON o.session_id = s.id
       WHERE s.project LIKE ? || '%'
         ${statusClause}
+        ${branchClause}
       GROUP BY s.id
       ORDER BY s.started_at DESC
       LIMIT ? OFFSET ?
     `;
-    const params = status ? [project, status, limit, offset] : [project, limit, offset];
+    const params = [project];
+    if (status)
+      params.push(status);
+    if (branch)
+      params.push(branch);
+    params.push(limit, offset);
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => ({
       id: row.id,
@@ -48424,40 +48449,44 @@ ${storedOutput}`;
       created_at: row.created_at
     }));
   }
-  async countObservations(project, tool) {
-    let sql;
+  async countObservations(project, tool, importance) {
+    const conditions = [];
     const params = [];
-    if (project && tool) {
-      sql = "SELECT COUNT(*) as count FROM observations WHERE project LIKE ? AND tool_name = ?";
-      params.push(project + "%", tool);
-    } else if (project) {
-      sql = "SELECT COUNT(*) as count FROM observations WHERE project LIKE ?";
+    if (project) {
+      conditions.push("project LIKE ?");
       params.push(project + "%");
-    } else if (tool) {
-      sql = "SELECT COUNT(*) as count FROM observations WHERE tool_name = ?";
-      params.push(tool);
-    } else {
-      sql = "SELECT COUNT(*) as count FROM observations";
     }
+    if (tool) {
+      conditions.push("tool_name = ?");
+      params.push(tool);
+    }
+    if (importance) {
+      conditions.push("importance = ?");
+      params.push(importance);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const sql = `SELECT COUNT(*) as count FROM observations ${where}`;
     const stmt = this.db.prepare(sql);
     const result = stmt.get(...params);
     return result.count;
   }
-  async countSessions(project, status) {
-    let sql;
+  async countSessions(project, status, branch) {
+    const conditions = [];
     const params = [];
-    if (project && status) {
-      sql = "SELECT COUNT(*) as count FROM sessions WHERE project LIKE ? AND status = ?";
-      params.push(project + "%", status);
-    } else if (project) {
-      sql = "SELECT COUNT(*) as count FROM sessions WHERE project LIKE ?";
+    if (project) {
+      conditions.push("project LIKE ?");
       params.push(project + "%");
-    } else if (status) {
-      sql = "SELECT COUNT(*) as count FROM sessions WHERE status = ?";
-      params.push(status);
-    } else {
-      sql = "SELECT COUNT(*) as count FROM sessions";
     }
+    if (status) {
+      conditions.push("status = ?");
+      params.push(status);
+    }
+    if (branch) {
+      conditions.push("branch = ?");
+      params.push(branch);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const sql = `SELECT COUNT(*) as count FROM sessions ${where}`;
     const stmt = this.db.prepare(sql);
     const result = stmt.get(...params);
     return result.count;
@@ -49788,6 +49817,37 @@ function isProjectTooBroad(project, isNetworkMode2) {
 }
 async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
   fastify.get(
+    "/api/sessions/branches",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            project: { type: "string", maxLength: MAX_PROJECT_LEN }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { project } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
+      try {
+        const branches = await storage.getDistinctBranches(project || "/");
+        reply.send({ branches });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Failed to retrieve branches" });
+      }
+    }
+  );
+  fastify.get(
     "/api/sessions",
     {
       schema: {
@@ -49797,13 +49857,14 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
             project: { type: "string", maxLength: MAX_PROJECT_LEN },
             status: { type: "string", enum: ["active", "complete"] },
             limit: { type: "number", minimum: 1, maximum: 200 },
-            offset: { type: "number", minimum: 0 }
+            offset: { type: "number", minimum: 0 },
+            branch: { type: "string", maxLength: 255 }
           }
         }
       }
     },
     async (request, reply) => {
-      const { project, status, limit = 50, offset = 0 } = request.query;
+      const { project, status, limit = 50, offset = 0, branch } = request.query;
       if (isNetworkMode2 && !project) {
         reply.status(400).send({ error: "project parameter is required in network mode" });
         return;
@@ -49814,12 +49875,13 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
       }
       try {
         const [total, sessions] = await Promise.all([
-          storage.countSessions(project, status),
+          storage.countSessions(project, status, branch),
           storage.getRecentSessionsWithCounts(
             project || "/",
             limit,
             offset,
-            status
+            status,
+            branch
           )
         ]);
         reply.send({
@@ -49873,6 +49935,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
             q: { type: "string", maxLength: MAX_QUERY_LEN },
             project: { type: "string", maxLength: MAX_PROJECT_LEN },
             tool: { type: "string", maxLength: MAX_TOOL_LEN },
+            importance: { type: "string", enum: ["high", "medium", "low"] },
+            tag: { type: "string", maxLength: 64 },
             limit: { type: "number", minimum: 1, maximum: 200 },
             offset: { type: "number", minimum: 0 }
           }
@@ -49880,7 +49944,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
       }
     },
     async (request, reply) => {
-      const { q, project, tool, limit = 50, offset = 0 } = request.query;
+      const { q, project, tool, importance, tag, limit = 50, offset = 0 } = request.query;
       if (isNetworkMode2 && !project) {
         reply.status(400).send({ error: "project parameter is required in network mode" });
         return;
@@ -49891,23 +49955,34 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
       }
       try {
         let observations;
-        if (q) {
-          observations = await storage.search(q, {
+        let total;
+        if (tag) {
+          observations = await storage.searchByTag(tag, project, limit);
+          if (tool) {
+            observations = observations.filter((obs) => obs.tool_name === tool);
+          }
+          if (importance) {
+            observations = observations.filter((obs) => obs.importance === importance);
+          }
+          total = observations.length;
+        } else if (q || importance) {
+          observations = await storage.search(q || "", {
             project,
             limit,
-            offset
+            offset,
+            importance
           });
+          if (tool) {
+            observations = observations.filter((obs) => obs.tool_name === tool);
+          }
+          total = await storage.countObservations(project, tool, importance);
         } else {
-          observations = await storage.getRecent(
-            project || "",
-            limit,
-            offset
-          );
+          observations = await storage.getRecent(project || "", limit, offset);
+          if (tool) {
+            observations = observations.filter((obs) => obs.tool_name === tool);
+          }
+          total = await storage.countObservations(project, tool);
         }
-        if (tool) {
-          observations = observations.filter((obs) => obs.tool_name === tool);
-        }
-        const total = await storage.countObservations(project, tool);
         reply.send({
           observations,
           total,
@@ -50161,6 +50236,64 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
       } catch (error) {
         fastify.log.error(error);
         reply.status(500).send({ error: "Failed to retrieve lessons" });
+      }
+    }
+  );
+  fastify.post(
+    "/api/admin/prune",
+    {
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            toolName: { type: "string", maxLength: 64 },
+            importance: { type: "string", enum: ["high", "medium", "low"] },
+            olderThanDays: { type: "number", minimum: 1 },
+            dryRun: { type: "boolean" }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { toolName, importance, olderThanDays, dryRun } = request.body ?? {};
+      if (!toolName && !importance && !olderThanDays) {
+        reply.status(400).send({ error: "At least one filter (toolName, importance, or olderThanDays) is required" });
+        return;
+      }
+      try {
+        const result = await storage.prune({
+          toolName,
+          importance,
+          olderThanDays,
+          dryRun: dryRun ?? false
+        });
+        reply.send(result);
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Prune operation failed" });
+      }
+    }
+  );
+  fastify.post(
+    "/api/admin/vacuum",
+    {
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            olderThanDays: { type: "number", minimum: 1 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { olderThanDays } = request.body ?? {};
+      try {
+        const result = await storage.vacuum(olderThanDays);
+        reply.send(result);
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Vacuum operation failed" });
       }
     }
   );

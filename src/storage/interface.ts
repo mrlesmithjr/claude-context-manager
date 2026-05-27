@@ -12,12 +12,18 @@ export type { TemporalMode };
 
 /**
  * Options for observation search. Passed to search() to control retrieval behavior.
+ * refs #131
  */
 export interface SearchOptions {
   /** Project path to scope the search (optional). */
   project?: string;
   /** Maximum number of results to return (default: 50). */
   limit?: number;
+  /**
+   * Filter results to a specific importance level.
+   * When provided, only observations with exactly this importance level are returned.
+   */
+  importance?: ImportanceLevel;
   /**
    * Temporal intent classification. When 'current', recent results are boosted.
    * When 'historical', results are sorted chronologically ascending (oldest first).
@@ -289,18 +295,28 @@ export interface ContextStorage {
   getRecentSessions(project: string, limit: number): Promise<Session[]>;
 
   /**
+   * Get distinct git branch names that have sessions for a project.
+   * Returns empty array when no branches are found.
+   * refs #131
+   * @param project - Project path prefix
+   */
+  getDistinctBranches(project: string): Promise<string[]>;
+
+  /**
    * Get paginated sessions with observation count and token total in one query.
    * Replaces the N+1 pattern of getRecentSessions + per-session getSessionObservations.
    * @param project - Project path prefix (use '/' for all projects)
    * @param limit - Page size
    * @param offset - Page offset
    * @param status - Optional status filter ('active' | 'complete')
+   * @param branch - Optional branch filter (exact match)
    */
   getRecentSessionsWithCounts(
     project: string,
     limit: number,
     offset: number,
-    status?: string
+    status?: string,
+    branch?: string
   ): Promise<Array<Session & { observation_count: number; total_tokens: number }>>;
 
   /**
@@ -445,15 +461,17 @@ export interface ContextStorage {
    * Count observations with optional filters
    * @param project - Project path (optional)
    * @param tool - Tool name filter (optional)
+   * @param importance - Importance level filter: 'high' | 'medium' | 'low' (optional)
    */
-  countObservations(project?: string, tool?: string): Promise<number>;
+  countObservations(project?: string, tool?: string, importance?: ImportanceLevel): Promise<number>;
 
   /**
    * Count sessions with optional filters
    * @param project - Project path (optional)
    * @param status - Status filter: 'active' or 'complete' (optional)
+   * @param branch - Branch filter: exact match (optional)
    */
-  countSessions(project?: string, status?: string): Promise<number>;
+  countSessions(project?: string, status?: string, branch?: string): Promise<number>;
 
   /**
    * Check if vector search (sqlite-vec) is available

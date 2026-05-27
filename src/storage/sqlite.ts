@@ -738,6 +738,10 @@ export class SQLiteStorage implements ContextStorage {
     const searchOffset = typeof projectOrOptions === 'object' && projectOrOptions !== null
       ? (projectOrOptions.offset ?? 0)
       : 0;
+    // importance: exact match filter when provided (refs #131)
+    const importance = typeof projectOrOptions === 'object' && projectOrOptions !== null
+      ? projectOrOptions.importance
+      : undefined;
 
     let sql: string;
     let params: unknown[];
@@ -754,6 +758,8 @@ export class SQLiteStorage implements ContextStorage {
     const hasBranchFilter = branchFilter !== undefined && branchFilter !== '*';
     // Superseded exclusion clause added to all search paths when include_superseded is false
     const supersededClause = includeSuperseded ? '' : ' AND o.superseded_by IS NULL';
+    // Importance filter clause (refs #131)
+    const importanceClause = importance ? ' AND o.importance = ?' : '';
     // Limit and offset for FTS queries (searchOffset only non-zero when called via web API)
     const limitParam = typeof projectOrOptions === 'object' && projectOrOptions !== null
       ? (projectOrOptions.limit ?? 50)
@@ -764,40 +770,44 @@ export class SQLiteStorage implements ContextStorage {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, project + '%', branchFilter];
+      if (importance) params.push(importance);
     } else if (project) {
       // Use LIKE for prefix matching (parent directory sees children)
       // FTS5 requires full table name in MATCH clause (aliases don't work)
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ?${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, project + '%'];
+      if (importance) params.push(importance);
     } else if (hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.branch = ?${supersededClause}
+        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery, branchFilter];
+      if (importance) params.push(importance);
     } else {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ?${supersededClause}
+        WHERE observations_fts MATCH ?${importanceClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
       params = [ftsQuery];
+      if (importance) params.push(importance);
     }
 
     const stmt = this.db.prepare(sql);
@@ -1190,15 +1200,28 @@ export class SQLiteStorage implements ContextStorage {
     }));
   }
 
+  async getDistinctBranches(project: string): Promise<string[]> {
+    // refs #131: return distinct non-null branch names for sessions in this project
+    const rows = this.db.prepare(`
+      SELECT DISTINCT branch FROM sessions
+      WHERE project LIKE ? || '%' AND branch IS NOT NULL AND branch != ''
+      ORDER BY branch ASC
+    `).all(project) as Array<{ branch: string }>;
+    return rows.map(r => r.branch);
+  }
+
   async getRecentSessionsWithCounts(
     project: string,
     limit: number,
     offset: number,
-    status?: string
+    status?: string,
+    branch?: string
   ): Promise<Array<Session & { observation_count: number; total_tokens: number }>> {
     // Single query that joins sessions with aggregated observation stats.
     // Eliminates the N+1 pattern of loading each session's observations separately.
+    // refs #131: added optional branch filter
     const statusClause = status ? 'AND s.status = ?' : '';
+    const branchClause = branch ? 'AND s.branch = ?' : '';
     const sql = `
       SELECT
         s.id, s.project, s.started_at, s.ended_at,
@@ -1209,14 +1232,16 @@ export class SQLiteStorage implements ContextStorage {
       LEFT JOIN observations o ON o.session_id = s.id
       WHERE s.project LIKE ? || '%'
         ${statusClause}
+        ${branchClause}
       GROUP BY s.id
       ORDER BY s.started_at DESC
       LIMIT ? OFFSET ?
     `;
 
-    const params: unknown[] = status
-      ? [project, status, limit, offset]
-      : [project, limit, offset];
+    const params: unknown[] = [project];
+    if (status) params.push(status);
+    if (branch) params.push(branch);
+    params.push(limit, offset);
 
     const rows = this.db.prepare(sql).all(...params) as Array<{
       id: string;
@@ -1751,44 +1776,52 @@ export class SQLiteStorage implements ContextStorage {
     }));
   }
 
-  async countObservations(project?: string, tool?: string): Promise<number> {
-    let sql: string;
+  async countObservations(project?: string, tool?: string, importance?: ImportanceLevel): Promise<number> {
+    // refs #131: added optional importance parameter
+    const conditions: string[] = [];
     const params: unknown[] = [];
 
-    if (project && tool) {
-      sql = 'SELECT COUNT(*) as count FROM observations WHERE project LIKE ? AND tool_name = ?';
-      params.push(project + '%', tool);
-    } else if (project) {
-      sql = 'SELECT COUNT(*) as count FROM observations WHERE project LIKE ?';
+    if (project) {
+      conditions.push('project LIKE ?');
       params.push(project + '%');
-    } else if (tool) {
-      sql = 'SELECT COUNT(*) as count FROM observations WHERE tool_name = ?';
-      params.push(tool);
-    } else {
-      sql = 'SELECT COUNT(*) as count FROM observations';
     }
+    if (tool) {
+      conditions.push('tool_name = ?');
+      params.push(tool);
+    }
+    if (importance) {
+      conditions.push('importance = ?');
+      params.push(importance);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `SELECT COUNT(*) as count FROM observations ${where}`;
 
     const stmt = this.db.prepare(sql);
     const result = stmt.get(...params) as { count: number };
     return result.count;
   }
 
-  async countSessions(project?: string, status?: string): Promise<number> {
-    let sql: string;
+  async countSessions(project?: string, status?: string, branch?: string): Promise<number> {
+    // refs #131: added optional branch parameter
+    const conditions: string[] = [];
     const params: unknown[] = [];
 
-    if (project && status) {
-      sql = 'SELECT COUNT(*) as count FROM sessions WHERE project LIKE ? AND status = ?';
-      params.push(project + '%', status);
-    } else if (project) {
-      sql = 'SELECT COUNT(*) as count FROM sessions WHERE project LIKE ?';
+    if (project) {
+      conditions.push('project LIKE ?');
       params.push(project + '%');
-    } else if (status) {
-      sql = 'SELECT COUNT(*) as count FROM sessions WHERE status = ?';
-      params.push(status);
-    } else {
-      sql = 'SELECT COUNT(*) as count FROM sessions';
     }
+    if (status) {
+      conditions.push('status = ?');
+      params.push(status);
+    }
+    if (branch) {
+      conditions.push('branch = ?');
+      params.push(branch);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `SELECT COUNT(*) as count FROM sessions ${where}`;
 
     const stmt = this.db.prepare(sql);
     const result = stmt.get(...params) as { count: number };
