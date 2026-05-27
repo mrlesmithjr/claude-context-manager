@@ -2839,11 +2839,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.98") {
+    if (installedVersion !== "0.8.99") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.98"}
+   Source:    v${"0.8.99"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2924,7 +2924,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.98"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.99"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3015,7 +3015,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.98"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.99"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
