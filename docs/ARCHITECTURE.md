@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: May 27, 2026 (v0.8.96)
+**Last Updated**: May 27, 2026 (v0.8.103)
 
 ---
 
@@ -722,6 +722,8 @@ Old observations (>7 days) are compressed into summaries during `vacuum()`. Impl
 - Compacted format: `"Read x4: file1.ts, file2.ts, file3.ts, file4.ts"` (~15 tokens vs ~80)
 - Original observations are deleted after compaction
 
+**Vacuum and prune protection (v0.8.103):** `context_vacuum` and `context_prune` now protect observations with `importance_score >= 0.65`, `pinned = 1`, or a `lesson_type` from deletion by default. Pass `include_high: true` to include them.
+
 ### Observation Relationships (v0.7.0)
 
 Observations are automatically linked at capture time via `inferRelationships()` in `sqlite.ts`. Two relationship types are inferred:
@@ -1070,4 +1072,4 @@ See `web/server/index.ts` for server implementation and `web/client/index.html` 
 
 ---
 
-**Last Updated**: May 27, 2026 (v0.8.96)
+**Last Updated**: May 27, 2026 (v0.8.103)
