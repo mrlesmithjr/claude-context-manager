@@ -1,6 +1,6 @@
 {
   "name": "claude-context-manager",
-  "version": "0.8.108",
+  "version": "0.8.109",
   "description": "Persistent memory for Claude Code sessions",
   "type": "module",
   "main": "dist/cli.js",
