@@ -11,12 +11,12 @@ updates:
     commit-message:
       prefix: "ci"
 
-  - package-ecosystem: "pip"
+  - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "monthly"
     groups:
-      python-deps:
+      npm-deps:
         patterns: ["*"]
     labels: ["dependencies"]
     commit-message:

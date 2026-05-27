@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: mailto:mrlesmithjr@gmail.com
+    about: Report security vulnerabilities privately by email. Do not open a public issue.
+  - name: Discussions
+    url: https://github.com/mrlesmithjr/claude-context-manager/discussions
+    about: Questions, ideas, and general discussion about the plugin.
