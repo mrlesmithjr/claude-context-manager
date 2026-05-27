@@ -1882,11 +1882,13 @@ export class SQLiteStorage implements ContextStorage {
     const cutoffISO = cutoffDate.toISOString();
 
     // Find groups of 3+ observations with same session + tool, older than cutoff
-    // Never compact high-importance or already-compacted observations
+    // Never compact high-importance or already-compacted observations.
+    // all_files is intentionally omitted here — GROUP_CONCAT(REPLACE(...)) corrupts
+    // JSON arrays that contain commas (all file paths), causing the catch block to
+    // discard all file data. Files are fetched per-group below instead.
     const groups = this.db.prepare(`
       SELECT session_id, tool_name, COUNT(*) as cnt,
              GROUP_CONCAT(id) as ids,
-             GROUP_CONCAT(REPLACE(files_touched, ',', ';'), '|') as all_files,
              MIN(created_at) as earliest,
              MAX(created_at) as latest,
              SUM(token_estimate) as total_tokens,
@@ -1902,7 +1904,6 @@ export class SQLiteStorage implements ContextStorage {
       tool_name: string;
       cnt: number;
       ids: string;
-      all_files: string;
       earliest: string;
       latest: string;
       total_tokens: number;
@@ -1932,16 +1933,25 @@ export class SQLiteStorage implements ContextStorage {
         )
       : null;
 
+    // Fetch files_touched for a group of observation IDs in one query.
+    // Prepared once outside the transaction loop for efficiency.
+    const fetchFilesStmt = this.db.prepare(
+      `SELECT files_touched FROM observations WHERE id IN (SELECT value FROM json_each(?))`
+    );
+
     const compact = this.db.transaction(() => {
       for (const group of groups) {
-        // Parse all files from the group
-        const fileEntries = group.all_files
-          .split('|')
-          .flatMap(f => {
-            try { return JSON.parse(f); }
-            catch { return []; }
-          })
-          .filter((f: string) => f && f.length > 0);
+        // Parse the id list once — reused for file fetch, vec delete, and originals delete.
+        const idList = group.ids.split(',').map(Number);
+
+        // Fetch and flatten files_touched for all observations in this group.
+        // Using a separate SELECT per group avoids GROUP_CONCAT corruption: any file path
+        // containing a comma (e.g. "/a,b/file.ts") would break the GROUP_CONCAT approach.
+        const fileRows = fetchFilesStmt.all(JSON.stringify(idList)) as Array<{ files_touched: string }>;
+        const fileEntries = fileRows.flatMap(row => {
+          try { return JSON.parse(row.files_touched || '[]') as string[]; }
+          catch { return []; }
+        }).filter(f => f && f.length > 0);
         const uniqueFiles = [...new Set(fileEntries)].slice(0, 10); // Cap at 10
 
         // Build compact summary
@@ -1963,7 +1973,6 @@ export class SQLiteStorage implements ContextStorage {
         );
 
         // Delete originals and their vector rows (compacted replacement inserted above)
-        const idList = group.ids.split(',').map(Number);
         if (deleteVec) {
           deleteVec.run(JSON.stringify(idList));
         }
