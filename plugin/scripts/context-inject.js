@@ -312,6 +312,7 @@ var SQLiteStorage = class {
     this.migrateAddBranchColumn();
     this.migrateAddSupersededBy();
     this.migrateAddTokenIndex();
+    this.migrateAddBudgetIndex();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -506,6 +507,8 @@ ${storedOutput}`;
     return insertedId;
   }
   async getRecent(project, limit = 50, offset = 0, toolName) {
+    const safeLimit = Math.floor(Math.max(1, Math.min(500, Number(limit))));
+    const safeOffset = Math.floor(Math.max(0, Number(offset)));
     const toolClause = toolName ? " AND tool_name = ?" : "";
     const stmt = this.db.prepare(`
       SELECT * FROM observations
@@ -516,7 +519,7 @@ ${storedOutput}`;
     const params = [project + "%"];
     if (toolName)
       params.push(toolName);
-    params.push(limit, offset);
+    params.push(safeLimit, safeOffset);
     const rows = stmt.all(...params);
     return rows.map((row) => this.mapRow(row));
   }
@@ -570,7 +573,9 @@ ${storedOutput}`;
     const skipDecay = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.skipDecay ?? false : false;
     const branchFilter = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.branch : void 0;
     const includeSuperseded = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.include_superseded ?? false : false;
-    const searchOffset = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.offset ?? 0 : 0;
+    const searchOffset = Math.floor(Math.max(0, Number(
+      typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.offset ?? 0 : 0
+    )));
     const importance = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.importance : void 0;
     const toolName = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.toolName : void 0;
     let sql;
@@ -580,7 +585,9 @@ ${storedOutput}`;
     const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     const importanceClause = importance ? " AND o.importance = ?" : "";
     const toolClause = toolName ? " AND o.tool_name = ?" : "";
-    const limitParam = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50;
+    const limitParam = Math.floor(Math.max(1, Math.min(500, Number(
+      typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50
+    ))));
     const paginationClause = searchOffset > 0 ? `LIMIT ${limitParam} OFFSET ${searchOffset}` : `LIMIT ${limitParam}`;
     if (project && hasBranchFilter) {
       sql = `
@@ -668,6 +675,7 @@ ${storedOutput}`;
     return results;
   }
   async searchByTag(tag, project, limit = 50, includeSuperseded = false) {
+    const safeLimit = Math.floor(Math.max(1, Math.min(500, Number(limit))));
     const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     let sql;
     let params;
@@ -680,7 +688,7 @@ ${storedOutput}`;
         ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [tag, project + "%", limit];
+      params = [tag, project + "%", safeLimit];
     } else {
       sql = `
         SELECT o.* FROM observations o
@@ -689,7 +697,7 @@ ${storedOutput}`;
         ORDER BY o.created_at DESC
         LIMIT ?
       `;
-      params = [tag, limit];
+      params = [tag, safeLimit];
     }
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
@@ -2626,6 +2634,39 @@ ${storedOutput}`;
     `);
   }
   /**
+   * Add partial index for getWithinBudget() query plan.
+   *
+   * Root cause of the full-table scan: idx_observations_project_score covers
+   * (project, importance_score DESC, created_at DESC) but does not include
+   * is_compacted or superseded_by. To evaluate those filters, SQLite must
+   * fetch the full row for every index entry — a random-read overhead that
+   * the cost model rates worse than a sequential table scan when the filters
+   * have low selectivity (most observations are active and non-superseded).
+   *
+   * A partial index bakes the boolean conditions into the index definition.
+   * The planner sees only pre-filtered rows, eliminating the per-row fetch
+   * for those predicates and enabling a direct range scan on (project,
+   * importance_score, created_at).
+   *
+   * USE TEMP B-TREE FOR ORDER BY remains because the LIKE range scan on
+   * project cannot guarantee sort order across multiple prefix values.
+   * This is expected and acceptable; the B-tree sort runs on the already-
+   * narrowed partial index rowset, not the full table.
+   *
+   * The existing idx_observations_project_score is retained -- it serves
+   * query paths that sort by importance_score without the boolean equality
+   * predicates (tag search, semantic search paths). The partial index takes
+   * precedence for getWithinBudget() because the planner prefers the
+   * narrower rowset.
+   */
+  migrateAddBudgetIndex() {
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_budget
+      ON observations(project, importance_score DESC, created_at DESC)
+      WHERE is_compacted = 0 AND superseded_by IS NULL
+    `);
+  }
+  /**
    * Add tokens to the token_index, incrementing frequency on conflict.
    * Runs as a transaction for efficiency. Tokens are already normalized.
    */
@@ -2723,7 +2764,8 @@ function generateSessionId() {
 function validateSessionStartInput(input) {
   const obj = typeof input === "object" && input !== null ? input : {};
   const session_id = typeof obj.session_id === "string" && obj.session_id.length > 0 ? obj.session_id : generateSessionId();
-  const rawCwd = typeof obj.cwd === "string" && obj.cwd.length > 0 ? obj.cwd : process.cwd();
+  const hookCwd = typeof obj.cwd === "string" && obj.cwd.length > 0 ? obj.cwd : null;
+  const rawCwd = hookCwd ?? process.cwd();
   let validatedCwd;
   try {
     validatedCwd = validateProjectPath(rawCwd);
@@ -2731,7 +2773,10 @@ function validateSessionStartInput(input) {
     try {
       validatedCwd = validateProjectPath(process.cwd());
     } catch {
-      validatedCwd = homedir2();
+      const fallback = homedir2();
+      const inputDescription = hookCwd ? `'${hookCwd}'` : "(none \u2014 hook sent no cwd)";
+      console.error(`[context-manager] WARNING: could not validate project path ${inputDescription} or process.cwd(), falling back to home directory. Observations will be scoped to ${fallback}`);
+      validatedCwd = fallback;
     }
   }
   return {
@@ -2914,11 +2959,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.103") {
+    if (installedVersion !== "0.8.108") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.103"}
+   Source:    v${"0.8.108"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2932,10 +2977,10 @@ var PLUGIN_VERSION_FILE = join2(homedir4(), ".claude-context", ".plugin-version"
 function checkPostUpdate() {
   try {
     const stored = existsSync(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.103")
+    if (stored === "0.8.108")
       return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.103"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.108"}. Hooks active.`;
   } catch {
     return "";
   }
@@ -2943,7 +2988,7 @@ function checkPostUpdate() {
 function markVersionActivated() {
   try {
     mkdirSync2(join2(homedir4(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.103", "utf-8");
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.108", "utf-8");
   } catch {
   }
 }
@@ -3012,11 +3057,12 @@ async function main() {
       const updateNotice2 = checkPostUpdate();
       const versionWarning2 = checkVersionMismatch();
       const lines2 = [];
+      let noticeWasInjected2 = false;
       if (updateNotice2) {
         const serverMsg = `${updateNotice2} Server may need restart \u2014 check ${remoteUrl}/health`;
         console.error(serverMsg);
         lines2.push(serverMsg);
-        markVersionActivated();
+        noticeWasInjected2 = true;
       }
       if (versionWarning2)
         lines2.push(versionWarning2);
@@ -3025,7 +3071,7 @@ async function main() {
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1])
         remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.103"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.108"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3090,14 +3136,9 @@ async function main() {
           additionalContext: context2
         }
       });
-      return;
-    }
-    {
-      const updateNotice2 = checkPostUpdate();
-      if (updateNotice2) {
-        console.error(updateNotice2);
+      if (noticeWasInjected2)
         markVersionActivated();
-      }
+      return;
     }
     if (!__nativeModulesAvailable) {
       console.error(NO_NATIVE_ERROR);
@@ -3120,16 +3161,17 @@ async function main() {
     const updateNotice = checkPostUpdate();
     const versionWarning = checkVersionMismatch();
     const lines = [];
+    let noticeWasInjected = false;
     if (updateNotice) {
       console.error(updateNotice);
       lines.push(updateNotice);
-      markVersionActivated();
+      noticeWasInjected = true;
     }
     if (versionWarning) {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.103"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.108"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
@@ -3193,6 +3235,8 @@ async function main() {
         additionalContext: context
       }
     });
+    if (noticeWasInjected)
+      markVersionActivated();
   } catch (error) {
     console.error("[context-manager] Error:", error);
     await writeResponse({
