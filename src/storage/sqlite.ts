@@ -667,9 +667,12 @@ export class SQLiteStorage implements ContextStorage {
     // Use LIKE for prefix matching (parent directory sees children).
     // LIMIT 500 caps memory usage on mature databases — the budget accumulator
     // stops well before this ceiling, so no relevant observations are lost.
+    // Exclude compacted observations and superseded facts from budget calculation.
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE project LIKE ?
+        AND is_compacted = 0
+        AND superseded_by IS NULL
       ORDER BY importance_score DESC, created_at DESC
       LIMIT 500
     `);
@@ -1676,6 +1679,8 @@ export class SQLiteStorage implements ContextStorage {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
       WHERE session_id = ?
+        AND is_compacted = 0
+        AND superseded_by IS NULL
       ORDER BY created_at ASC
     `);
 
