@@ -2018,5 +2018,13 @@ export function createContextManagerServer(
     }
   );
 
+  // The MCP SDK hardcodes taskSupport:'forbidden' for all tools registered via server.tool(),
+  // which causes Claude Desktop to silently skip tool invocations. Patch to 'optional' so
+  // both direct (Desktop, CLI) and task-based callers can invoke tools. (#176)
+  const registeredTools = (server as unknown as { _registeredTools: Record<string, { execution: { taskSupport: string } }> })._registeredTools;
+  for (const tool of Object.values(registeredTools)) {
+    tool.execution = { taskSupport: 'optional' };
+  }
+
   return server;
 }
