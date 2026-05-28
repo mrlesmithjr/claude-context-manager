@@ -718,7 +718,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         enableJsonResponse: true,      // required: proxy consumer calls response.json()
       });
 
-      const mcpServer = createContextManagerServer(storage, { pathMap });
+      const mcpServer = createContextManagerServer(storage, { pathMap, version: SERVER_VERSION });
       await mcpServer.connect(transport);
 
       // hijack() must be called before handleRequest() writes to reply.raw,
