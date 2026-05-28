@@ -130,6 +130,7 @@ function formatStats(
   const lines: string[] = [];
 
   lines.push('Context Manager Statistics');
+  lines.push(`Version: ${typeof PLUGIN_VERSION !== 'undefined' ? PLUGIN_VERSION : 'unknown'}`);
   lines.push('');
   lines.push(project ? `Project: ${project}` : 'All Projects');
   lines.push('');
