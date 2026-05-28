@@ -7,6 +7,7 @@
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
@@ -2019,14 +2020,35 @@ export function createContextManagerServer(
   );
 
   // The MCP SDK hardcodes taskSupport:'forbidden' for all tools registered via server.tool().
-  // Claude Desktop blocks invocation when it sees 'forbidden', but setting 'optional' causes
-  // the SDK to require a task handler, which the stdio transport doesn't provide.
-  // Deleting execution entirely omits it from tools/list so Desktop doesn't see 'forbidden',
-  // and leaves taskSupport undefined server-side so the SDK skips all task validation. (#176)
-  const registeredTools = (server as unknown as { _registeredTools: Record<string, { execution?: unknown }> })._registeredTools;
+  // Claude Desktop blocks invocation of tools advertised with 'forbidden' or no execution field.
+  // Setting 'optional' tells Desktop the tools are callable, but the SDK then validates that
+  // the handler was registered with registerToolTask, which it wasn't.
+  // Fix: set 'optional' on all tools for Desktop visibility, then replace the SDK's
+  // tools/call handler on the underlying Server with one that skips the isTaskHandler check
+  // and invokes the handler directly. (#176)
+  const registeredTools = (server as unknown as {
+    _registeredTools: Record<string, { execution?: { taskSupport: string }; handler: (args: unknown, extra: unknown) => Promise<unknown>; inputSchema?: unknown }>;
+  })._registeredTools;
+
   for (const tool of Object.values(registeredTools)) {
-    delete tool.execution;
+    tool.execution = { taskSupport: 'optional' };
   }
+
+  const underlyingServer = (server as unknown as { server: { setRequestHandler: (schema: unknown, handler: (req: unknown, extra: unknown) => Promise<unknown>) => void } }).server;
+  underlyingServer.setRequestHandler(CallToolRequestSchema, async (request: unknown, extra: unknown) => {
+    const req = request as { params: { name: string; arguments?: Record<string, unknown> } };
+    const tool = registeredTools[req.params.name];
+    if (!tool) {
+      return { content: [{ type: 'text', text: `Tool ${req.params.name} not found` }], isError: true };
+    }
+    try {
+      const args = req.params.arguments ?? {};
+      const result = await tool.handler(args, extra);
+      return result;
+    } catch (err) {
+      return { content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }], isError: true };
+    }
+  });
 
   return server;
 }
