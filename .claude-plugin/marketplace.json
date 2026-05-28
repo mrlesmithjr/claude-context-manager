@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "context-manager",
-      "version": "0.8.110",
+      "version": "0.8.112",
       "source": "./plugin",
       "description": "Persistent memory system for Claude Code - context across sessions"
     }

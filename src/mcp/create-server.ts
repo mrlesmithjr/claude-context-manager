@@ -59,6 +59,7 @@ export interface ServerOptions {
   remoteUrl?: string;
   remoteToken?: string;
   pathMap?: PathPrefixEntry[];
+  version?: string;
 }
 
 /**
@@ -125,11 +126,14 @@ function formatStats(
   stats: Stats,
   project?: string,
   vectorStats?: VectorStats,
-  sessionEmbeddingStats?: { embedded: number; pending: number }
+  sessionEmbeddingStats?: { embedded: number; pending: number },
+  version?: string
 ): string {
   const lines: string[] = [];
 
   lines.push('Context Manager Statistics');
+  const resolvedVersion = version ?? (typeof PLUGIN_VERSION !== 'undefined' ? PLUGIN_VERSION : 'unknown');
+  lines.push(`Version: ${resolvedVersion}`);
   lines.push('');
   lines.push(project ? `Project: ${project}` : 'All Projects');
   lines.push('');
@@ -456,13 +460,14 @@ export function createContextManagerServer(
   storage: SQLiteStorage | null,
   options: ServerOptions = {}
 ): McpServer {
-  const { remoteUrl = '', remoteToken = '', pathMap = [] } = options;
+  const { remoteUrl = '', remoteToken = '', pathMap = [], version: optVersion } = options;
+  const resolvedVersion = optVersion ?? (typeof PLUGIN_VERSION !== 'undefined' ? PLUGIN_VERSION : 'unknown');
   const isProxy = !!remoteUrl;
 
   const server = new McpServer(
     {
       name: 'context-manager',
-      version: typeof PLUGIN_VERSION !== 'undefined' ? PLUGIN_VERSION : 'unknown',
+      version: resolvedVersion,
     },
     {
       instructions:
@@ -1376,7 +1381,7 @@ export function createContextManagerServer(
         content: [
           {
             type: 'text' as const,
-            text: formatStats(stats, normalizedProject, vectorStats, sessionEmbeddingStats),
+            text: formatStats(stats, normalizedProject, vectorStats, sessionEmbeddingStats, resolvedVersion),
           },
         ],
       };
