@@ -2020,35 +2020,50 @@ export function createContextManagerServer(
   );
 
   // The MCP SDK hardcodes taskSupport:'forbidden' for all tools registered via server.tool().
-  // Claude Desktop blocks invocation of tools advertised with 'forbidden' or no execution field.
+  // Claude Desktop blocks invocation of tools advertised with 'forbidden'.
   // Setting 'optional' tells Desktop the tools are callable, but the SDK then validates that
   // the handler was registered with registerToolTask, which it wasn't.
   // Fix: set 'optional' on all tools for Desktop visibility, then replace the SDK's
   // tools/call handler on the underlying Server with one that skips the isTaskHandler check
-  // and invokes the handler directly. (#176)
-  const registeredTools = (server as unknown as {
-    _registeredTools: Record<string, { execution?: { taskSupport: string }; handler: (args: unknown, extra: unknown) => Promise<unknown>; inputSchema?: unknown }>;
-  })._registeredTools;
+  // and invokes the handler directly. Input validation is bypassed (Zod runs inside each
+  // handler anyway); errors surface as caught exceptions with isError:true rather than
+  // structured InvalidParams responses. (#176)
+  const rawServer = server as unknown as {
+    _registeredTools?: Record<string, { enabled?: boolean; execution?: { taskSupport: string }; handler: (args: unknown, extra: unknown) => Promise<unknown>; inputSchema?: unknown }>;
+    server?: { setRequestHandler: (schema: unknown, handler: (req: unknown, extra: unknown) => Promise<unknown>) => void };
+  };
 
-  for (const tool of Object.values(registeredTools)) {
-    tool.execution = { taskSupport: 'optional' };
+  const registeredTools = rawServer._registeredTools;
+  const underlyingServer = rawServer.server;
+
+  if (!registeredTools || !underlyingServer) {
+    console.error(
+      '[context-manager] WARNING: MCP SDK internals not found (_registeredTools or .server). ' +
+      'Claude Desktop compatibility patch was NOT applied. Check SDK version. (#176)'
+    );
+  } else {
+    for (const tool of Object.values(registeredTools)) {
+      tool.execution = { taskSupport: 'optional' };
+    }
+
+    underlyingServer.setRequestHandler(CallToolRequestSchema, async (request: unknown, extra: unknown) => {
+      const req = request as { params: { name: string; arguments?: Record<string, unknown> } };
+      const tool = registeredTools[req.params.name];
+      if (!tool) {
+        return { content: [{ type: 'text', text: `Tool ${req.params.name} not found` }], isError: true };
+      }
+      if (tool.enabled === false) {
+        return { content: [{ type: 'text', text: `Tool ${req.params.name} is disabled` }], isError: true };
+      }
+      try {
+        const args = req.params.arguments ?? {};
+        const result = await tool.handler(args, extra);
+        return result;
+      } catch (err) {
+        return { content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }], isError: true };
+      }
+    });
   }
-
-  const underlyingServer = (server as unknown as { server: { setRequestHandler: (schema: unknown, handler: (req: unknown, extra: unknown) => Promise<unknown>) => void } }).server;
-  underlyingServer.setRequestHandler(CallToolRequestSchema, async (request: unknown, extra: unknown) => {
-    const req = request as { params: { name: string; arguments?: Record<string, unknown> } };
-    const tool = registeredTools[req.params.name];
-    if (!tool) {
-      return { content: [{ type: 'text', text: `Tool ${req.params.name} not found` }], isError: true };
-    }
-    try {
-      const args = req.params.arguments ?? {};
-      const result = await tool.handler(args, extra);
-      return result;
-    } catch (err) {
-      return { content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }], isError: true };
-    }
-  });
 
   return server;
 }
