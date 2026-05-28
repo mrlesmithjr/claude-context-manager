@@ -34384,10 +34384,11 @@ function formatPrompts(prompts) {
   }
   return lines.join("\n");
 }
-function formatStats(stats, project, vectorStats, sessionEmbeddingStats) {
+function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  lines.push(`Version: ${true ? "0.8.111" : "unknown"}`);
+  const resolvedVersion = version2 ?? (true ? "0.8.111" : "unknown");
+  lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
   lines.push("");
@@ -34594,12 +34595,13 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
   return { content };
 }
 function createContextManagerServer(storage2, options = {}) {
-  const { remoteUrl = "", remoteToken = "", pathMap = [] } = options;
+  const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
+  const resolvedVersion = optVersion ?? (true ? "0.8.111" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
       name: "context-manager",
-      version: true ? "0.8.111" : "unknown"
+      version: resolvedVersion
     },
     {
       instructions: "Check context_list at session start to load relevant prior context. Use context_search for targeted lookups and context_semantic_search for broader discovery. Use context_prune for targeted cleanup by tool_name, importance, or age. Always run with dry_run=true first to preview. Requires at least one filter to prevent accidental full wipe."
@@ -35285,7 +35287,7 @@ ${lines.join("\n")}` }]
         content: [
           {
             type: "text",
-            text: formatStats(stats, normalizedProject, vectorStats, sessionEmbeddingStats)
+            text: formatStats(stats, normalizedProject, vectorStats, sessionEmbeddingStats, resolvedVersion)
           }
         ]
       };
