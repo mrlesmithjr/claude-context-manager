@@ -3702,6 +3702,43 @@ export class SQLiteStorage implements ContextStorage {
     return bestToken;
   }
 
+  /**
+   * Pin or unpin a list of observations.
+   * Returns which IDs were pinned, unpinned, or not found.
+   *
+   * @param ids - Observation IDs to update (positive integers only)
+   * @param pin - true to pin, false to unpin
+   */
+  async pinObservations(
+    ids: number[],
+    pin: boolean
+  ): Promise<{ pinned: number[]; unpinned: number[]; not_found: number[] }> {
+    const safeIds = ids.map(id => Math.trunc(id)).filter(id => id > 0);
+    if (safeIds.length === 0) {
+      return { pinned: [], unpinned: [], not_found: ids };
+    }
+
+    const pinValue = pin ? 1 : 0;
+    this.db.prepare(
+      `UPDATE observations SET pinned = ? WHERE id IN (SELECT value FROM json_each(?))`
+    ).run(pinValue, JSON.stringify(safeIds));
+
+    const found = (
+      this.db.prepare(
+        `SELECT id FROM observations WHERE id IN (SELECT value FROM json_each(?))`
+      ).all(JSON.stringify(safeIds)) as Array<{ id: number }>
+    ).map(r => r.id);
+
+    const foundSet = new Set(found);
+    const not_found = safeIds.filter(id => !foundSet.has(id));
+
+    return {
+      pinned: pin ? found : [],
+      unpinned: pin ? [] : found,
+      not_found,
+    };
+  }
+
   close(): Promise<void> {
     this.db.close();
     return Promise.resolve();

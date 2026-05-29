@@ -498,7 +498,8 @@ export function createContextManagerServer(
     const summaryFragment = obs.summary.length > 80
       ? obs.summary.substring(0, 80)
       : obs.summary;
-    return `#${obs.id} [${datePart} ${timePart}] ${obs.tool_name} ${summaryFragment}`;
+    const pinnedFlag = obs.pinned === 1 ? ' [PINNED]' : '';
+    return `#${obs.id} [${datePart} ${timePart}] ${obs.tool_name}${pinnedFlag} ${summaryFragment}`;
   }
 
   server.tool(
@@ -1592,6 +1593,50 @@ export function createContextManagerServer(
             text: `Deleted ${result.deleted} observations [${filters}].`,
           },
         ],
+      };
+    }
+  );
+
+  server.tool(
+    'context_pin',
+    'Pin or unpin observations by ID. Pinned observations are exempt from decay scoring, compaction, and pruning — they are preserved indefinitely. Use context_search to find the observation IDs you want to pin.',
+    {
+      ids: z
+        .array(z.number().int().positive())
+        .min(1)
+        .max(20)
+        .describe('Array of observation IDs to pin or unpin (max 20 at a time). Use context_search to find IDs.'),
+      pin: z
+        .boolean()
+        .describe('true to pin (protect permanently), false to unpin (restore normal decay/compaction behavior)'),
+    },
+    async ({ ids, pin }) => {
+      if (isProxy) {
+        return proxyToolCall('context_pin', { ids, pin }, remoteUrl, remoteToken);
+      }
+
+      const db = await getDb();
+      const result = await db.pinObservations(ids, pin);
+
+      const action = pin ? 'Pinned' : 'Unpinned';
+      const lines: string[] = [];
+
+      if (result.pinned.length > 0) {
+        lines.push(`${action}: ${result.pinned.join(', ')}`);
+      }
+      if (result.unpinned.length > 0) {
+        lines.push(`${action}: ${result.unpinned.join(', ')}`);
+      }
+      if (result.not_found.length > 0) {
+        lines.push(`Not found: ${result.not_found.join(', ')}`);
+      }
+
+      if (lines.length === 0) {
+        lines.push('No observations updated.');
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: lines.join('\n') }],
       };
     }
   );
