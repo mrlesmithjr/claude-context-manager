@@ -44,30 +44,25 @@ make release
 
 This is a TypeScript Claude Code plugin. All code changes follow the mandatory multi-agent sequence:
 
-**Feature or fix:** `typescript-developer → code-reviewer → doc-writer → version bump → commit`
+**Feature or fix:** `claude-code-plugin-developer → code-reviewer → doc-writer → make ship`
 
 **Documentation only:** `doc-writer → commit (no version bump)`
 
 **Agent responsibilities:**
-- `typescript-developer` - implement changes in `src/`, `plugin/hooks/`, `web/`, `cli/`
+- `claude-code-plugin-developer` - implement changes in `src/`, `plugin/hooks/`, `web/`, `cli/`
 - `code-reviewer` - quality and security review before any commit (mandatory, never skip)
 - `doc-writer` - update this CLAUDE.md, README.md, and any affected skill/agent descriptions
 
-**Version management:**
-- Bump patch version after code review passes: `npm version patch --no-git-tag-version`
-- The plugin system caches by version number - bump before `/plugin update context-manager` or changes won't apply
-- Never bump before code review is complete
+**Plugin release workflow** (after code review and doc-writer pass):
+1. `make ship` - bumps patch version, builds, commits, pushes develop, restarts server, opens PR, waits for CI, merges to main, tags
+2. `/plugin update context-manager` inside Claude Code
+3. Restart Claude Code
 
-**Plugin release workflow** (after code review passes):
-1. `npm version patch --no-git-tag-version` - bump the version
-2. `make update` - builds artifacts, commits, pushes to develop, restarts server
-3. `make release` - opens PR, waits for CI, merges to main, tags
-4. `/plugin update context-manager` inside Claude Code
-5. Restart Claude Code
+**Mid-development iteration** (no release yet):
+- `make update` - build + push develop + restart server, without bumping version or merging to main
+- Use this when iterating and not ready to release
 
-`make update` does NOT bump the version — always run step 1 first. `make release` is the step that surfaces changes to the marketplace; skipping it means `/plugin update` will not see the new version.
-
-**Note:** `/plugin update` refreshes the Claude Code side (hooks + proxy) but does NOT restart the HTTP server. After pushing, run `make update` in the repo to rebuild and restart the server so new MCP tools and fixes take effect in remote mode.
+**Note:** `/plugin update` refreshes the Claude Code side (hooks + proxy) but does NOT restart the HTTP server. `make ship` and `make update` both restart the server automatically.
 
 **Issue tracking:**
 - Every code change must reference a GitHub issue in the commit (`fixes #N` or `refs #N`)
