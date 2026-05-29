@@ -25080,6 +25080,7 @@ ${storedOutput}`;
    */
   findClosestToken(token, minFrequency = 3) {
     if (token.length > 50) return null;
+    if (token.length < 4) return null;
     const exact = this.db.prepare(
       `SELECT 1 FROM token_index WHERE token = ? LIMIT 1`
     ).get(token);
@@ -34494,7 +34495,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.121" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.122" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -34703,7 +34704,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.121" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.122" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {

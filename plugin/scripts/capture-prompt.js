@@ -2728,6 +2728,7 @@ ${storedOutput}`;
    */
   findClosestToken(token, minFrequency = 3) {
     if (token.length > 50) return null;
+    if (token.length < 4) return null;
     const exact = this.db.prepare(
       `SELECT 1 FROM token_index WHERE token = ? LIMIT 1`
     ).get(token);
