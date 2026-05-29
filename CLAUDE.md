@@ -105,7 +105,7 @@ npm run import -- --source <path> --project <target> [--filter <text>] [--dry-ru
 
 **MCP Tools:**
 `context_add`, `context_stats`, `context_list`, `context_search`, `context_semantic_search`, `context_embed`,
-`context_vacuum`, `context_export`, `context_memory_audit`, `context_memory_consolidate`, `context_prune`,
+`context_vacuum`, `context_export`, `context_memory_audit`, `context_memory_consolidate`, `context_pin`, `context_prune`,
 `context_get`, `context_timeline`, `context_lessons`, `context_decisions`, `context_reflect`
 
 ---
@@ -252,7 +252,7 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 33 | Decisions entity | `decisions` table with FTS5 triggers; `extractDecisions()` in Stop hook; `context_decisions` tool; `decision:` prefix in `context_search` |
 | 34 | Error lessons | `lesson_type` column; `detectLessonType()` in processor; restricted to Write/Edit/NotebookEdit/MultiEdit + Bash errors; `context_lessons` tool; `lesson:` prefix in `context_search` |
 | 35 | context_reflect | `buildReflection()` / `formatReflection()` pure functions in `reflect.ts`; groups by first tag; 3+ obs threshold; lesson groups get "Avoid:" prefix; Stop hook reminder at 7+ days / 10+ high-importance obs |
-| 36 | Fuzzy search pre-pass | `token_index` table; `addTokens()` on every save (4+ char tokens, freq upsert); `findClosestToken()` Levenshtein DP <= 2 edit distance, freq >= 3; `correctTokens()` skips operator-prefixed tokens; `fuzzy` param (default true) on `context_search`; correction notice in response header |
+| 36 | Fuzzy search pre-pass | `token_index` table; `addTokens()` on every save (4+ char tokens, freq upsert); `findClosestToken()` exact-match short-circuit: if token exists verbatim in `token_index`, correction is skipped entirely; otherwise Levenshtein DP <= 2 edit distance, freq >= 3; `correctTokens()` skips operator-prefixed tokens; `fuzzy` param (default true) on `context_search`; correction notice in response header |
 | 37 | Progressive disclosure | `context_search` (compact, default) + `context_get` (full detail by ID) + `context_timeline` (session context around IDs); 3-layer pattern |
 | 38 | Remote parity | `remoteCreateSession` forwards branch; `GET /api/decisions/next-number` for globally sequential decision numbering in remote mode |
 | 39 | searchByTag json_each | Tag matching uses `EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)` instead of LIKE; correct for JSON array storage |
