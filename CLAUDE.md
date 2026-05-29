@@ -241,8 +241,8 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 17 | macOS native server | Docker + SQLite WAL + macOS VirtioFS = corruption; use `make server-launchd-install` |
 | 18 | Periodic checkpoint | Every 30 min in UserPromptSubmit; 3s wall-clock guard; `CONTEXT_MANAGER_CHECKPOINT_INTERVAL` |
 | 19 | PreToolUse file context | Injects prior session history on first Read per file per session (min 2 prior obs) |
-| 20 | Stale session GC | Auto-runs on SessionStart; marks sessions inactive > 2h as `complete` |
-| 21 | Manual write path | `context_add` MCP tool; daily manual session per project; `source='manual'` in sessions; no tag inference from free text |
+| 20 | Stale session GC | Auto-runs on SessionStart; marks sessions inactive > 2h as `complete`; manual sessions (`source='manual'`) receive a derived summary (`"Manual session: <first 80 chars of most recent obs summary>"`) instead of the GC sentinel; manual sessions with zero observations get `"Manual session (no observations)"`; `migrateRepairManualSessionSummaries()` runs at `initialize()` to repair any existing manual sessions that have the sentinel summary |
+| 21 | Manual write path | `context_add` MCP tool; daily manual session per project; `source='manual'` in sessions; no tag inference from free text; manual sessions receive correct derived summaries at GC time and are visible in SessionStart context injection |
 | 22 | Capture floor | All observations scoring below the capture floor are dropped before DB write; default 0.15, configurable via `CONTEXT_MANAGER_CAPTURE_FLOOR` (clamped to 0.0–0.65); gate runs after all scoring adjustments so error-signal boosts (+0.25) are preserved |
 | 23 | MCP summary cap | MCP tool summaries truncated to ~40 tokens (160 chars) when importance < 0.3; observation still stored for relationship tracking and dedup |
 | 24 | Bearer token injection | Web server dynamically serves `index.html` with `window.__CTX_TOKEN` injected before `</head>`; `Cache-Control: no-store`; GET / bypassed from auth hook |

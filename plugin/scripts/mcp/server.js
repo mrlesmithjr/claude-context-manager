@@ -22660,6 +22660,7 @@ var SQLiteStorage = class {
     this.migrateAddSupersededBy();
     this.migrateAddTokenIndex();
     this.migrateAddBudgetIndex();
+    this.migrateRepairManualSessionSummaries();
   }
   /**
    * Add importance and compaction columns if they don't exist.
@@ -23286,6 +23287,7 @@ ${storedOutput}`;
         summary = ?
       WHERE status = 'active'
         AND ended_at IS NULL
+        AND source != 'manual'
         AND (
           (last_checkpoint_at IS NOT NULL
             AND datetime(last_checkpoint_at / 1000, 'unixepoch') < ?)
@@ -23294,7 +23296,38 @@ ${storedOutput}`;
             AND started_at < ?)
         )
     `).run(GC_SESSION_SUMMARY, staleThresholdISO, staleThresholdISO);
-    return staleResult.changes;
+    const staleManualSessions = this.db.prepare(`
+      SELECT id FROM sessions
+      WHERE status = 'active'
+        AND ended_at IS NULL
+        AND source = 'manual'
+        AND (
+          (last_checkpoint_at IS NOT NULL
+            AND datetime(last_checkpoint_at / 1000, 'unixepoch') < ?)
+          OR
+          (last_checkpoint_at IS NULL
+            AND started_at < ?)
+        )
+    `).all(staleThresholdISO, staleThresholdISO);
+    const latestObsSummaryStmt = this.db.prepare(`
+      SELECT summary FROM observations
+      WHERE session_id = ? AND summary IS NOT NULL AND LENGTH(summary) > 0
+      ORDER BY created_at DESC LIMIT 1
+    `);
+    const closeManualStmt = this.db.prepare(`
+      UPDATE sessions
+      SET status = 'complete', ended_at = datetime('now'), summary = ?
+      WHERE id = ?
+    `);
+    const closeManual = this.db.transaction(() => {
+      for (const row of staleManualSessions) {
+        const obs = latestObsSummaryStmt.get(row.id);
+        const derivedSummary = obs?.summary ? `Manual session: ${obs.summary.slice(0, 80)}` : "Manual session (no observations)";
+        closeManualStmt.run(derivedSummary, row.id);
+      }
+    });
+    closeManual();
+    return staleResult.changes + staleManualSessions.length;
   }
   async vacuum(olderThanDays, staleSessionHours = 2, include_high = false) {
     let deletedObservations = 0;
@@ -24978,6 +25011,36 @@ ${storedOutput}`;
       ON observations(project, importance_score DESC, created_at DESC)
       WHERE is_compacted = 0 AND superseded_by IS NULL
     `);
+  }
+  /**
+   * One-time idempotent migration: repair manual sessions whose summary was set
+   * to the GC sentinel by a prior version of closeStaleActiveSessions(). The
+   * condition `summary = GC_SESSION_SUMMARY` makes re-runs a no-op for any
+   * session already repaired.
+   */
+  migrateRepairManualSessionSummaries() {
+    const staleSessions = this.db.prepare(`
+      SELECT id FROM sessions
+      WHERE source = 'manual'
+        AND summary = ?
+    `).all(GC_SESSION_SUMMARY);
+    if (staleSessions.length === 0) return;
+    const latestObsSummaryStmt = this.db.prepare(`
+      SELECT summary FROM observations
+      WHERE session_id = ? AND summary IS NOT NULL AND LENGTH(summary) > 0
+      ORDER BY created_at DESC LIMIT 1
+    `);
+    const updateStmt = this.db.prepare(`
+      UPDATE sessions SET summary = ? WHERE id = ?
+    `);
+    const repair = this.db.transaction(() => {
+      for (const row of staleSessions) {
+        const obs = latestObsSummaryStmt.get(row.id);
+        const derivedSummary = obs?.summary ? `Manual session: ${obs.summary.slice(0, 80)}` : "Manual session (no observations)";
+        updateStmt.run(derivedSummary, row.id);
+      }
+    });
+    repair();
   }
   /**
    * Add tokens to the token_index, incrementing frequency on conflict.
@@ -34387,7 +34450,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.116" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.117" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -34596,7 +34659,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.116" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.117" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
