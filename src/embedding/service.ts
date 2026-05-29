@@ -132,6 +132,7 @@ export class EmbeddingService {
 
     // Try dynamic import (works if installed in project node_modules during dev)
     try {
+      // @ts-ignore — optional runtime dependency, types may not be present
       return await import('@huggingface/transformers');
     } catch {
       // Not installed — try auto-install
