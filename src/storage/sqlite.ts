@@ -3673,6 +3673,9 @@ export class SQLiteStorage implements ContextStorage {
     // Cap token length to avoid expensive DP on very long strings
     if (token.length > 50) return null;
 
+    // Tokens shorter than 4 chars are never indexed (addTokens minimum) — skip correction
+    if (token.length < 4) return null;
+
     // If the token exists verbatim in the index it is known vocabulary — do not correct it
     const exact = this.db.prepare(
       `SELECT 1 FROM token_index WHERE token = ? LIMIT 1`
