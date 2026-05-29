@@ -3,6 +3,21 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 /**
+ * Recognized environment variables loaded from ~/.claude-context/.env:
+ *
+ * CONTEXT_MANAGER_DB                  - SQLite database path (default: ~/.claude-context/context.db)
+ * CONTEXT_MANAGER_TOKEN_BUDGET        - Max tokens per MCP recall tool response (default: 4000)
+ * CONTEXT_MANAGER_PORT                - Web dashboard port (default: 3847)
+ * CONTEXT_MANAGER_URL                 - Remote capture server URL (enables proxy mode)
+ * CONTEXT_MANAGER_TOKEN               - Bearer token for remote mode (required when URL is set)
+ * CONTEXT_MANAGER_CHECKPOINT_INTERVAL - Minutes between checkpoint exports (default: 30)
+ * CONTEXT_MANAGER_EMBED_INTERVAL      - Minutes between background embedding passes (default: 10)
+ * CONTEXT_MANAGER_CAPTURE_FLOOR       - Min importance score for capture, clamped [0.0, 0.65] (default: 0.15)
+ * CONTEXT_MANAGER_DECAY_HALFLIFE      - Decay half-life in days for applyDecay(), clamped [1, 3650] (default: 60)
+ * CONTEXT_SEARCH_MIN_SCORE            - Min cosine similarity for semantic/hybrid results (default: 0.25)
+ */
+
+/**
  * Load environment variables from ~/.claude-context/.env into process.env.
  *
  * Called at startup by the MCP server and all hooks so that
