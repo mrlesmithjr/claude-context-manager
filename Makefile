@@ -26,7 +26,7 @@ NODE_BIN         := $(shell which node)
 
 .PHONY: help build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
         server-build server-clean server-init server-start server-stop server-logs \
-        server-status server-env server-restart server-apply-env update release \
+        server-status server-env server-restart server-apply-env update release ship \
         server-native-start server-native-stop server-native-status \
         server-launchd-install server-launchd-uninstall server-launchd-status \
         server-quickstart server-stop-native switch-to-docker switch-to-native \
@@ -375,6 +375,18 @@ update:
 	@echo "   1. Restart Claude Code  (Cmd+Q and reopen, or /exit in terminal mode)"
 	@echo "   2. /plugin update context-manager  (run inside Claude Code after restart)"
 	@echo "================================================================"
+
+# Full ship cycle: bump patch version, build + push develop, merge to main, tag.
+# Use this after code review passes. One command replaces the three-step manual flow.
+# After it completes, run /plugin update context-manager inside Claude Code.
+ship:
+	@echo "[ship] Bumping patch version..."
+	@npm version patch --no-git-tag-version
+	@VERSION=$$(node -p "require('./package.json').version"); \
+	git add package.json package-lock.json && \
+	git commit -m "chore: bump version to v$$VERSION"
+	$(MAKE) update
+	$(MAKE) release
 
 # Merge develop -> main, tag the release, and surface it to the marketplace.
 #
