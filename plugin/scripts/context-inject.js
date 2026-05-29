@@ -2338,6 +2338,17 @@ ${storedOutput}`;
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
   }
+  async getRecentDesktopObservations(project, limit = 3) {
+    const effectiveLimit = Math.max(1, Math.min(10, limit));
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? || '%'
+        AND tool_name LIKE 'Manual:Desktop%'
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT ?
+    `).all(project, effectiveLimit);
+    return rows.map((row) => this.mapRow(row));
+  }
   /**
    * Migration: add pinned and access_count columns to observations.
    *
@@ -3238,6 +3249,22 @@ async function main() {
           return numLabel ? `${numLabel} ${fragment} (${dateLabel})` : `${fragment} (${dateLabel})`;
         });
         lines.push(`Recent decisions: ${items.join(" \xB7 ")}`);
+      }
+    } catch {
+    }
+    try {
+      const desktopObs = await storage.getRecentDesktopObservations(input.cwd, 3);
+      if (desktopObs.length > 0) {
+        const desktopLines = desktopObs.map((obs) => {
+          const date = new Date(obs.created_at);
+          const dateLabel = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          const raw = obs.summary.replace(/\n+/g, " ");
+          const snippet = raw.length > 150 ? raw.substring(0, 150) + "..." : raw;
+          return `- [${dateLabel}] ${snippet}`;
+        });
+        lines.push("");
+        lines.push("Recent Desktop activity:");
+        lines.push(...desktopLines);
       }
     } catch {
     }

@@ -3207,6 +3207,18 @@ export class SQLiteStorage implements ContextStorage {
     return rows.map(row => this.mapRow(row));
   }
 
+  async getRecentDesktopObservations(project: string, limit: number = 3): Promise<Observation[]> {
+    const effectiveLimit = Math.max(1, Math.min(10, limit));
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? || '%'
+        AND tool_name LIKE 'Manual:Desktop%'
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT ?
+    `).all(project, effectiveLimit) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
+  }
+
   /**
    * Migration: add pinned and access_count columns to observations.
    *

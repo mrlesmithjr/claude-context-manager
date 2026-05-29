@@ -691,6 +691,12 @@ export interface ContextStorage {
   getLessons(project?: string, query?: string, lessonType?: string, limit?: number, since?: string): Promise<Observation[]>;
 
   /**
+   * Get recent Desktop observations (tool_name LIKE 'Manual:Desktop%') for a project.
+   * Used by SessionStart to surface recent Claude Desktop activity.
+   */
+  getRecentDesktopObservations(project: string, limit?: number): Promise<Observation[]>;
+
+  /**
    * Save a decision to the decisions table with FTS5 index update.
    * @param decision - Decision object (id is auto-assigned)
    */

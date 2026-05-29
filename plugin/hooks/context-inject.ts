@@ -500,6 +500,26 @@ async function main() {
       // Non-critical — skip if decisions query fails
     }
 
+    // Recent Desktop activity hint (local mode only)
+    // TODO(#166-remote): surface Desktop activity in remote mode via a dedicated endpoint
+    try {
+      const desktopObs = await storage.getRecentDesktopObservations(input.cwd, 3);
+      if (desktopObs.length > 0) {
+        const desktopLines = desktopObs.map(obs => {
+          const date = new Date(obs.created_at);
+          const dateLabel = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const raw = obs.summary.replace(/\n+/g, ' ');
+          const snippet = raw.length > 150 ? raw.substring(0, 150) + '...' : raw;
+          return `- [${dateLabel}] ${snippet}`;
+        });
+        lines.push('');
+        lines.push('Recent Desktop activity:');
+        lines.push(...desktopLines);
+      }
+    } catch {
+      // Non-critical — skip if Desktop observations query fails
+    }
+
     const context = lines.join('\n');
 
     // Log status to stderr (visible to user)
