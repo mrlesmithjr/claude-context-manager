@@ -43258,6 +43258,8 @@ function detectFactType(summary) {
 // src/storage/sqlite.ts
 var DEFAULT_DB_PATH = import_path.default.join((0, import_os.homedir)(), ".claude-context", "context.db");
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
+var _rawHalflife = parseFloat(process.env.CONTEXT_MANAGER_DECAY_HALFLIFE ?? "");
+var DECAY_HALFLIFE_DAYS = Number.isFinite(_rawHalflife) && _rawHalflife >= 1 && _rawHalflife <= 3650 ? _rawHalflife : 60;
 function recencyFactor(capturedAt) {
   const ageMs = Date.now() - new Date(capturedAt).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
@@ -43271,7 +43273,7 @@ function applyDecay(obs) {
   const base = obs.importance_score;
   const ageMs = Date.now() - new Date(obs.created_at).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
-  const recencyScore = Math.pow(0.5, ageDays / 23);
+  const recencyScore = Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
   const accessCount = obs.access_count ?? 0;
   const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1);
   return base * 0.6 + recencyScore * 0.25 + frequencyScore * 0.15;
@@ -43709,8 +43711,8 @@ ${storedOutput}`;
     const highResults = [];
     const includedIds = /* @__PURE__ */ new Set();
     let highTokens = 0;
-    for (const { obs } of scoredRows) {
-      if (obs.importance_score < 0.65) continue;
+    for (const { obs, score } of scoredRows) {
+      if (score < 0.65) continue;
       if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
       if (obs.id !== void 0) includedIds.add(obs.id);
@@ -46506,7 +46508,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.118") return "0.8.118";
+  if ("0.8.119") return "0.8.119";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;

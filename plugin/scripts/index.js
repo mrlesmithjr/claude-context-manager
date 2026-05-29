@@ -153,7 +153,7 @@ function applyDecay(obs) {
   const base = obs.importance_score;
   const ageMs = Date.now() - new Date(obs.created_at).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
-  const recencyScore = Math.pow(0.5, ageDays / 23);
+  const recencyScore = Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
   const accessCount = obs.access_count ?? 0;
   const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1);
   return base * 0.6 + recencyScore * 0.25 + frequencyScore * 0.15;
@@ -193,7 +193,7 @@ function levenshtein(a, b) {
   }
   return prev[n];
 }
-var DEFAULT_DB_PATH, GC_SESSION_SUMMARY, SQLiteStorage;
+var DEFAULT_DB_PATH, GC_SESSION_SUMMARY, _rawHalflife, DECAY_HALFLIFE_DAYS, SQLiteStorage;
 var init_sqlite = __esm({
   "src/storage/sqlite.ts"() {
     "use strict";
@@ -203,6 +203,8 @@ var init_sqlite = __esm({
     init_facts();
     DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
     GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
+    _rawHalflife = parseFloat(process.env.CONTEXT_MANAGER_DECAY_HALFLIFE ?? "");
+    DECAY_HALFLIFE_DAYS = Number.isFinite(_rawHalflife) && _rawHalflife >= 1 && _rawHalflife <= 3650 ? _rawHalflife : 60;
     SQLiteStorage = class {
       db;
       vecEnabled = false;
@@ -601,8 +603,8 @@ ${storedOutput}`;
         const highResults = [];
         const includedIds = /* @__PURE__ */ new Set();
         let highTokens = 0;
-        for (const { obs } of scoredRows) {
-          if (obs.importance_score < 0.65) continue;
+        for (const { obs, score } of scoredRows) {
+          if (score < 0.65) continue;
           if (highTokens + obs.token_estimate > highBudget) continue;
           highResults.push(obs);
           if (obs.id !== void 0) includedIds.add(obs.id);
@@ -64657,7 +64659,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.118" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.119" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -64866,7 +64868,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.118" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.119" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -66725,7 +66727,7 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.118") return "0.8.118";
+      if ("0.8.119") return "0.8.119";
       try {
         const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version) return pkg.version;
