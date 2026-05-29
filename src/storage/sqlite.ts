@@ -39,6 +39,13 @@ const DEFAULT_DB_PATH = path.join(homedir(), '.claude-context', 'context.db');
 // Kept as a shared constant so writer and reader cannot diverge silently across refactors.
 const GC_SESSION_SUMMARY = '[Session ended abnormally - no Stop hook fired]';
 
+// Decay half-life in days, configurable via CONTEXT_MANAGER_DECAY_HALFLIFE.
+// Default: 60 days. Clamped to [1, 3650]. NaN or unset values fall back to 60.
+const _rawHalflife = parseFloat(process.env.CONTEXT_MANAGER_DECAY_HALFLIFE ?? '');
+const DECAY_HALFLIFE_DAYS = (Number.isFinite(_rawHalflife) && _rawHalflife >= 1 && _rawHalflife <= 3650)
+  ? _rawHalflife
+  : 60;
+
 /**
  * Compute a recency multiplier for temporal 'current' mode scoring.
  *
@@ -62,7 +69,8 @@ function recencyFactor(capturedAt: string): number {
  *
  * Pinned observations (pinned = 1) are exempt — their base importance is returned
  * unchanged. All other observations receive a weighted combination of base importance,
- * exponential age decay (half-life ~23 days), and a log-scaled frequency bonus.
+ * exponential age decay (half-life controlled by CONTEXT_MANAGER_DECAY_HALFLIFE, default 60 days),
+ * and a log-scaled frequency bonus.
  *
  * Decay is transient — the adjusted score is for ranking only, never written to the DB.
  *
@@ -78,9 +86,9 @@ function applyDecay(obs: Observation): number {
   const ageMs = Date.now() - new Date(obs.created_at).getTime();
   const ageDays = ageMs / (1000 * 60 * 60 * 24);
 
-  // Recency score: exponential decay, half-life ~23 days
-  // score = 0.5^(ageDays/23)
-  const recencyScore = Math.pow(0.5, ageDays / 23);
+  // Recency score: exponential decay with configurable half-life (CONTEXT_MANAGER_DECAY_HALFLIFE)
+  // score = 0.5^(ageDays/halflife)
+  const recencyScore = Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
 
   // Frequency score: log2(access_count + 1), normalized to [0, 1]
   // Cap at log2(101) for normalization ceiling
@@ -702,14 +710,16 @@ export class SQLiteStorage implements ContextStorage {
     });
     scoredRows.sort((a, b) => b.score - a.score);
 
-    // Pass 1: fill up to 60% of budget from high-importance observations (score >= 0.65)
+    // Pass 1: fill up to 60% of budget from high-importance observations (decayed score >= 0.65)
+    // Uses the already-computed decayed score from scoredRows — not the raw base importance_score.
+    // Aged observations that decay below 0.65 fall through to Pass 2 (general pool, no floor).
     const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * effectiveBudget);
     const highResults: Observation[] = [];
     const includedIds = new Set<number>();
     let highTokens = 0;
 
-    for (const { obs } of scoredRows) {
-      if (obs.importance_score < 0.65) continue;
+    for (const { obs, score } of scoredRows) {
+      if (score < 0.65) continue;
       if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
       if (obs.id !== undefined) includedIds.add(obs.id);
