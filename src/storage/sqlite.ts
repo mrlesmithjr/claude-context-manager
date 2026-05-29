@@ -3715,7 +3715,7 @@ export class SQLiteStorage implements ContextStorage {
   ): Promise<{ pinned: number[]; unpinned: number[]; not_found: number[] }> {
     const safeIds = ids.map(id => Math.trunc(id)).filter(id => id > 0);
     if (safeIds.length === 0) {
-      return { pinned: [], unpinned: [], not_found: ids };
+      return { pinned: [], unpinned: [], not_found: [] };
     }
 
     const pinValue = pin ? 1 : 0;
