@@ -468,6 +468,19 @@ export interface ContextStorage {
   markExported(ids: number[]): Promise<void>;
 
   /**
+   * Pin or unpin a list of observations.
+   * Pinned observations are exempt from decay scoring, compaction, and pruning.
+   *
+   * @param ids - Observation IDs to update (positive integers only; invalid IDs are sanitized out)
+   * @param pin - true to pin, false to unpin
+   * @returns Which IDs were pinned, unpinned, or not found in the database
+   */
+  pinObservations(
+    ids: number[],
+    pin: boolean
+  ): Promise<{ pinned: number[]; unpinned: number[]; not_found: number[] }>;
+
+  /**
    * Count observations with optional filters
    * @param project - Project path (optional)
    * @param tool - Tool name filter (optional)
@@ -689,6 +702,12 @@ export interface ContextStorage {
    * @param since - ISO 8601 date string; only return observations on or after this date (optional)
    */
   getLessons(project?: string, query?: string, lessonType?: string, limit?: number, since?: string): Promise<Observation[]>;
+
+  /**
+   * Get recent Desktop observations (tool_name LIKE 'Manual:Desktop%') for a project.
+   * Used by SessionStart to surface recent Claude Desktop activity.
+   */
+  getRecentDesktopObservations(project: string, limit?: number): Promise<Observation[]>;
 
   /**
    * Save a decision to the decisions table with FTS5 index update.

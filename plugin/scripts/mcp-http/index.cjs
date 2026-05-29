@@ -60752,7 +60752,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.120" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.121" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -60961,7 +60961,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.120" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.121" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -60979,7 +60979,8 @@ function createContextManagerServer(storage, options = {}) {
     const datePart = date5.toISOString().substring(0, 10);
     const timePart = date5.toISOString().substring(11, 16);
     const summaryFragment = obs.summary.length > 80 ? obs.summary.substring(0, 80) : obs.summary;
-    return `#${obs.id} [${datePart} ${timePart}] ${obs.tool_name} ${summaryFragment}`;
+    const pinnedFlag = obs.pinned === 1 ? " [PINNED]" : "";
+    return `#${obs.id} [${datePart} ${timePart}] ${obs.tool_name}${pinnedFlag} ${summaryFragment}`;
   }
   server.tool(
     "context_search",
@@ -61815,6 +61816,38 @@ ${sampleLines}`
             text: `Deleted ${result.deleted} observations [${filters}].`
           }
         ]
+      };
+    }
+  );
+  server.tool(
+    "context_pin",
+    "Pin or unpin observations by ID. Pinned observations are exempt from decay scoring, compaction, and pruning \u2014 they are preserved indefinitely. Use context_search to find the observation IDs you want to pin.",
+    {
+      ids: external_exports.array(external_exports.number().int().positive()).min(1).max(20).describe("Array of observation IDs to pin or unpin (max 20 at a time). Use context_search to find IDs."),
+      pin: external_exports.boolean().describe("true to pin (protect permanently), false to unpin (restore normal decay/compaction behavior)")
+    },
+    async ({ ids, pin }) => {
+      if (isProxy) {
+        return proxyToolCall("context_pin", { ids, pin }, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const result = await db.pinObservations(ids, pin);
+      const action = pin ? "Pinned" : "Unpinned";
+      const lines = [];
+      if (result.pinned.length > 0) {
+        lines.push(`${action}: ${result.pinned.join(", ")}`);
+      }
+      if (result.unpinned.length > 0) {
+        lines.push(`${action}: ${result.unpinned.join(", ")}`);
+      }
+      if (result.not_found.length > 0) {
+        lines.push(`Not found: ${result.not_found.join(", ")}`);
+      }
+      if (lines.length === 0) {
+        lines.push("No observations updated.");
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }]
       };
     }
   );
@@ -64513,6 +64546,17 @@ ${storedOutput}`;
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
   }
+  async getRecentDesktopObservations(project, limit = 3) {
+    const effectiveLimit = Math.max(1, Math.min(10, limit));
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? || '%'
+        AND tool_name LIKE 'Manual:Desktop%'
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT ?
+    `).all(project, effectiveLimit);
+    return rows.map((row) => this.mapRow(row));
+  }
   /**
    * Migration: add pinned and access_count columns to observations.
    *
@@ -64892,6 +64936,10 @@ ${storedOutput}`;
    */
   findClosestToken(token, minFrequency = 3) {
     if (token.length > 50) return null;
+    const exact = this.db.prepare(
+      `SELECT 1 FROM token_index WHERE token = ? LIMIT 1`
+    ).get(token);
+    if (exact) return null;
     const minLen = Math.max(1, token.length - 2);
     const maxLen = token.length + 2;
     const rows = this.db.prepare(
@@ -64909,6 +64957,33 @@ ${storedOutput}`;
       }
     }
     return bestToken;
+  }
+  /**
+   * Pin or unpin a list of observations.
+   * Returns which IDs were pinned, unpinned, or not found.
+   *
+   * @param ids - Observation IDs to update (positive integers only)
+   * @param pin - true to pin, false to unpin
+   */
+  async pinObservations(ids, pin) {
+    const safeIds = ids.map((id) => Math.trunc(id)).filter((id) => id > 0);
+    if (safeIds.length === 0) {
+      return { pinned: [], unpinned: [], not_found: [] };
+    }
+    const pinValue = pin ? 1 : 0;
+    this.db.prepare(
+      `UPDATE observations SET pinned = ? WHERE id IN (SELECT value FROM json_each(?))`
+    ).run(pinValue, JSON.stringify(safeIds));
+    const found = this.db.prepare(
+      `SELECT id FROM observations WHERE id IN (SELECT value FROM json_each(?))`
+    ).all(JSON.stringify(safeIds)).map((r) => r.id);
+    const foundSet = new Set(found);
+    const not_found = safeIds.filter((id) => !foundSet.has(id));
+    return {
+      pinned: pin ? found : [],
+      unpinned: pin ? [] : found,
+      not_found
+    };
   }
   close() {
     this.db.close();
@@ -64998,7 +65073,7 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.120") return "0.8.120";
+  if ("0.8.121") return "0.8.121";
   try {
     const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;

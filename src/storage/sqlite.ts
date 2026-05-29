@@ -3207,6 +3207,18 @@ export class SQLiteStorage implements ContextStorage {
     return rows.map(row => this.mapRow(row));
   }
 
+  async getRecentDesktopObservations(project: string, limit: number = 3): Promise<Observation[]> {
+    const effectiveLimit = Math.max(1, Math.min(10, limit));
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? || '%'
+        AND tool_name LIKE 'Manual:Desktop%'
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT ?
+    `).all(project, effectiveLimit) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
+  }
+
   /**
    * Migration: add pinned and access_count columns to observations.
    *
@@ -3661,6 +3673,12 @@ export class SQLiteStorage implements ContextStorage {
     // Cap token length to avoid expensive DP on very long strings
     if (token.length > 50) return null;
 
+    // If the token exists verbatim in the index it is known vocabulary — do not correct it
+    const exact = this.db.prepare(
+      `SELECT 1 FROM token_index WHERE token = ? LIMIT 1`
+    ).get(token);
+    if (exact) return null;
+
     const minLen = Math.max(1, token.length - 2);
     const maxLen = token.length + 2;
 
@@ -3682,6 +3700,43 @@ export class SQLiteStorage implements ContextStorage {
     }
 
     return bestToken;
+  }
+
+  /**
+   * Pin or unpin a list of observations.
+   * Returns which IDs were pinned, unpinned, or not found.
+   *
+   * @param ids - Observation IDs to update (positive integers only)
+   * @param pin - true to pin, false to unpin
+   */
+  async pinObservations(
+    ids: number[],
+    pin: boolean
+  ): Promise<{ pinned: number[]; unpinned: number[]; not_found: number[] }> {
+    const safeIds = ids.map(id => Math.trunc(id)).filter(id => id > 0);
+    if (safeIds.length === 0) {
+      return { pinned: [], unpinned: [], not_found: [] };
+    }
+
+    const pinValue = pin ? 1 : 0;
+    this.db.prepare(
+      `UPDATE observations SET pinned = ? WHERE id IN (SELECT value FROM json_each(?))`
+    ).run(pinValue, JSON.stringify(safeIds));
+
+    const found = (
+      this.db.prepare(
+        `SELECT id FROM observations WHERE id IN (SELECT value FROM json_each(?))`
+      ).all(JSON.stringify(safeIds)) as Array<{ id: number }>
+    ).map(r => r.id);
+
+    const foundSet = new Set(found);
+    const not_found = safeIds.filter(id => !foundSet.has(id));
+
+    return {
+      pinned: pin ? found : [],
+      unpinned: pin ? [] : found,
+      not_found,
+    };
   }
 
   close(): Promise<void> {

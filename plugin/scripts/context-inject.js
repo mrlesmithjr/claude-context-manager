@@ -2338,6 +2338,17 @@ ${storedOutput}`;
     const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => this.mapRow(row));
   }
+  async getRecentDesktopObservations(project, limit = 3) {
+    const effectiveLimit = Math.max(1, Math.min(10, limit));
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE project LIKE ? || '%'
+        AND tool_name LIKE 'Manual:Desktop%'
+      ORDER BY importance_score DESC, created_at DESC
+      LIMIT ?
+    `).all(project, effectiveLimit);
+    return rows.map((row) => this.mapRow(row));
+  }
   /**
    * Migration: add pinned and access_count columns to observations.
    *
@@ -2717,6 +2728,10 @@ ${storedOutput}`;
    */
   findClosestToken(token, minFrequency = 3) {
     if (token.length > 50) return null;
+    const exact = this.db.prepare(
+      `SELECT 1 FROM token_index WHERE token = ? LIMIT 1`
+    ).get(token);
+    if (exact) return null;
     const minLen = Math.max(1, token.length - 2);
     const maxLen = token.length + 2;
     const rows = this.db.prepare(
@@ -2734,6 +2749,33 @@ ${storedOutput}`;
       }
     }
     return bestToken;
+  }
+  /**
+   * Pin or unpin a list of observations.
+   * Returns which IDs were pinned, unpinned, or not found.
+   *
+   * @param ids - Observation IDs to update (positive integers only)
+   * @param pin - true to pin, false to unpin
+   */
+  async pinObservations(ids, pin) {
+    const safeIds = ids.map((id) => Math.trunc(id)).filter((id) => id > 0);
+    if (safeIds.length === 0) {
+      return { pinned: [], unpinned: [], not_found: [] };
+    }
+    const pinValue = pin ? 1 : 0;
+    this.db.prepare(
+      `UPDATE observations SET pinned = ? WHERE id IN (SELECT value FROM json_each(?))`
+    ).run(pinValue, JSON.stringify(safeIds));
+    const found = this.db.prepare(
+      `SELECT id FROM observations WHERE id IN (SELECT value FROM json_each(?))`
+    ).all(JSON.stringify(safeIds)).map((r) => r.id);
+    const foundSet = new Set(found);
+    const not_found = safeIds.filter((id) => !foundSet.has(id));
+    return {
+      pinned: pin ? found : [],
+      unpinned: pin ? [] : found,
+      not_found
+    };
   }
   close() {
     this.db.close();
@@ -2978,11 +3020,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.120") {
+    if (installedVersion !== "0.8.121") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.120"}
+   Source:    v${"0.8.121"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -2996,9 +3038,9 @@ var PLUGIN_VERSION_FILE = join2(homedir4(), ".claude-context", ".plugin-version"
 function checkPostUpdate() {
   try {
     const stored = existsSync(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.120") return "";
+    if (stored === "0.8.121") return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.120"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.121"}. Hooks active.`;
   } catch {
     return "";
   }
@@ -3006,7 +3048,7 @@ function checkPostUpdate() {
 function markVersionActivated() {
   try {
     mkdirSync2(join2(homedir4(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.120", "utf-8");
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.121", "utf-8");
   } catch {
   }
 }
@@ -3087,7 +3129,7 @@ async function main() {
       const statsText = await remoteMcpText(client, "context_stats", { project: input.cwd });
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1]) remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.120"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.121"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3186,7 +3228,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.120"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.121"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
@@ -3238,6 +3280,22 @@ async function main() {
           return numLabel ? `${numLabel} ${fragment} (${dateLabel})` : `${fragment} (${dateLabel})`;
         });
         lines.push(`Recent decisions: ${items.join(" \xB7 ")}`);
+      }
+    } catch {
+    }
+    try {
+      const desktopObs = await storage.getRecentDesktopObservations(input.cwd, 3);
+      if (desktopObs.length > 0) {
+        const desktopLines = desktopObs.map((obs) => {
+          const date = new Date(obs.created_at);
+          const dateLabel = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          const raw = obs.summary.replace(/\n+/g, " ");
+          const snippet = raw.length > 150 ? raw.substring(0, 150) + "..." : raw;
+          return `- [${dateLabel}] ${snippet}`;
+        });
+        lines.push("");
+        lines.push("Recent Desktop activity:");
+        lines.push(...desktopLines);
       }
     } catch {
     }
