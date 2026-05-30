@@ -464,6 +464,13 @@ release:
 		|| echo "[release] Tag v$$VERSION already exists, skipping."; \
 	git push origin "v$$VERSION" 2>/dev/null \
 		|| echo "[release] Tag already on remote, skipping."; \
+	echo "[release] Creating GitHub Release v$$VERSION..."; \
+	gh release create "v$$VERSION" \
+		--repo mrlesmithjr/claude-context-manager \
+		--title "Release: v$$VERSION" \
+		--target main \
+		--generate-notes 2>/dev/null \
+		|| echo "[release] GitHub Release already exists, skipping."; \
 	echo "[release] Syncing main back into develop to prevent future merge conflicts..."; \
 	git merge origin/main --no-edit -X ours 2>&1 \
 		&& git push origin develop \
