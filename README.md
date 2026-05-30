@@ -98,6 +98,7 @@ To enable semantic (vector) search, run `context_embed` once. It auto-installs d
 | Transcript import | Import historical sessions from Claude Code backups |
 | Web dashboard | Browse sessions, search observations, view analytics at `http://localhost:3847` |
 | PreCompact hook | Saves session state before `/compact` so context survives compaction |
+| Skill lessons | Per-skill `.lessons.md` sidecar files accumulate session experience; PreToolUse hook injects them automatically before a skill loads, no configuration required |
 | File-context injection | Before each Read, injects a compact history of prior work on that file (first read per file per session only) |
 | Privacy tags | `<private>` tag excludes content from storage; `old_string`/`new_string`/`content` fields stripped from Edit/Write |
 | Local storage | All data stays on your machine; no external APIs required |

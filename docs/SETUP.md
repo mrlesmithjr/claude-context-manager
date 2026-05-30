@@ -267,6 +267,67 @@ The web dashboard includes an **Import** tab. Use it to load a `context.db` file
 
 ---
 
+## Skill Lessons
+
+Skills can accumulate a `.lessons.md` sidecar file that records experience gathered during past sessions. When you invoke a skill, a PreToolUse hook automatically injects the sidecar content into context before the skill body loads. You will see it appear as a `PreToolUse:Skill hook additional context:` system reminder.
+
+### Prerequisites
+
+Skill lessons use a hardcoded path. The hook reads from:
+
+```
+~/.dotfiles/.claude/skills/<skill-name>/.lessons.md
+```
+
+If your skills directory is in a different location, the hook will not find the files. Skills must live in `~/.dotfiles/.claude/skills/` for injection to work.
+
+### Create your first lesson
+
+```bash
+# Create the directory if it does not exist
+mkdir -p ~/.dotfiles/.claude/skills/<skill-name>/
+
+# Create the lessons file
+# (use your preferred editor or the Edit tool)
+```
+
+The file must follow this format:
+
+```markdown
+# Lessons: <skill-name>
+
+> Accumulated experience. Load via MCP: context_skill_lessons skill:<skill-name>
+
+## 2026-05-30
+- Always pass --verbose or the tool times out silently
+- If the command returns "socket timeout", retry with --retry=3
+```
+
+After creating the file, invoke the skill normally. The lessons appear automatically as a system reminder before the skill loads.
+
+### How lessons accumulate over time
+
+Add an instruction like this to your project or global `CLAUDE.md`:
+
+```
+At session end, if a skill produced a non-obvious finding (unexpected flag, silent failure, edge case),
+use the Edit tool to append a dated bullet to ~/.dotfiles/.claude/skills/<skill-name>/.lessons.md.
+No agent or API call needed.
+```
+
+This keeps lessons current without any ceremony. The file is plain Markdown and is edited in place.
+
+### MCP tools
+
+Two MCP tools work with skill lessons:
+
+| Tool | Usage |
+|------|-------|
+| `context_skill_lessons skill:<name>` | Read a skill's accumulated `.lessons.md` on demand. Returns the file content, or a message if no lessons exist yet. |
+| `context_skill_stats` | Show aggregate skill and agent usage statistics. Without a `skill` argument: all skills sorted by invocation count. With `skill:<name>`: invocation history plus attributed lessons for that skill. |
+
+---
+
 ## Enabling semantic search
 
 Semantic (vector) search is optional and requires a one-time setup. It downloads a local embedding model (~265 MB) and generates embeddings for all existing sessions.
