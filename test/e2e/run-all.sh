@@ -71,6 +71,7 @@ run_scenario "${SCRIPT_DIR}/05-remote-capture.sh"
 run_scenario "${SCRIPT_DIR}/06-hook-remote-mode.sh"
 run_scenario "${SCRIPT_DIR}/07-marketplace-install-path.sh"
 run_scenario "${SCRIPT_DIR}/08-budget-enforcement.sh"
+run_scenario "${SCRIPT_DIR}/09-auto-write-lessons.sh"
 
 # --- Phase 3: Summary ---
 echo "============================================"
