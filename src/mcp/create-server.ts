@@ -10,8 +10,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { join as pathJoin } from 'path';
+import { homedir } from 'os';
 import { SQLiteStorage } from '../storage/sqlite.js';
+import type { SkillStat, AttributedLesson } from '../storage/sqlite.js';
 import {
   exportToAutoMemory,
   resolveMemoryDir,
@@ -279,6 +282,64 @@ function formatDecisions(decisions: Decision[]): string {
     }
     lines.push('');
   }
+  return lines.join('\n').trimEnd();
+}
+
+/**
+ * Format aggregate or detail skill stats for tool output.
+ * Aggregate view: ranked table of all skills by invocation count.
+ * Detail view: single skill with attributed lessons.
+ */
+function formatSkillStats(
+  result:
+    | { skills: SkillStat[]; total: number }
+    | { skill: SkillStat; lessons: AttributedLesson[] }
+): string {
+  if ('skills' in result) {
+    // Aggregate view
+    if (result.skills.length === 0) {
+      return 'No skill or agent invocations recorded yet.';
+    }
+    const lines: string[] = [];
+    lines.push(`Skill usage (${result.total} skills found):`);
+    lines.push('');
+    for (const s of result.skills) {
+      const lastUsed = s.last_used ? new Date(s.last_used).toISOString().substring(0, 10) : 'never';
+      const firstUsed = s.first_used ? new Date(s.first_used).toISOString().substring(0, 10) : 'unknown';
+      lines.push(`${s.skill}  (${s.tool_name ?? 'unknown'})`);
+      lines.push(`  invocations: ${s.invocation_count}  |  first: ${firstUsed}  |  last: ${lastUsed}`);
+      lines.push('');
+    }
+    return lines.join('\n').trimEnd();
+  }
+
+  // Detail view
+  const s = result.skill;
+  const lines: string[] = [];
+  lines.push(`Skill: ${s.skill}  (${s.tool_name ?? 'unknown'})`);
+  lines.push(`Invocations: ${s.invocation_count}`);
+  if (s.first_used) {
+    lines.push(`First used: ${new Date(s.first_used).toISOString().substring(0, 10)}`);
+  }
+  if (s.last_used) {
+    lines.push(`Last used:  ${new Date(s.last_used).toISOString().substring(0, 10)}`);
+  }
+
+  if (result.lessons.length === 0) {
+    lines.push('');
+    lines.push('No attributed lessons found for this skill.');
+  } else {
+    lines.push('');
+    lines.push(`Attributed lessons (${result.lessons.length}):`);
+    lines.push('');
+    for (const lesson of result.lessons) {
+      const dateStr = new Date(lesson.created_at).toISOString().substring(0, 10);
+      lines.push(`[${dateStr}] ${lesson.lesson_type}`);
+      lines.push(lesson.content);
+      lines.push('');
+    }
+  }
+
   return lines.join('\n').trimEnd();
 }
 
@@ -2021,6 +2082,69 @@ export function createContextManagerServer(
           ],
         };
       }
+    }
+  );
+
+  server.tool(
+    'context_skill_stats',
+    "Get skill and agent usage statistics. Without 'skill': aggregate view of all skills sorted by invocation count. With 'skill': detail view for one skill including attributed lessons.",
+    {
+      project: z.string().optional().describe('Project path to scope the results. Omit to search all projects.'),
+      skill: z.string().optional().describe('Filter to a single skill or agent name for detail view'),
+      days: z.number().int().min(1).optional().describe('Lookback window in days'),
+      limit: z.number().int().min(1).max(100).default(20).optional().describe('Max results in aggregate view (default: 20)'),
+    },
+    async ({ project, skill, days, limit }) => {
+      if (isProxy) {
+        return proxyToolCall('context_skill_stats', { project: np(project), skill, days, limit }, remoteUrl, remoteToken);
+      }
+
+      const db = await getDb();
+      const result = await db.getSkillStats({
+        project: np(project),
+        skill,
+        days,
+        limit: limit ?? 20,
+      });
+      const text = formatSkillStats(result);
+      return { content: [{ type: 'text' as const, text }] };
+    }
+  );
+
+  server.tool(
+    'context_skill_lessons',
+    "Read accumulated lessons for a named skill. Returns the .lessons.md sidecar content if it exists, or a message indicating no lessons have been recorded yet.",
+    {
+      skill: z.string().describe('The skill directory name (e.g. "vehicle-maintenance")'),
+    },
+    async ({ skill }) => {
+      if (isProxy) {
+        return proxyToolCall('context_skill_lessons', { skill }, remoteUrl, remoteToken);
+      }
+
+      // Allowlist: skill names are kebab-case directory names only
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(skill)) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Invalid skill name: '${skill}'. Skill names must use only lowercase letters, digits, and hyphens.`,
+          }],
+        };
+      }
+
+      const lessonsPath = pathJoin(homedir(), '.dotfiles', '.claude', 'skills', skill, '.lessons.md');
+
+      if (!existsSync(lessonsPath)) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `No lessons accumulated for '${skill}' yet.`,
+          }],
+        };
+      }
+
+      const content = readFileSync(lessonsPath, 'utf8');
+      return { content: [{ type: 'text' as const, text: content }] };
     }
   );
 

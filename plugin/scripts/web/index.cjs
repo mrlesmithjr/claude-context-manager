@@ -43475,6 +43475,7 @@ var SQLiteStorage = class {
     this.migrateAddSessionSource();
     this.migrateTagsToJson();
     this.migrateAddLessonType();
+    this.migrateAddSkillColumn();
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
     this.migrateAddMetaTable();
@@ -43552,6 +43553,7 @@ var SQLiteStorage = class {
       tags: row.tags ? row.tags.startsWith("[") ? JSON.parse(row.tags) : row.tags.split(",").filter(Boolean) : void 0,
       content_hash: row.content_hash || void 0,
       lesson_type: row.lesson_type ?? null,
+      skill: row.skill ?? null,
       pinned: row.pinned ?? 0,
       access_count: row.access_count ?? 0,
       branch: row.branch ?? null,
@@ -43616,8 +43618,8 @@ ${storedOutput}`;
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, lesson_type, branch, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, skill, branch, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tagsValue = observation.tags && observation.tags.length > 0 ? JSON.stringify(observation.tags) : null;
     const info = stmt.run(
@@ -43634,6 +43636,7 @@ ${storedOutput}`;
       tagsValue,
       contentHash,
       observation.lesson_type ?? null,
+      observation.skill ?? null,
       observation.branch ?? null,
       observation.created_at
     );
@@ -44940,6 +44943,31 @@ ${storedOutput}`;
       WHERE lesson_type IS NOT NULL
     `);
   }
+  /**
+   * Migration: add skill column for Skill/Agent/Task invocation indexing.
+   * skill stores the invoked skill or agent name extracted from tool_input at capture time.
+   * Null for all other tool types.
+   */
+  migrateAddSkillColumn() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("skill")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN skill TEXT`);
+      this.db.exec(`
+        UPDATE observations SET skill = json_extract(metadata, '$.tool_input.skill')
+          WHERE tool_name = 'Skill' AND skill IS NULL AND metadata IS NOT NULL
+      `);
+      this.db.exec(`
+        UPDATE observations SET skill = json_extract(metadata, '$.tool_input.subagent_type')
+          WHERE tool_name IN ('Agent', 'Task') AND skill IS NULL AND metadata IS NOT NULL
+      `);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_skill
+      ON observations(project, skill, created_at DESC)
+      WHERE skill IS NOT NULL
+    `);
+  }
   async getOrCreateManualSession(project) {
     const existing = this.db.prepare(`
       SELECT id, status FROM sessions
@@ -45520,6 +45548,116 @@ ${storedOutput}`;
       LIMIT ?
     `).all(project, effectiveLimit);
     return rows.map((row) => this.mapRow(row));
+  }
+  /**
+   * Aggregate or detail skill/agent usage statistics.
+   *
+   * Without `skill`: returns all skills sorted by invocation count descending.
+   * With `skill`: returns stats for that single skill plus up to 20 attributed lessons.
+   *
+   * @param options.project - Optional project path prefix filter
+   * @param options.skill - Optional skill name; when provided switches to detail mode
+   * @param options.days - Lookback window in days; when provided adds a created_at >= cutoff filter
+   * @param options.limit - Maximum rows in aggregate view (default: 20, clamped to [1, 100])
+   */
+  async getSkillStats(options) {
+    const { project, skill, days, limit = 20 } = options;
+    const effectiveLimit = Math.max(1, Math.min(100, limit));
+    const cutoffISO = days !== void 0 ? new Date(Date.now() - days * 24 * 60 * 60 * 1e3).toISOString() : null;
+    const conditions = [
+      `tool_name IN ('Skill', 'Agent', 'Task')`,
+      `skill IS NOT NULL`
+    ];
+    const params = [];
+    if (project) {
+      conditions.push(`project LIKE ? || '%'`);
+      params.push(project);
+    }
+    if (cutoffISO !== null) {
+      conditions.push(`created_at >= ?`);
+      params.push(cutoffISO);
+    }
+    const whereClause = `WHERE ${conditions.join("\n          AND ")}`;
+    if (skill) {
+      const detailParams = [...params, skill];
+      const detailSql = `
+        SELECT
+          skill,
+          MAX(tool_name) AS tool_name,
+          COUNT(*) AS invocation_count,
+          MAX(created_at) AS last_used,
+          MIN(created_at) AS first_used
+        FROM observations
+        ${whereClause}
+          AND skill = ?
+        GROUP BY skill
+      `;
+      const row = this.db.prepare(detailSql).get(...detailParams);
+      if (!row) {
+        return {
+          skill: { skill, tool_name: null, invocation_count: 0, last_used: null, first_used: null },
+          lessons: []
+        };
+      }
+      const lessonConditions = [`skill = ?`];
+      const lessonParams = [skill];
+      if (project) {
+        lessonConditions.push(`project LIKE ? || '%'`);
+        lessonParams.push(project);
+      }
+      if (cutoffISO !== null) {
+        lessonConditions.push(`created_at >= ?`);
+        lessonParams.push(cutoffISO);
+      }
+      const lessonSql = `
+        SELECT summary AS content, created_at, lesson_type
+        FROM observations
+        WHERE ${lessonConditions.join("\n          AND ")}
+          AND lesson_type IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 20
+      `;
+      const lessonRows = this.db.prepare(lessonSql).all(...lessonParams);
+      return {
+        skill: {
+          skill: row.skill,
+          tool_name: row.tool_name,
+          invocation_count: row.invocation_count,
+          last_used: row.last_used,
+          first_used: row.first_used
+        },
+        lessons: lessonRows.map((r) => ({
+          content: r.content,
+          created_at: r.created_at,
+          lesson_type: r.lesson_type
+        }))
+      };
+    }
+    const aggSql = `
+      SELECT
+        skill,
+        MAX(tool_name) AS tool_name,
+        COUNT(*) AS invocation_count,
+        MAX(created_at) AS last_used,
+        MIN(created_at) AS first_used
+      FROM observations
+      ${whereClause}
+      GROUP BY skill
+      ORDER BY invocation_count DESC
+      LIMIT ?
+    `;
+    const aggParams = [...params, effectiveLimit];
+    const rows = this.db.prepare(aggSql).all(...aggParams);
+    const countSql = `SELECT COUNT(DISTINCT skill) AS cnt FROM observations ${whereClause}`;
+    const countRow = this.db.prepare(countSql).get(...params);
+    const skills = rows.map((r) => ({
+      skill: r.skill,
+      tool_name: r.tool_name,
+      invocation_count: r.invocation_count,
+      last_used: r.last_used,
+      first_used: r.first_used
+    }));
+    return { skills, total: countRow.cnt };
   }
   /**
    * Migration: add pinned and access_count columns to observations.
@@ -46551,7 +46689,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.122") return "0.8.122";
+  if ("0.8.126") return "0.8.126";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;

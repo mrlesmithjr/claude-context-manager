@@ -979,6 +979,23 @@ export function processToolCapture(capture: ToolCapture): ProcessResult {
     output_stats: extracted.output_stats,
   };
 
+  // Extract skill name for Skill/Agent/Task invocations.
+  // Skill rows: tool_input.skill = skill name string (e.g. "vehicle-maintenance")
+  // Agent/Task rows: tool_input.subagent_type = agent name string (e.g. "code-reviewer")
+  // Some Agent rows have no subagent_type (general-purpose agents) — those get null.
+  let skill: string | null = null;
+  if (capture.tool_input && typeof capture.tool_input === 'object') {
+    const ti = capture.tool_input as Record<string, unknown>;
+    if (capture.tool_name === 'Skill' && typeof ti['skill'] === 'string') {
+      skill = ti['skill'];
+    } else if (
+      (capture.tool_name === 'Agent' || capture.tool_name === 'Task') &&
+      typeof ti['subagent_type'] === 'string'
+    ) {
+      skill = ti['subagent_type'];
+    }
+  }
+
   return {
     session_id: capture.session_id,
     project: capture.project,
@@ -991,6 +1008,7 @@ export function processToolCapture(capture: ToolCapture): ProcessResult {
     importance_score,
     tags: tags.length > 0 ? tags : undefined,
     lesson_type: lessonType ?? undefined,
+    skill: skill,
     created_at: new Date().toISOString(),
   };
 }

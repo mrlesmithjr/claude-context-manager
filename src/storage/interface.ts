@@ -101,6 +101,7 @@ export interface Observation {
   content_hash?: string; // SHA256 of summary+files_touched+stored_output, used for exact dedup
   similarity_score?: number; // Cosine similarity [0,1], only present on vector search results
   lesson_type?: string | null; // Lesson classification: 'error' | 'build_failure' | 'test_failure' | 'permission_denied' | null
+  skill?: string | null;  // Skill/Agent/Task name extracted from tool_input at capture time; null for other tools
   pinned?: number;        // 1 = exempt from decay, 0 = normal (default)
   access_count?: number;  // incremented each time observation is returned in search results
   branch?: string | null; // Git branch at capture time; null for pre-migration or non-git observations
