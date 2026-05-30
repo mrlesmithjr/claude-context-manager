@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 30, 2026 (v0.8.134)
+**Last Updated**: May 30, 2026 (v0.8.139)
 
 ---
 
@@ -33,10 +33,10 @@ This file provides guidance to Claude Code when working in this repository.
 
 **Release workflow (develop to main):**
 ```bash
-make release
+make ship
 ```
 
-`make release` opens the PR, polls CI until the `test` check passes, squash-merges, and pushes the tag. After it completes, run `/plugin update context-manager` inside Claude Code.
+`make ship` is the correct end-to-end release command. It: bumps the patch version, runs `make update` (build, commit artifacts, push develop, restart server), then runs `make release` (open PR, poll CI, squash-merge, tag, create GitHub Release). Do not run `make release` directly — it skips the build step. After `make ship` completes, run `/plugin update context-manager` inside Claude Code.
 
 ---
 
@@ -54,7 +54,7 @@ This is a TypeScript Claude Code plugin. All code changes follow the mandatory m
 - `doc-writer` - update this CLAUDE.md, README.md, and any affected skill/agent descriptions
 
 **Plugin release workflow** (after code review and doc-writer pass):
-1. `make ship` - bumps patch version, builds, commits, pushes develop, restarts server, opens PR, waits for CI, merges to main, tags
+1. `make ship` - bumps patch version + `make update` (build, commit, push develop, restart) + `make release` (PR, CI wait, squash-merge, tag, GitHub Release). This is the only correct release command; never run `make release` alone (it skips the build step).
 2. `/plugin update context-manager` inside Claude Code
 3. Restart Claude Code
 
@@ -206,8 +206,9 @@ claude-context-manager/
 |   +-- utils/reflect.ts                # buildReflection() / formatReflection() pure functions
 |   +-- utils/facts.ts                  # FACT_CATEGORIES + detectFactType() for supersession
 |   +-- utils/correct-tokens.ts         # correctTokens() fuzzy typo-correction pre-pass
+|   +-- utils/lessons.ts                # Auto-write lesson utilities for skill/agent .lessons.md sidecars
 +-- web/                            # Fastify web dashboard
-+-- test/e2e/                       # Docker-based E2E scenarios (5 scenarios, 36 assertions)
++-- test/e2e/                       # Docker-based E2E scenarios (9 scenarios)
 +-- docs/ARCHITECTURE.md            # Full design decision details
 +-- Makefile                        # All build, server, and E2E targets
 ```
@@ -261,6 +262,7 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 44 | skill-context PreToolUse hook | Fires on every `Skill` tool invocation; reads `~/.dotfiles/.claude/skills/<skill>/.lessons.md`; injects content as `additionalContext` via `hookSpecificOutput` (PreToolUse format); returns `{}` if no file, invalid name, or any error; remote mode: returns `{}` immediately (file is always local); content capped at 3000 chars, truncated at last `\n` boundary |
 | 45 | agent-context PreToolUse hook | Fires on every `Agent` tool invocation; reads `~/.dotfiles/.claude/agents/<name>.lessons.md` (from `tool_input.subagent_type`); injects content as `additionalContext` via `hookSpecificOutput`; returns `{}` if no file, invalid name, or any error; content capped at 3000 chars |
 | 46 | context_agent_lessons | Reads `~/.dotfiles/.claude/agents/<agent>.lessons.md` flat sidecar; kebab-case validation (`/^[a-z0-9][a-z0-9-]*$/`); returns file content or "No lessons accumulated for agent '<name>' yet." |
+| 47 | Auto-write lessons at Stop | `getSessionLessonCandidates()` fetches observations where `skill IS NOT NULL`, `lesson_type IS NOT NULL`, or `importance_score >= 0.65`; `writeSessionLessons()` groups by skill name, threshold: invocation importance >= 0.5 OR `lesson_type` present; appends dated bullet entries to `~/.dotfiles/.claude/agents/<name>.lessons.md` (agents) or `~/.dotfiles/.claude/skills/<name>/.lessons.md` (skills); local mode only; rule-based, no LLM calls |
 | 36 | Fuzzy search pre-pass | `token_index` table; `addTokens()` on every save (4+ char tokens, freq upsert); `findClosestToken()` exact-match short-circuit: if token exists verbatim in `token_index`, correction is skipped entirely; otherwise Levenshtein DP <= 2 edit distance, freq >= 3; `correctTokens()` skips operator-prefixed tokens; `fuzzy` param (default true) on `context_search`; correction notice in response header |
 | 37 | Progressive disclosure | `context_search` (compact, default) + `context_get` (full detail by ID) + `context_timeline` (session context around IDs); 3-layer pattern |
 | 38 | Remote parity | `remoteCreateSession` forwards branch; `GET /api/decisions/next-number` for globally sequential decision numbering in remote mode; `POST /capture/observation` forwards `lesson_type`, `skill`, `branch`, and `package` so remote captures have full field parity with local captures |
