@@ -155,10 +155,13 @@ STOP_RESPONSE=$(echo "$STOP_INPUT" | \
   HOME="$TEMP_HOME" \
   CONTEXT_MANAGER_DB="$TEST_DB" \
   CONTEXT_MANAGER_URL="" \
+  DEBUG_CONTEXT_MANAGER=1 \
   node "${HOOK_DIR}/session-end.js" 2>"$HOOK_STDERR" || echo '{}')
 HOOK_STDERR_CONTENT=$(cat "$HOOK_STDERR")
 rm -f "$HOOK_STDERR"
 info "Hook stderr: ${HOOK_STDERR_CONTENT}"
+DEBUG_LOG="${TEMP_HOME}/.claude-context/logs/stop-hook-debug.log"
+info "Hook debug log: $(cat "$DEBUG_LOG" 2>/dev/null | grep -i 'lesson\|LESSON\|ERROR\|error' | head -10 || echo '(no debug log or no matches)')"
 
 # Check if files were written anywhere on the filesystem
 info "Lessons files found in container: $(find /tmp /root -name '*.lessons.md' 2>/dev/null | head -10 || echo '(none)')"
