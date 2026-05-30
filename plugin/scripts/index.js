@@ -64842,7 +64842,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.131" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.134" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -65094,7 +65094,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.131" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.134" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -66740,6 +66740,7 @@ async function startHttpServer(options = {}) {
   const FILES_MAX = 100;
   const FILE_PATH_MAX = 512;
   const PROMPT_TEXT_MAX = 2e4;
+  const VALID_LESSON_TYPES = /* @__PURE__ */ new Set(["error", "build_failure", "test_failure", "permission_denied"]);
   function strBound(val, max, field) {
     if (typeof val !== "string" || val.length === 0) {
       throw new Error(`${field} is required and must be a non-empty string`);
@@ -66803,6 +66804,10 @@ async function startHttpServer(options = {}) {
       const rawTags = Array.isArray(body["tags"]) ? body["tags"] : void 0;
       const tags = rawTags ? rawTags.filter((t) => typeof t === "string").map((t) => t.substring(0, 32)) : void 0;
       const contentHash = typeof body["content_hash"] === "string" ? body["content_hash"].substring(0, 64) : void 0;
+      const lessonType = body["lesson_type"] === null || body["lesson_type"] === void 0 ? null : typeof body["lesson_type"] === "string" && VALID_LESSON_TYPES.has(body["lesson_type"]) ? body["lesson_type"] : null;
+      const skill = typeof body["skill"] === "string" && body["skill"].length > 0 ? body["skill"].substring(0, 256) : null;
+      const branch = typeof body["branch"] === "string" && body["branch"].length > 0 ? body["branch"].substring(0, 256) : null;
+      const pkg = typeof body["package"] === "string" && body["package"].length > 0 ? body["package"].substring(0, 256) : void 0;
       const rawCreatedAt = body["created_at"];
       const createdAt = typeof rawCreatedAt === "string" && !isNaN(Date.parse(rawCreatedAt)) ? rawCreatedAt : (/* @__PURE__ */ new Date()).toISOString();
       const normalizedProject = normalizePath(project, pathMap);
@@ -66818,7 +66823,11 @@ async function startHttpServer(options = {}) {
         importance_score: importanceScore,
         tags,
         content_hash: contentHash,
-        created_at: createdAt
+        created_at: createdAt,
+        lesson_type: lessonType,
+        skill,
+        branch,
+        package: pkg
       });
       await reply.send({ status: "ok" });
     } catch (err) {
@@ -67041,7 +67050,7 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.131") return "0.8.131";
+      if ("0.8.134") return "0.8.134";
       try {
         const pkg = JSON.parse(readFileSync5(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version) return pkg.version;
