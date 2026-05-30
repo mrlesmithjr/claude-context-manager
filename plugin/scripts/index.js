@@ -2442,6 +2442,116 @@ ${storedOutput}`;
         return rows.map((row) => this.mapRow(row));
       }
       /**
+       * Aggregate or detail skill/agent usage statistics.
+       *
+       * Without `skill`: returns all skills sorted by invocation count descending.
+       * With `skill`: returns stats for that single skill plus up to 20 attributed lessons.
+       *
+       * @param options.project - Optional project path prefix filter
+       * @param options.skill - Optional skill name; when provided switches to detail mode
+       * @param options.days - Lookback window in days; when provided adds a created_at >= cutoff filter
+       * @param options.limit - Maximum rows in aggregate view (default: 20, clamped to [1, 100])
+       */
+      async getSkillStats(options) {
+        const { project, skill, days, limit = 20 } = options;
+        const effectiveLimit = Math.max(1, Math.min(100, limit));
+        const cutoffISO = days !== void 0 ? new Date(Date.now() - days * 24 * 60 * 60 * 1e3).toISOString() : null;
+        const conditions = [
+          `tool_name IN ('Skill', 'Agent', 'Task')`,
+          `skill IS NOT NULL`
+        ];
+        const params = [];
+        if (project) {
+          conditions.push(`project LIKE ? || '%'`);
+          params.push(project);
+        }
+        if (cutoffISO !== null) {
+          conditions.push(`created_at >= ?`);
+          params.push(cutoffISO);
+        }
+        const whereClause = `WHERE ${conditions.join("\n          AND ")}`;
+        if (skill) {
+          const detailParams = [...params, skill];
+          const detailSql = `
+        SELECT
+          skill,
+          MAX(tool_name) AS tool_name,
+          COUNT(*) AS invocation_count,
+          MAX(created_at) AS last_used,
+          MIN(created_at) AS first_used
+        FROM observations
+        ${whereClause}
+          AND skill = ?
+        GROUP BY skill
+      `;
+          const row = this.db.prepare(detailSql).get(...detailParams);
+          if (!row) {
+            return {
+              skill: { skill, tool_name: null, invocation_count: 0, last_used: null, first_used: null },
+              lessons: []
+            };
+          }
+          const lessonConditions = [`skill = ?`];
+          const lessonParams = [skill];
+          if (project) {
+            lessonConditions.push(`project LIKE ? || '%'`);
+            lessonParams.push(project);
+          }
+          if (cutoffISO !== null) {
+            lessonConditions.push(`created_at >= ?`);
+            lessonParams.push(cutoffISO);
+          }
+          const lessonSql = `
+        SELECT summary AS content, created_at, lesson_type
+        FROM observations
+        WHERE ${lessonConditions.join("\n          AND ")}
+          AND lesson_type IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 20
+      `;
+          const lessonRows = this.db.prepare(lessonSql).all(...lessonParams);
+          return {
+            skill: {
+              skill: row.skill,
+              tool_name: row.tool_name,
+              invocation_count: row.invocation_count,
+              last_used: row.last_used,
+              first_used: row.first_used
+            },
+            lessons: lessonRows.map((r) => ({
+              content: r.content,
+              created_at: r.created_at,
+              lesson_type: r.lesson_type
+            }))
+          };
+        }
+        const aggSql = `
+      SELECT
+        skill,
+        MAX(tool_name) AS tool_name,
+        COUNT(*) AS invocation_count,
+        MAX(created_at) AS last_used,
+        MIN(created_at) AS first_used
+      FROM observations
+      ${whereClause}
+      GROUP BY skill
+      ORDER BY invocation_count DESC
+      LIMIT ?
+    `;
+        const aggParams = [...params, effectiveLimit];
+        const rows = this.db.prepare(aggSql).all(...aggParams);
+        const countSql = `SELECT COUNT(DISTINCT skill) AS cnt FROM observations ${whereClause}`;
+        const countRow = this.db.prepare(countSql).get(...params);
+        const skills = rows.map((r) => ({
+          skill: r.skill,
+          tool_name: r.tool_name,
+          invocation_count: r.invocation_count,
+          last_used: r.last_used,
+          first_used: r.first_used
+        }));
+        return { skills, total: countRow.cnt };
+      }
+      /**
        * Migration: add pinned and access_count columns to observations.
        *
        * pinned = 1 marks an observation as exempt from time-weighted decay.
@@ -64730,7 +64840,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.123" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.124" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -64852,6 +64962,49 @@ function formatDecisions(decisions) {
   }
   return lines.join("\n").trimEnd();
 }
+function formatSkillStats(result) {
+  if ("skills" in result) {
+    if (result.skills.length === 0) {
+      return "No skill or agent invocations recorded yet.";
+    }
+    const lines2 = [];
+    lines2.push(`Skill usage (${result.total} skills found):`);
+    lines2.push("");
+    for (const s2 of result.skills) {
+      const lastUsed = s2.last_used ? new Date(s2.last_used).toISOString().substring(0, 10) : "never";
+      const firstUsed = s2.first_used ? new Date(s2.first_used).toISOString().substring(0, 10) : "unknown";
+      lines2.push(`${s2.skill}  (${s2.tool_name ?? "unknown"})`);
+      lines2.push(`  invocations: ${s2.invocation_count}  |  first: ${firstUsed}  |  last: ${lastUsed}`);
+      lines2.push("");
+    }
+    return lines2.join("\n").trimEnd();
+  }
+  const s = result.skill;
+  const lines = [];
+  lines.push(`Skill: ${s.skill}  (${s.tool_name ?? "unknown"})`);
+  lines.push(`Invocations: ${s.invocation_count}`);
+  if (s.first_used) {
+    lines.push(`First used: ${new Date(s.first_used).toISOString().substring(0, 10)}`);
+  }
+  if (s.last_used) {
+    lines.push(`Last used:  ${new Date(s.last_used).toISOString().substring(0, 10)}`);
+  }
+  if (result.lessons.length === 0) {
+    lines.push("");
+    lines.push("No attributed lessons found for this skill.");
+  } else {
+    lines.push("");
+    lines.push(`Attributed lessons (${result.lessons.length}):`);
+    lines.push("");
+    for (const lesson of result.lessons) {
+      const dateStr = new Date(lesson.created_at).toISOString().substring(0, 10);
+      lines.push(`[${dateStr}] ${lesson.lesson_type}`);
+      lines.push(lesson.content);
+      lines.push("");
+    }
+  }
+  return lines.join("\n").trimEnd();
+}
 function mergeWithRRF(ftsResults, vecResults, k = 60) {
   const scores = /* @__PURE__ */ new Map();
   const obsMap = /* @__PURE__ */ new Map();
@@ -64939,7 +65092,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.123" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.124" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -66131,6 +66284,30 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
     }
   );
   server.tool(
+    "context_skill_stats",
+    "Get skill and agent usage statistics. Without 'skill': aggregate view of all skills sorted by invocation count. With 'skill': detail view for one skill including attributed lessons.",
+    {
+      project: external_exports.string().optional().describe("Project path to scope the results. Omit to search all projects."),
+      skill: external_exports.string().optional().describe("Filter to a single skill or agent name for detail view"),
+      days: external_exports.number().int().min(1).optional().describe("Lookback window in days"),
+      limit: external_exports.number().int().min(1).max(100).default(20).optional().describe("Max results in aggregate view (default: 20)")
+    },
+    async ({ project, skill, days, limit }) => {
+      if (isProxy) {
+        return proxyToolCall("context_skill_stats", { project: np(project), skill, days, limit }, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const result = await db.getSkillStats({
+        project: np(project),
+        skill,
+        days,
+        limit: limit ?? 20
+      });
+      const text = formatSkillStats(result);
+      return { content: [{ type: "text", text }] };
+    }
+  );
+  server.tool(
     "context_reflect",
     "Analyze accumulated observations for a project and identify recurring patterns. Groups high-importance observations by tag, finds themes appearing across 3 or more observations, and produces proposed CLAUDE.md additions. No LLM inference -- deterministic pattern matching only.",
     {
@@ -66831,7 +67008,7 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.123") return "0.8.123";
+      if ("0.8.124") return "0.8.124";
       try {
         const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version) return pkg.version;

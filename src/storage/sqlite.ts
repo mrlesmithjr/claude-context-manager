@@ -35,6 +35,31 @@ import type {
 
 const DEFAULT_DB_PATH = path.join(homedir(), '.claude-context', 'context.db');
 
+// Skill/agent usage statistics returned by getSkillStats().
+export interface SkillStat {
+  skill: string;
+  tool_name: string | null;
+  invocation_count: number;
+  last_used: string | null;
+  first_used: string | null;
+}
+
+// A lesson observation attributed to a specific skill (detail view).
+export interface AttributedLesson {
+  content: string;
+  created_at: string;
+  lesson_type: string;
+}
+
+// Internal row shape returned from the SQL aggregate query in getSkillStats().
+interface SkillStatRow {
+  skill: string;
+  tool_name: string;
+  invocation_count: number;
+  last_used: string | null;
+  first_used: string | null;
+}
+
 // Sentinel summary written by closeStaleActiveSessions() — used by getStats() to count GC-closed sessions.
 // Kept as a shared constant so writer and reader cannot diverge silently across refactors.
 const GC_SESSION_SUMMARY = '[Session ended abnormally - no Stop hook fired]';
@@ -3258,6 +3283,146 @@ export class SQLiteStorage implements ContextStorage {
       LIMIT ?
     `).all(project, effectiveLimit) as Array<Record<string, unknown>>;
     return rows.map(row => this.mapRow(row));
+  }
+
+  /**
+   * Aggregate or detail skill/agent usage statistics.
+   *
+   * Without `skill`: returns all skills sorted by invocation count descending.
+   * With `skill`: returns stats for that single skill plus up to 20 attributed lessons.
+   *
+   * @param options.project - Optional project path prefix filter
+   * @param options.skill - Optional skill name; when provided switches to detail mode
+   * @param options.days - Lookback window in days; when provided adds a created_at >= cutoff filter
+   * @param options.limit - Maximum rows in aggregate view (default: 20, clamped to [1, 100])
+   */
+  async getSkillStats(options: {
+    project?: string;
+    skill?: string;
+    days?: number;
+    limit?: number;
+  }): Promise<
+    | { skills: SkillStat[]; total: number }
+    | { skill: SkillStat; lessons: AttributedLesson[] }
+  > {
+    const { project, skill, days, limit = 20 } = options;
+    const effectiveLimit = Math.max(1, Math.min(100, limit));
+
+    const cutoffISO = days !== undefined
+      ? new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+      : null;
+
+    // Build the aggregate query (used for both modes)
+    const conditions: string[] = [
+      `tool_name IN ('Skill', 'Agent', 'Task')`,
+      `skill IS NOT NULL`,
+    ];
+    const params: unknown[] = [];
+
+    if (project) {
+      conditions.push(`project LIKE ? || '%'`);
+      params.push(project);
+    }
+    if (cutoffISO !== null) {
+      conditions.push(`created_at >= ?`);
+      params.push(cutoffISO);
+    }
+
+    const whereClause = `WHERE ${conditions.join('\n          AND ')}`;
+
+    if (skill) {
+      // Detail mode: single skill + attributed lessons
+      const detailParams = [...params, skill];
+      const detailSql = `
+        SELECT
+          skill,
+          MAX(tool_name) AS tool_name,
+          COUNT(*) AS invocation_count,
+          MAX(created_at) AS last_used,
+          MIN(created_at) AS first_used
+        FROM observations
+        ${whereClause}
+          AND skill = ?
+        GROUP BY skill
+      `;
+      const row = this.db.prepare(detailSql).get(...detailParams) as SkillStatRow | undefined;
+
+      if (!row) {
+        return {
+          skill: { skill, tool_name: null, invocation_count: 0, last_used: null, first_used: null },
+          lessons: [],
+        };
+      }
+
+      const lessonConditions: string[] = [`skill = ?`];
+      const lessonParams: unknown[] = [skill];
+      if (project) {
+        lessonConditions.push(`project LIKE ? || '%'`);
+        lessonParams.push(project);
+      }
+      if (cutoffISO !== null) {
+        lessonConditions.push(`created_at >= ?`);
+        lessonParams.push(cutoffISO);
+      }
+      const lessonSql = `
+        SELECT summary AS content, created_at, lesson_type
+        FROM observations
+        WHERE ${lessonConditions.join('\n          AND ')}
+          AND lesson_type IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 20
+      `;
+      const lessonRows = this.db.prepare(lessonSql).all(...lessonParams) as Array<{
+        content: string;
+        created_at: string;
+        lesson_type: string;
+      }>;
+
+      return {
+        skill: {
+          skill: row.skill,
+          tool_name: row.tool_name,
+          invocation_count: row.invocation_count,
+          last_used: row.last_used,
+          first_used: row.first_used,
+        },
+        lessons: lessonRows.map(r => ({
+          content: r.content,
+          created_at: r.created_at,
+          lesson_type: r.lesson_type,
+        })),
+      };
+    }
+
+    // Aggregate mode: all skills
+    const aggSql = `
+      SELECT
+        skill,
+        MAX(tool_name) AS tool_name,
+        COUNT(*) AS invocation_count,
+        MAX(created_at) AS last_used,
+        MIN(created_at) AS first_used
+      FROM observations
+      ${whereClause}
+      GROUP BY skill
+      ORDER BY invocation_count DESC
+      LIMIT ?
+    `;
+    const aggParams = [...params, effectiveLimit];
+    const rows = this.db.prepare(aggSql).all(...aggParams) as SkillStatRow[];
+
+    const countSql = `SELECT COUNT(DISTINCT skill) AS cnt FROM observations ${whereClause}`;
+    const countRow = this.db.prepare(countSql).get(...params) as { cnt: number };
+
+    const skills: SkillStat[] = rows.map(r => ({
+      skill: r.skill,
+      tool_name: r.tool_name,
+      invocation_count: r.invocation_count,
+      last_used: r.last_used,
+      first_used: r.first_used,
+    }));
+
+    return { skills, total: countRow.cnt };
   }
 
   /**

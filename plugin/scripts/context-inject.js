@@ -2378,6 +2378,116 @@ ${storedOutput}`;
     return rows.map((row) => this.mapRow(row));
   }
   /**
+   * Aggregate or detail skill/agent usage statistics.
+   *
+   * Without `skill`: returns all skills sorted by invocation count descending.
+   * With `skill`: returns stats for that single skill plus up to 20 attributed lessons.
+   *
+   * @param options.project - Optional project path prefix filter
+   * @param options.skill - Optional skill name; when provided switches to detail mode
+   * @param options.days - Lookback window in days; when provided adds a created_at >= cutoff filter
+   * @param options.limit - Maximum rows in aggregate view (default: 20, clamped to [1, 100])
+   */
+  async getSkillStats(options) {
+    const { project, skill, days, limit = 20 } = options;
+    const effectiveLimit = Math.max(1, Math.min(100, limit));
+    const cutoffISO = days !== void 0 ? new Date(Date.now() - days * 24 * 60 * 60 * 1e3).toISOString() : null;
+    const conditions = [
+      `tool_name IN ('Skill', 'Agent', 'Task')`,
+      `skill IS NOT NULL`
+    ];
+    const params = [];
+    if (project) {
+      conditions.push(`project LIKE ? || '%'`);
+      params.push(project);
+    }
+    if (cutoffISO !== null) {
+      conditions.push(`created_at >= ?`);
+      params.push(cutoffISO);
+    }
+    const whereClause = `WHERE ${conditions.join("\n          AND ")}`;
+    if (skill) {
+      const detailParams = [...params, skill];
+      const detailSql = `
+        SELECT
+          skill,
+          MAX(tool_name) AS tool_name,
+          COUNT(*) AS invocation_count,
+          MAX(created_at) AS last_used,
+          MIN(created_at) AS first_used
+        FROM observations
+        ${whereClause}
+          AND skill = ?
+        GROUP BY skill
+      `;
+      const row = this.db.prepare(detailSql).get(...detailParams);
+      if (!row) {
+        return {
+          skill: { skill, tool_name: null, invocation_count: 0, last_used: null, first_used: null },
+          lessons: []
+        };
+      }
+      const lessonConditions = [`skill = ?`];
+      const lessonParams = [skill];
+      if (project) {
+        lessonConditions.push(`project LIKE ? || '%'`);
+        lessonParams.push(project);
+      }
+      if (cutoffISO !== null) {
+        lessonConditions.push(`created_at >= ?`);
+        lessonParams.push(cutoffISO);
+      }
+      const lessonSql = `
+        SELECT summary AS content, created_at, lesson_type
+        FROM observations
+        WHERE ${lessonConditions.join("\n          AND ")}
+          AND lesson_type IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 20
+      `;
+      const lessonRows = this.db.prepare(lessonSql).all(...lessonParams);
+      return {
+        skill: {
+          skill: row.skill,
+          tool_name: row.tool_name,
+          invocation_count: row.invocation_count,
+          last_used: row.last_used,
+          first_used: row.first_used
+        },
+        lessons: lessonRows.map((r) => ({
+          content: r.content,
+          created_at: r.created_at,
+          lesson_type: r.lesson_type
+        }))
+      };
+    }
+    const aggSql = `
+      SELECT
+        skill,
+        MAX(tool_name) AS tool_name,
+        COUNT(*) AS invocation_count,
+        MAX(created_at) AS last_used,
+        MIN(created_at) AS first_used
+      FROM observations
+      ${whereClause}
+      GROUP BY skill
+      ORDER BY invocation_count DESC
+      LIMIT ?
+    `;
+    const aggParams = [...params, effectiveLimit];
+    const rows = this.db.prepare(aggSql).all(...aggParams);
+    const countSql = `SELECT COUNT(DISTINCT skill) AS cnt FROM observations ${whereClause}`;
+    const countRow = this.db.prepare(countSql).get(...params);
+    const skills = rows.map((r) => ({
+      skill: r.skill,
+      tool_name: r.tool_name,
+      invocation_count: r.invocation_count,
+      last_used: r.last_used,
+      first_used: r.first_used
+    }));
+    return { skills, total: countRow.cnt };
+  }
+  /**
    * Migration: add pinned and access_count columns to observations.
    *
    * pinned = 1 marks an observation as exempt from time-weighted decay.
@@ -3049,11 +3159,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.123") {
+    if (installedVersion !== "0.8.124") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.123"}
+   Source:    v${"0.8.124"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -3067,9 +3177,9 @@ var PLUGIN_VERSION_FILE = join2(homedir4(), ".claude-context", ".plugin-version"
 function checkPostUpdate() {
   try {
     const stored = existsSync(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.123") return "";
+    if (stored === "0.8.124") return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.123"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.124"}. Hooks active.`;
   } catch {
     return "";
   }
@@ -3077,7 +3187,7 @@ function checkPostUpdate() {
 function markVersionActivated() {
   try {
     mkdirSync2(join2(homedir4(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.123", "utf-8");
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.124", "utf-8");
   } catch {
   }
 }
@@ -3158,7 +3268,7 @@ async function main() {
       const statsText = await remoteMcpText(client, "context_stats", { project: input.cwd });
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1]) remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.123"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.124"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3257,7 +3367,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.123"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.124"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
