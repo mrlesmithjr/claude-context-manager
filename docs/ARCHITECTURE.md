@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: May 27, 2026 (v0.8.103)
+**Last Updated**: May 29, 2026 (v0.8.125)
 
 ---
 
@@ -407,6 +407,7 @@ CREATE TABLE observations (
   importance TEXT DEFAULT 'medium',   -- 'high' | 'medium' | 'low'
   importance_score REAL DEFAULT 0.5,  -- 0.0 to 1.0
   lesson_type TEXT,                   -- Error lesson category (v0.8.x)
+  skill TEXT,                         -- Skill or agent name invoked; backfilled from metadata.tool_input (v0.8.123)
   pinned INTEGER DEFAULT 0,           -- 1 = exempt from decay and compaction
   access_count INTEGER DEFAULT 0,     -- Incremented on context_get fetches
   superseded_by INTEGER REFERENCES observations(id) ON DELETE SET NULL, -- Fact supersession
@@ -428,6 +429,9 @@ CREATE INDEX idx_observations_tags
   ON observations(tags) WHERE tags IS NOT NULL;  -- partial index (v0.8.6)
 CREATE INDEX idx_observations_project_hash
   ON observations(project, content_hash) WHERE content_hash IS NOT NULL;  -- partial index for exact dedup
+CREATE INDEX idx_observations_skill
+  ON observations(project, skill, created_at DESC)
+  WHERE skill IS NOT NULL;            -- partial index for skill stats queries (v0.8.123)
 
 -- User prompts table
 CREATE TABLE user_prompts (
@@ -893,6 +897,22 @@ The Stop hook calls `extractDecisions()` to scan assistant messages for architec
 `detectLessonType()` in `src/capture/processor.ts` classifies error-related observations (restricted to Write, Edit, NotebookEdit, MultiEdit, and Bash with non-zero exit codes) into lesson categories. The `lesson_type` is stored on the observation.
 
 `context_lessons` returns observations where `lesson_type IS NOT NULL`, filterable by `lesson_type`, `query`, and `days`. The `lesson:` prefix in `context_search` also routes to lessons. Lesson observations are exempt from memory decay.
+
+### Skill Lessons
+
+The skill lessons system provides a two-tier design for accumulating and retrieving per-skill experience across sessions.
+
+**DB evidence layer (`skill` column):** A nullable `skill TEXT` column on `observations` records which skill or agent was invoked for each Skill, Agent, and Task tool row. At migration time, existing rows are backfilled from `metadata.tool_input.skill` (Skill rows) and `metadata.tool_input.subagent_type` (Agent/Task rows). New rows are populated at capture time. A partial index on `(project, skill, created_at DESC) WHERE skill IS NOT NULL` keeps skill stats queries fast.
+
+`context_skill_stats` queries this column in two modes:
+- **Aggregate** (no `skill` param): returns all distinct skill names sorted by `invocation_count DESC` plus a `total` distinct-skill count. Supports `project`, `days`, and `limit` filters.
+- **Detail** (`skill` param): returns stats for a single skill plus attributed lesson observations (`lesson_type IS NOT NULL AND skill = ?`).
+
+**Sidecar layer (`.lessons.md` files):** Lessons written by doc-writer live in `~/.dotfiles/.claude/skills/<skill-name>/.lessons.md`. These are human-editable Markdown files outside the database.
+
+`context_skill_lessons` reads the sidecar for a named skill directly from the filesystem. The skill name is validated against `/^[a-z0-9][a-z0-9-]*$/` before path construction to prevent traversal. If the sidecar does not exist, the tool returns `"No lessons accumulated for '<name>' yet."`.
+
+The two tiers are complementary: the DB layer surfaces invocation frequency and error patterns (objective, automatically populated); the sidecar layer surfaces human-curated experience (subjective, doc-writer maintained).
 
 ### Reflection
 

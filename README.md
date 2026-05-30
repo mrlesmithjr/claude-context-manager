@@ -145,6 +145,8 @@ Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server 
 | `context_export` | Trigger auto-memory export manually |
 | `context_memory_audit` | Scan for orphaned memory directories when launch points change |
 | `context_memory_consolidate` | Migrate orphaned memories to parent project (dry-run by default) |
+| `context_skill_stats` | Aggregate or detail skill and agent usage statistics. Without `skill`: all skills sorted by invocation count. With `skill`: stats for one skill plus attributed lessons. Supports `project`, `days`, and `limit` filters. |
+| `context_skill_lessons` | Read accumulated lessons for a named skill from its `.lessons.md` sidecar file. Returns the file content or a message if no lessons exist yet. Skill name must be kebab-case. |
 
 ---
 
@@ -334,7 +336,7 @@ flowchart LR
 
     subgraph out["Outputs"]
         MEM["Auto-Memory\ncontext-manager-activity.md"]
-        MCP["MCP Tools\ncontext_search · context_get · context_timeline\ncontext_list · context_stats · context_add\ncontext_lessons · context_decisions · context_reflect\ncontext_embed · context_prune · context_vacuum\ncontext_export · context_memory_audit · +more"]
+        MCP["MCP Tools\ncontext_search · context_get · context_timeline\ncontext_list · context_stats · context_add\ncontext_lessons · context_decisions · context_reflect\ncontext_embed · context_prune · context_vacuum\ncontext_export · context_memory_audit\ncontext_skill_stats · context_skill_lessons · +more"]
         WEB["Web Dashboard\nlocalhost:3847"]
     end
 

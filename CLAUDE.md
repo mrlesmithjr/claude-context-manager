@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 27, 2026 (v0.8.103)
+**Last Updated**: May 29, 2026 (v0.8.125)
 
 ---
 
@@ -106,7 +106,8 @@ npm run import -- --source <path> --project <target> [--filter <text>] [--dry-ru
 **MCP Tools:**
 `context_add`, `context_stats`, `context_list`, `context_search`, `context_semantic_search`, `context_embed`,
 `context_vacuum`, `context_export`, `context_memory_audit`, `context_memory_consolidate`, `context_pin`, `context_prune`,
-`context_get`, `context_timeline`, `context_lessons`, `context_decisions`, `context_reflect`
+`context_get`, `context_timeline`, `context_lessons`, `context_decisions`, `context_reflect`,
+`context_skill_stats`, `context_skill_lessons`
 
 ---
 
@@ -252,6 +253,9 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 33 | Decisions entity | `decisions` table with FTS5 triggers; `extractDecisions()` in Stop hook; `context_decisions` tool; `decision:` prefix in `context_search` |
 | 34 | Error lessons | `lesson_type` column; `detectLessonType()` in processor; restricted to Write/Edit/NotebookEdit/MultiEdit + Bash errors; `context_lessons` tool; `lesson:` prefix in `context_search` |
 | 35 | context_reflect | `buildReflection()` / `formatReflection()` pure functions in `reflect.ts`; groups by first tag; 3+ obs threshold; lesson groups get "Avoid:" prefix; Stop hook reminder at 7+ days / 10+ high-importance obs |
+| 41 | Skill invocation tracking | `skill TEXT` nullable column on `observations`; backfilled from `metadata.tool_input.skill` (Skill rows) and `metadata.tool_input.subagent_type` (Agent/Task rows); partial index on `(project, skill, created_at DESC) WHERE skill IS NOT NULL` |
+| 42 | context_skill_stats | Aggregate mode (no `skill` param): all skills sorted by `invocation_count DESC`, returns `{ skills[], total }`; detail mode (`skill` param): single skill stats + attributed lessons (`lesson_type IS NOT NULL`); supports `project`, `days`, `limit` |
+| 43 | context_skill_lessons | Reads `~/.dotfiles/.claude/skills/<skill>/.lessons.md` sidecar; kebab-case validation (`/^[a-z0-9][a-z0-9-]*$/`); returns file content or "No lessons accumulated for '<name>' yet." |
 | 36 | Fuzzy search pre-pass | `token_index` table; `addTokens()` on every save (4+ char tokens, freq upsert); `findClosestToken()` exact-match short-circuit: if token exists verbatim in `token_index`, correction is skipped entirely; otherwise Levenshtein DP <= 2 edit distance, freq >= 3; `correctTokens()` skips operator-prefixed tokens; `fuzzy` param (default true) on `context_search`; correction notice in response header |
 | 37 | Progressive disclosure | `context_search` (compact, default) + `context_get` (full detail by ID) + `context_timeline` (session context around IDs); 3-layer pattern |
 | 38 | Remote parity | `remoteCreateSession` forwards branch; `GET /api/decisions/next-number` for globally sequential decision numbering in remote mode |
