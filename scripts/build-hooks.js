@@ -157,7 +157,8 @@ await build({
     'plugin/hooks/capture-prompt.ts',
     'plugin/hooks/capture-tool.ts',
     'plugin/hooks/session-end.ts',
-    'plugin/hooks/file-context.ts'
+    'plugin/hooks/file-context.ts',
+    'plugin/hooks/skill-context.ts'
   ],
 });
 console.log('[build-hooks] Hooks built');
