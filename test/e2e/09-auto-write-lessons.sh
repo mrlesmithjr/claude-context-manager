@@ -161,7 +161,8 @@ HOOK_STDERR_CONTENT=$(cat "$HOOK_STDERR")
 rm -f "$HOOK_STDERR"
 info "Hook stderr: ${HOOK_STDERR_CONTENT}"
 DEBUG_LOG="${TEMP_HOME}/.claude-context/logs/stop-hook-debug.log"
-info "Hook debug log: $(cat "$DEBUG_LOG" 2>/dev/null | grep -i 'lesson\|LESSON\|ERROR\|error' | head -10 || echo '(no debug log or no matches)')"
+info "TEMP_HOME tree: $(find "$TEMP_HOME" -type f 2>/dev/null | head -20)"
+info "Hook debug log (full): $(cat "$DEBUG_LOG" 2>/dev/null || echo '(not created)')"
 
 # Check if files were written anywhere on the filesystem
 info "Lessons files found in container: $(find /tmp /root -name '*.lessons.md' 2>/dev/null | head -10 || echo '(none)')"
