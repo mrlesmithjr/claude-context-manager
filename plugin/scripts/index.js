@@ -66341,6 +66341,37 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
     }
   );
   server.tool(
+    "context_agent_lessons",
+    "Read accumulated lessons for a named agent. Returns the .lessons.md sidecar content if it exists, or a message indicating no lessons have been recorded yet.",
+    {
+      agent: external_exports.string().describe('The agent name in kebab-case (e.g. "code-reviewer")')
+    },
+    async ({ agent }) => {
+      if (isProxy) {
+        return proxyToolCall("context_agent_lessons", { agent }, remoteUrl, remoteToken);
+      }
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(agent)) {
+        return {
+          content: [{
+            type: "text",
+            text: `Invalid agent name: '${agent}'. Agent names must use only lowercase letters, digits, and hyphens.`
+          }]
+        };
+      }
+      const lessonsPath = pathJoin(homedir5(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
+      if (!existsSync5(lessonsPath)) {
+        return {
+          content: [{
+            type: "text",
+            text: `No lessons accumulated for agent '${agent}' yet.`
+          }]
+        };
+      }
+      const content = readFileSync4(lessonsPath, "utf8");
+      return { content: [{ type: "text", text: content }] };
+    }
+  );
+  server.tool(
     "context_reflect",
     "Analyze accumulated observations for a project and identify recurring patterns. Groups high-importance observations by tag, finds themes appearing across 3 or more observations, and produces proposed CLAUDE.md additions. No LLM inference -- deterministic pattern matching only.",
     {

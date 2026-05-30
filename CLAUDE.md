@@ -107,7 +107,7 @@ npm run import -- --source <path> --project <target> [--filter <text>] [--dry-ru
 `context_add`, `context_stats`, `context_list`, `context_search`, `context_semantic_search`, `context_embed`,
 `context_vacuum`, `context_export`, `context_memory_audit`, `context_memory_consolidate`, `context_pin`, `context_prune`,
 `context_get`, `context_timeline`, `context_lessons`, `context_decisions`, `context_reflect`,
-`context_skill_stats`, `context_skill_lessons`
+`context_skill_stats`, `context_skill_lessons`, `context_agent_lessons`
 
 ---
 
@@ -181,6 +181,7 @@ claude-context-manager/
 |   |   +-- capture-prompt.ts       # UserPromptSubmit + periodic checkpoint
 |   |   +-- file-context.ts         # PreToolUse: inject file history before Read
 |   |   +-- skill-context.ts       # PreToolUse: inject .lessons.md sidecar before Skill invocation
+|   |   +-- agent-context.ts       # PreToolUse: inject .lessons.md sidecar before Agent invocation
 |   |   +-- capture-tool.ts         # PostToolUse
 |   |   +-- session-end.ts          # Stop
 |   +-- scripts/                    # Built hooks (committed to git for marketplace installs)
@@ -258,6 +259,8 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 42 | context_skill_stats | Aggregate mode (no `skill` param): all skills sorted by `invocation_count DESC`, returns `{ skills[], total }`; detail mode (`skill` param): single skill stats + attributed lessons (`lesson_type IS NOT NULL`); supports `project`, `days`, `limit` |
 | 43 | context_skill_lessons | Reads `~/.dotfiles/.claude/skills/<skill>/.lessons.md` sidecar; kebab-case validation (`/^[a-z0-9][a-z0-9-]*$/`); returns file content or "No lessons accumulated for '<name>' yet." |
 | 44 | skill-context PreToolUse hook | Fires on every `Skill` tool invocation; reads `~/.dotfiles/.claude/skills/<skill>/.lessons.md`; injects content as `additionalContext` via `hookSpecificOutput` (PreToolUse format); returns `{}` if no file, invalid name, or any error; remote mode: returns `{}` immediately (file is always local); content capped at 3000 chars, truncated at last `\n` boundary |
+| 45 | agent-context PreToolUse hook | Fires on every `Agent` tool invocation; reads `~/.dotfiles/.claude/agents/<name>.lessons.md` (from `tool_input.subagent_type`); injects content as `additionalContext` via `hookSpecificOutput`; returns `{}` if no file, invalid name, or any error; content capped at 3000 chars |
+| 46 | context_agent_lessons | Reads `~/.dotfiles/.claude/agents/<agent>.lessons.md` flat sidecar; kebab-case validation (`/^[a-z0-9][a-z0-9-]*$/`); returns file content or "No lessons accumulated for agent '<name>' yet." |
 | 36 | Fuzzy search pre-pass | `token_index` table; `addTokens()` on every save (4+ char tokens, freq upsert); `findClosestToken()` exact-match short-circuit: if token exists verbatim in `token_index`, correction is skipped entirely; otherwise Levenshtein DP <= 2 edit distance, freq >= 3; `correctTokens()` skips operator-prefixed tokens; `fuzzy` param (default true) on `context_search`; correction notice in response header |
 | 37 | Progressive disclosure | `context_search` (compact, default) + `context_get` (full detail by ID) + `context_timeline` (session context around IDs); 3-layer pattern |
 | 38 | Remote parity | `remoteCreateSession` forwards branch; `GET /api/decisions/next-number` for globally sequential decision numbering in remote mode; `POST /capture/observation` forwards `lesson_type`, `skill`, `branch`, and `package` so remote captures have full field parity with local captures |
@@ -274,6 +277,7 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | `UserPromptSubmit` | Capture prompts, periodic checkpoint export | 5s | - |
 | `PreToolUse` | Inject file history before Read | 5s | `Read` |
 | `PreToolUse` | Inject `.lessons.md` sidecar before Skill invocation | 5s | `Skill` |
+| `PreToolUse` | Inject `.lessons.md` sidecar before Agent invocation | 5s | `Agent` |
 | `PostToolUse` | Capture tool interactions | 5s | `*` |
 | `Stop` | Save summary, extract insights, export to auto-memory | 10s | - |
 | `PreCompact` | Save session before /compact | 10s | - |
