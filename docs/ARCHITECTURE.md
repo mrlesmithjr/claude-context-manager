@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: May 30, 2026 (v0.8.128)
+**Last Updated**: May 30, 2026 (v0.8.134)
 
 ---
 
@@ -1119,4 +1119,4 @@ See `web/server/index.ts` for server implementation and `web/client/index.html` 
 
 ---
 
-**Last Updated**: May 30, 2026 (v0.8.128)
+**Last Updated**: May 30, 2026 (v0.8.134)

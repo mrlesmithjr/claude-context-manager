@@ -60754,7 +60754,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.134" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.135" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -61006,7 +61006,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.134" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.135" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -62245,6 +62245,37 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           content: [{
             type: "text",
             text: `No lessons accumulated for '${skill}' yet.`
+          }]
+        };
+      }
+      const content = (0, import_fs5.readFileSync)(lessonsPath, "utf8");
+      return { content: [{ type: "text", text: content }] };
+    }
+  );
+  server.tool(
+    "context_agent_lessons",
+    "Read accumulated lessons for a named agent. Returns the .lessons.md sidecar content if it exists, or a message indicating no lessons have been recorded yet.",
+    {
+      agent: external_exports.string().describe('The agent name in kebab-case (e.g. "code-reviewer")')
+    },
+    async ({ agent }) => {
+      if (isProxy) {
+        return proxyToolCall("context_agent_lessons", { agent }, remoteUrl, remoteToken);
+      }
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(agent)) {
+        return {
+          content: [{
+            type: "text",
+            text: `Invalid agent name: '${agent}'. Agent names must use only lowercase letters, digits, and hyphens.`
+          }]
+        };
+      }
+      const lessonsPath = (0, import_path5.join)((0, import_os4.homedir)(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
+      if (!(0, import_fs5.existsSync)(lessonsPath)) {
+        return {
+          content: [{
+            type: "text",
+            text: `No lessons accumulated for agent '${agent}' yet.`
           }]
         };
       }
@@ -65312,7 +65343,7 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path7.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.134") return "0.8.134";
+  if ("0.8.135") return "0.8.135";
   try {
     const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path7.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;

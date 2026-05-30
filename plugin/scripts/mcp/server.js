@@ -34635,7 +34635,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.134" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.135" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -34887,7 +34887,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.134" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.135" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -36126,6 +36126,37 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           content: [{
             type: "text",
             text: `No lessons accumulated for '${skill}' yet.`
+          }]
+        };
+      }
+      const content = readFileSync4(lessonsPath, "utf8");
+      return { content: [{ type: "text", text: content }] };
+    }
+  );
+  server.tool(
+    "context_agent_lessons",
+    "Read accumulated lessons for a named agent. Returns the .lessons.md sidecar content if it exists, or a message indicating no lessons have been recorded yet.",
+    {
+      agent: external_exports.string().describe('The agent name in kebab-case (e.g. "code-reviewer")')
+    },
+    async ({ agent }) => {
+      if (isProxy) {
+        return proxyToolCall("context_agent_lessons", { agent }, remoteUrl, remoteToken);
+      }
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(agent)) {
+        return {
+          content: [{
+            type: "text",
+            text: `Invalid agent name: '${agent}'. Agent names must use only lowercase letters, digits, and hyphens.`
+          }]
+        };
+      }
+      const lessonsPath = pathJoin(homedir5(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
+      if (!existsSync5(lessonsPath)) {
+        return {
+          content: [{
+            type: "text",
+            text: `No lessons accumulated for agent '${agent}' yet.`
           }]
         };
       }
