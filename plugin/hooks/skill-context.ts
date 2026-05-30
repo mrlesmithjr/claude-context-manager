@@ -89,13 +89,9 @@ async function main() {
   // even when Claude Code was launched from the Dock, Spotlight, or after a reboot.
   loadDotEnv();
 
-  // Remote mode: .lessons.md files are always local. Return empty response immediately.
-  const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
-  if (remoteUrl) {
-    debugLog('REMOTE_MODE_SKIP', { reason: 'skill-context injection skipped in remote mode' });
-    await writeResponse({});
-    return;
-  }
+  // Unlike other hooks, remote mode does NOT skip here.
+  // .lessons.md files live on the local machine alongside the skill directories,
+  // not on the remote server. We can always read them directly with fs.readFileSync.
 
   try {
     const inputStr = await readStdin();

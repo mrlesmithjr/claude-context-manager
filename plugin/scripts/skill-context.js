@@ -112,12 +112,6 @@ function capContent(content, cap) {
 }
 async function main() {
   loadDotEnv();
-  const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
-  if (remoteUrl) {
-    debugLog("REMOTE_MODE_SKIP", { reason: "skill-context injection skipped in remote mode" });
-    await writeResponse({});
-    return;
-  }
   try {
     const inputStr = await readStdin();
     let rawInput;
