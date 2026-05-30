@@ -127,16 +127,38 @@ fi
 
 info "DB seeded, invoking session-end.js in local mode..."
 
+# --- Pre-flight diagnostics ---
+# Verify the seed DB has the expected observations before invoking the hook.
+DIAG_OBS_COUNT=$(HOME="$TEMP_HOME" CONTEXT_MANAGER_DB="$TEST_DB" node --input-type=module <<EOF
+import { SQLiteStorage } from '/app/dist/storage/sqlite.js';
+const storage = new SQLiteStorage(process.env.CONTEXT_MANAGER_DB);
+await storage.initialize();
+const obs = await storage.getSessionObservations('${HOOK_SESSION}');
+const candidates = storage.getSessionLessonCandidates('${HOOK_SESSION}');
+await storage.close();
+console.log(JSON.stringify({ obs: obs.length, candidates: candidates.length }));
+EOF
+)
+info "Pre-flight: DB check: ${DIAG_OBS_COUNT}"
+
+# Verify os.homedir() respects HOME override in this environment.
+DIAG_HOMEDIR=$(HOME="$TEMP_HOME" node -e "const os = require('os'); console.log(os.homedir())")
+info "Pre-flight: homedir() with HOME override = ${DIAG_HOMEDIR}"
+
 # --- 09a: session-end.js returns status:complete ---
 info "09a: session-end.js returns {\"status\":\"complete\"} in local mode"
 
 STOP_INPUT=$(printf '{"session_id":"%s","cwd":"%s"}' "$HOOK_SESSION" "$HOOK_PROJECT")
 
+HOOK_STDERR=$(mktemp)
 STOP_RESPONSE=$(echo "$STOP_INPUT" | \
   HOME="$TEMP_HOME" \
   CONTEXT_MANAGER_DB="$TEST_DB" \
   CONTEXT_MANAGER_URL="" \
-  node "${HOOK_DIR}/session-end.js" 2>/dev/null || echo '{}')
+  node "${HOOK_DIR}/session-end.js" 2>"$HOOK_STDERR" || echo '{}')
+HOOK_STDERR_CONTENT=$(cat "$HOOK_STDERR")
+rm -f "$HOOK_STDERR"
+info "Hook stderr: ${HOOK_STDERR_CONTENT}"
 
 STOP_STATUS=$(echo "$STOP_RESPONSE" | jq -r '.status // ""')
 if [ "$STOP_STATUS" = "complete" ]; then
