@@ -269,6 +269,8 @@ The web dashboard includes an **Import** tab. Use it to load a `context.db` file
 
 ## Skill Lessons
 
+> **Not the same as the web UI Lessons tab.** The web UI "Lessons" tab shows error lessons automatically captured from failed tool calls (Bash errors, build failures, permission denials) and stored in the database. Skill lessons are per-skill `.lessons.md` sidecar files that record curated experience — what worked, what failed, workarounds — and are injected before a skill loads. The two systems are independent.
+
 Skills can accumulate a `.lessons.md` sidecar file that records experience gathered during past sessions. When you invoke a skill, a PreToolUse hook automatically injects the sidecar content into context before the skill body loads. You will see it appear as a `PreToolUse:Skill hook additional context:` system reminder.
 
 ### Prerequisites

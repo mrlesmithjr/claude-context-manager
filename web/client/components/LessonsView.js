@@ -283,6 +283,11 @@ export class LessonsView extends Component {
 
     return html`
       <div>
+        <!-- Clarification note -->
+        <div class="bg-gray-800/50 border border-gray-700 rounded-lg px-4 py-3 mb-4 text-sm text-gray-400">
+          These are <span class="text-gray-300 font-medium">error lessons</span> — automatically captured from failed tool calls (Bash errors, build failures, permission denials). They are stored in the database.
+          For per-skill experience notes that inject before a skill loads, see <span class="text-gray-300 font-mono text-xs">context_skill_lessons</span> and the <span class="text-gray-300 font-mono text-xs">.lessons.md</span> sidecar files described in the setup guide.
+        </div>
         <!-- Controls -->
         <div class="bg-gray-800 rounded-lg p-4 mb-6">
           <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
