@@ -127,6 +127,11 @@ fi
 
 info "DB seeded, invoking session-end.js in local mode..."
 
+# Verify env vars are actually visible inside a node subprocess
+SUBPROCESS_ENV=$(HOME="$TEMP_HOME" CONTEXT_MANAGER_DB="$TEST_DB" CONTEXT_MANAGER_URL="" node -e \
+  "console.log(JSON.stringify({DB:process.env.CONTEXT_MANAGER_DB,URL:process.env.CONTEXT_MANAGER_URL,HOME:process.env.HOME}))")
+info "Subprocess env check: ${SUBPROCESS_ENV}"
+
 # --- Pre-flight diagnostics ---
 # Verify the seed DB has the expected observations (no file writes here).
 DIAG=$(HOME="$TEMP_HOME" CONTEXT_MANAGER_DB="$TEST_DB" node --input-type=module <<EOF
