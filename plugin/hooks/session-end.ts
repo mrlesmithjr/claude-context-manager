@@ -44,6 +44,7 @@ import {
   type TranscriptLine,
 } from '../../src/utils/transcript.js';
 import { getCurrentBranch } from '../../src/utils/git.js';
+import { writeSessionLessons } from '../../src/utils/lessons.js';
 
 // Injected by esbuild banner. True when plugin/node_modules/ native binaries are present.
 declare const __nativeModulesAvailable: boolean;
@@ -655,6 +656,23 @@ async function main() {
       }
     } catch (exportError) {
       console.error('[context-manager] Auto-memory export failed:', exportError);
+    }
+
+    // Auto-write lessons for agents and skills invoked this session
+    try {
+      const lessonCandidates = (storage as SQLiteStorage).getSessionLessonCandidates(input.session_id);
+      if (lessonCandidates.length > 0) {
+        const lessonResult = writeSessionLessons(lessonCandidates);
+        if (lessonResult.written.length > 0) {
+          debugLog('LESSONS_WRITTEN', { written: lessonResult.written });
+          console.error(`[context-manager] Wrote lessons for: ${lessonResult.written.join(', ')}`);
+        }
+        if (lessonResult.errors.length > 0) {
+          debugLog('LESSONS_ERRORS', { errors: lessonResult.errors });
+        }
+      }
+    } catch (lessonError) {
+      debugLog('LESSONS_WRITE_ERROR', { error: String(lessonError) });
     }
 
     // Reflection reminder: suggest running context_reflect when enough high-importance
