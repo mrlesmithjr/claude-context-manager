@@ -9,8 +9,9 @@
 # CONTEXT_MANAGER_URL is NOT set. We never set that var in this scenario.
 #
 # Key env overrides used throughout:
-#   HOME          - Points to TEMP_HOME so lessons write to temp, not ~/.dotfiles
-#   CONTEXT_MANAGER_DB - Points to our freshly seeded test DB
+#   HOME          - Points to TEMP_HOME; homedir() uses this, so SQLiteStorage opens
+#                   $TEMP_HOME/.claude-context/context.db (the constructor default)
+#                   and lesson files write to $TEMP_HOME/.dotfiles/...
 #   CONTEXT_MANAGER_URL - Explicitly unset to guarantee local mode
 #
 # Precondition: /app/dist/ contains compiled TypeScript (tsc output).
@@ -24,7 +25,9 @@ HOOK_DIR="/app/plugin/scripts"
 
 TS=$(date +%s%N 2>/dev/null || date +%s)
 TEMP_HOME="/tmp/e2e-lessons-home-${TS}"
-TEST_DB="${TEMP_HOME}/test-lessons.db"
+# SQLiteStorage constructor uses DEFAULT_DB_PATH = homedir()/.claude-context/context.db
+# with no env var fallback, so seed directly into that path.
+TEST_DB="${TEMP_HOME}/.claude-context/context.db"
 # Use a cwd under TEMP_HOME; homedir() === TEMP_HOME at runtime so this is in ALLOWED_PROJECT_ROOTS
 HOOK_PROJECT="${TEMP_HOME}/projects/test-lessons"
 HOOK_SESSION="e2e-lessons-session-${TS}"
@@ -51,10 +54,12 @@ mkdir -p "${TEMP_HOME}/.dotfiles/.claude/skills"
 # --- Seed the DB with a session and three skill-attributed observations ---
 # We use the tsc-compiled dist/ output directly (not the esbuild bundle) because
 # we are importing SQLiteStorage as a module, not running a standalone hook script.
-HOME="$TEMP_HOME" CONTEXT_MANAGER_DB="$TEST_DB" node --input-type=module <<EOF
+HOME="$TEMP_HOME" node --input-type=module <<EOF
 import { SQLiteStorage } from '/app/dist/storage/sqlite.js';
 
-const storage = new SQLiteStorage(process.env.CONTEXT_MANAGER_DB);
+// Seed directly into the default path: homedir()/.claude-context/context.db
+// This matches what session-end.js opens (constructor default, no env var fallback).
+const storage = new SQLiteStorage();
 await storage.initialize();
 
 // Create the session first
@@ -125,30 +130,7 @@ if [ $SEED_EXIT -ne 0 ]; then
   scenario_result "09-auto-write-lessons"
 fi
 
-info "DB seeded, invoking session-end.js in local mode..."
-
-# Verify env vars are actually visible inside a node subprocess
-SUBPROCESS_ENV=$(HOME="$TEMP_HOME" CONTEXT_MANAGER_DB="$TEST_DB" CONTEXT_MANAGER_URL="" node -e \
-  "console.log(JSON.stringify({DB:process.env.CONTEXT_MANAGER_DB,URL:process.env.CONTEXT_MANAGER_URL,HOME:process.env.HOME}))")
-info "Subprocess env check: ${SUBPROCESS_ENV}"
-
-# --- Pre-flight diagnostics ---
-# Verify the seed DB has the expected observations (no file writes here).
-DIAG=$(HOME="$TEMP_HOME" CONTEXT_MANAGER_DB="$TEST_DB" node --input-type=module <<EOF
-import { SQLiteStorage } from '/app/dist/storage/sqlite.js';
-const storage = new SQLiteStorage(process.env.CONTEXT_MANAGER_DB);
-await storage.initialize();
-const obs = await storage.getSessionObservations('${HOOK_SESSION}');
-const candidates = storage.getSessionLessonCandidates('${HOOK_SESSION}');
-await storage.close();
-console.log(JSON.stringify({
-  obs: obs.length,
-  candidates: candidates.length,
-  skills: candidates.map(c => ({ skill: c.skill, tool: c.tool_name, score: c.importance_score, lesson: c.lesson_type })),
-}));
-EOF
-)
-info "Pre-flight DB: ${DIAG}"
+info "DB seeded into default path (${TEST_DB}), invoking session-end.js in local mode..."
 
 # --- 09a: session-end.js returns status:complete ---
 info "09a: session-end.js returns {\"status\":\"complete\"} in local mode"
@@ -158,20 +140,11 @@ STOP_INPUT=$(printf '{"session_id":"%s","cwd":"%s"}' "$HOOK_SESSION" "$HOOK_PROJ
 HOOK_STDERR=$(mktemp)
 STOP_RESPONSE=$(echo "$STOP_INPUT" | \
   HOME="$TEMP_HOME" \
-  CONTEXT_MANAGER_DB="$TEST_DB" \
   CONTEXT_MANAGER_URL="" \
-  DEBUG_CONTEXT_MANAGER=1 \
   node "${HOOK_DIR}/session-end.js" 2>"$HOOK_STDERR" || echo '{}')
 HOOK_STDERR_CONTENT=$(cat "$HOOK_STDERR")
 rm -f "$HOOK_STDERR"
 info "Hook stderr: ${HOOK_STDERR_CONTENT}"
-DEBUG_LOG="${TEMP_HOME}/.claude-context/logs/stop-hook-debug.log"
-info "TEMP_HOME tree: $(find "$TEMP_HOME" -type f 2>/dev/null | head -20)"
-info "Hook debug log (full): $(cat "$DEBUG_LOG" 2>/dev/null || echo '(not created)')"
-
-# Check if files were written anywhere on the filesystem
-info "Lessons files found in container: $(find /tmp /root -name '*.lessons.md' 2>/dev/null | head -10 || echo '(none)')"
-info "Hook wrote lessons: $(echo "$HOOK_STDERR_CONTENT" | grep -c 'Wrote lessons' || echo '0') (expected 1 from hook stderr)"
 
 STOP_STATUS=$(echo "$STOP_RESPONSE" | jq -r '.status // ""')
 if [ "$STOP_STATUS" = "complete" ]; then
@@ -234,7 +207,6 @@ info "09i: re-running session-end.js on same session+date appends, not duplicate
 
 STOP_RESPONSE2=$(echo "$STOP_INPUT" | \
   HOME="$TEMP_HOME" \
-  CONTEXT_MANAGER_DB="$TEST_DB" \
   CONTEXT_MANAGER_URL="" \
   node "${HOOK_DIR}/session-end.js" 2>/dev/null || echo '{}')
 
