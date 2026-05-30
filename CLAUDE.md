@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 30, 2026 (v0.8.128)
+**Last Updated**: May 30, 2026 (v0.8.134)
 
 ---
 
@@ -260,7 +260,7 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 44 | skill-context PreToolUse hook | Fires on every `Skill` tool invocation; reads `~/.dotfiles/.claude/skills/<skill>/.lessons.md`; injects content as `additionalContext` via `hookSpecificOutput` (PreToolUse format); returns `{}` if no file, invalid name, or any error; remote mode: returns `{}` immediately (file is always local); content capped at 3000 chars, truncated at last `\n` boundary |
 | 36 | Fuzzy search pre-pass | `token_index` table; `addTokens()` on every save (4+ char tokens, freq upsert); `findClosestToken()` exact-match short-circuit: if token exists verbatim in `token_index`, correction is skipped entirely; otherwise Levenshtein DP <= 2 edit distance, freq >= 3; `correctTokens()` skips operator-prefixed tokens; `fuzzy` param (default true) on `context_search`; correction notice in response header |
 | 37 | Progressive disclosure | `context_search` (compact, default) + `context_get` (full detail by ID) + `context_timeline` (session context around IDs); 3-layer pattern |
-| 38 | Remote parity | `remoteCreateSession` forwards branch; `GET /api/decisions/next-number` for globally sequential decision numbering in remote mode |
+| 38 | Remote parity | `remoteCreateSession` forwards branch; `GET /api/decisions/next-number` for globally sequential decision numbering in remote mode; `POST /capture/observation` forwards `lesson_type`, `skill`, `branch`, and `package` so remote captures have full field parity with local captures |
 | 39 | searchByTag json_each | Tag matching uses `EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)` instead of LIKE; correct for JSON array storage |
 | 40 | Tiered recall budget | `getWithinBudget()` and `getSessionObservations()` filter `is_compacted = 0 AND superseded_by IS NULL` before allocation. `getWithinBudget()` applies `applyDecay()` before ranking (consistent with `search()`), then two-pass allocation: 60% of effective budget to observations with `applyDecay(obs) >= 0.65` (decayed score, not base score); remaining 40% filled by everything else sorted by decayed score. Both passes use `continue` on overflow so smaller items later in the sort are not skipped. `context_list` reads `CONTEXT_MANAGER_TOKEN_BUDGET` and stops adding sessions when `TOKEN_BUDGET * 0.8` is reached; always shows at least 1 session; appends `[Budget: showing N of M sessions. Use context_search for full history.]` when truncated. `budget_fill_tokens` stat (renamed from `typical_injection_tokens`) reports the actual token count `getWithinBudget()` would return for the configured budget. |
 
