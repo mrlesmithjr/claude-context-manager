@@ -151,8 +151,8 @@ function extractBashStats(output: string): Record<string, unknown> | undefined {
   const stats: Record<string, unknown> = {};
 
   // Try to extract exit code from output (if present)
-  // Common pattern: "exit code: 0" or "Exit code: 1"
-  const exitCodeMatch = output.match(/exit\s+code:\s*(\d+)/i);
+  // Common pattern: "Exit code N" (Claude Code format) or "exit code: N"
+  const exitCodeMatch = output.match(/exit\s+code:?\s*(\d+)/i);
   if (exitCodeMatch && exitCodeMatch[1]) {
     stats.exit_code = parseInt(exitCodeMatch[1], 10);
   }
@@ -485,10 +485,10 @@ const ACTION_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit', 'MultiEdit']);
 
 /**
  * Parse exit code from tool response string.
- * Claude Code embeds "exit code: N" in Bash responses when the command fails.
+ * Claude Code embeds "Exit code N" in Bash responses when the command fails.
  */
 function parseExitCode(toolResponse: string): number | null {
-  const match = toolResponse.match(/exit\s+code:\s*(\d+)/i);
+  const match = toolResponse.match(/exit\s+code:?\s*(\d+)/i);
   if (match?.[1]) {
     const code = parseInt(match[1], 10);
     return isNaN(code) ? null : code;

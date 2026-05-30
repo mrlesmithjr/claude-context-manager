@@ -3289,7 +3289,7 @@ function extractFilesTouched(toolName, toolInput, toolResponse) {
 }
 function extractBashStats(output) {
   const stats = {};
-  const exitCodeMatch = output.match(/exit\s+code:\s*(\d+)/i);
+  const exitCodeMatch = output.match(/exit\s+code:?\s*(\d+)/i);
   if (exitCodeMatch && exitCodeMatch[1]) {
     stats.exit_code = parseInt(exitCodeMatch[1], 10);
   }
@@ -3495,7 +3495,7 @@ function isNearNoOpEdit(input) {
 }
 var ACTION_TOOLS = /* @__PURE__ */ new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
 function parseExitCode(toolResponse) {
-  const match = toolResponse.match(/exit\s+code:\s*(\d+)/i);
+  const match = toolResponse.match(/exit\s+code:?\s*(\d+)/i);
   if (match?.[1]) {
     const code = parseInt(match[1], 10);
     return isNaN(code) ? null : code;

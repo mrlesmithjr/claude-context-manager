@@ -345,6 +345,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
   const FILES_MAX = 100;
   const FILE_PATH_MAX = 512;
   const PROMPT_TEXT_MAX = 20000;
+  const VALID_LESSON_TYPES = new Set(['error', 'build_failure', 'test_failure', 'permission_denied']);
 
   /** Assert a field is a non-empty string within the given length limit. */
   function strBound(val: unknown, max: number, field: string): string {
@@ -452,6 +453,28 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           ? body['content_hash'].substring(0, 64)
           : undefined;
 
+      const lessonType =
+        body['lesson_type'] === null || body['lesson_type'] === undefined
+          ? null
+          : typeof body['lesson_type'] === 'string' && VALID_LESSON_TYPES.has(body['lesson_type'])
+            ? body['lesson_type']
+            : null;
+
+      const skill =
+        typeof body['skill'] === 'string' && body['skill'].length > 0
+          ? body['skill'].substring(0, 256)
+          : null;
+
+      const branch =
+        typeof body['branch'] === 'string' && body['branch'].length > 0
+          ? body['branch'].substring(0, 256)
+          : null;
+
+      const pkg =
+        typeof body['package'] === 'string' && body['package'].length > 0
+          ? body['package'].substring(0, 256)
+          : undefined;
+
       // Validate ISO 8601 timestamp before accepting — arbitrary strings would corrupt date sorting
       const rawCreatedAt = body['created_at'];
       const createdAt =
@@ -474,6 +497,10 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         tags,
         content_hash: contentHash,
         created_at: createdAt,
+        lesson_type: lessonType,
+        skill,
+        branch,
+        package: pkg,
       });
 
       await reply.send({ status: 'ok' });
