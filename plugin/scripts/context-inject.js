@@ -303,6 +303,7 @@ var SQLiteStorage = class {
     this.migrateAddSessionSource();
     this.migrateTagsToJson();
     this.migrateAddLessonType();
+    this.migrateAddSkillColumn();
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
     this.migrateAddMetaTable();
@@ -380,6 +381,7 @@ var SQLiteStorage = class {
       tags: row.tags ? row.tags.startsWith("[") ? JSON.parse(row.tags) : row.tags.split(",").filter(Boolean) : void 0,
       content_hash: row.content_hash || void 0,
       lesson_type: row.lesson_type ?? null,
+      skill: row.skill ?? null,
       pinned: row.pinned ?? 0,
       access_count: row.access_count ?? 0,
       branch: row.branch ?? null,
@@ -444,8 +446,8 @@ ${storedOutput}`;
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, lesson_type, branch, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, skill, branch, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tagsValue = observation.tags && observation.tags.length > 0 ? JSON.stringify(observation.tags) : null;
     const info = stmt.run(
@@ -462,6 +464,7 @@ ${storedOutput}`;
       tagsValue,
       contentHash,
       observation.lesson_type ?? null,
+      observation.skill ?? null,
       observation.branch ?? null,
       observation.created_at
     );
@@ -1768,6 +1771,31 @@ ${storedOutput}`;
       WHERE lesson_type IS NOT NULL
     `);
   }
+  /**
+   * Migration: add skill column for Skill/Agent/Task invocation indexing.
+   * skill stores the invoked skill or agent name extracted from tool_input at capture time.
+   * Null for all other tool types.
+   */
+  migrateAddSkillColumn() {
+    const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+    const columnNames = new Set(columns.map((c) => c.name));
+    if (!columnNames.has("skill")) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN skill TEXT`);
+      this.db.exec(`
+        UPDATE observations SET skill = json_extract(metadata, '$.tool_input.skill')
+          WHERE tool_name = 'Skill' AND skill IS NULL AND metadata IS NOT NULL
+      `);
+      this.db.exec(`
+        UPDATE observations SET skill = json_extract(metadata, '$.tool_input.subagent_type')
+          WHERE tool_name IN ('Agent', 'Task') AND skill IS NULL AND metadata IS NOT NULL
+      `);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_skill
+      ON observations(project, skill, created_at DESC)
+      WHERE skill IS NOT NULL
+    `);
+  }
   async getOrCreateManualSession(project) {
     const existing = this.db.prepare(`
       SELECT id, status FROM sessions
@@ -3021,11 +3049,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.122") {
+    if (installedVersion !== "0.8.123") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.122"}
+   Source:    v${"0.8.123"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -3039,9 +3067,9 @@ var PLUGIN_VERSION_FILE = join2(homedir4(), ".claude-context", ".plugin-version"
 function checkPostUpdate() {
   try {
     const stored = existsSync(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.122") return "";
+    if (stored === "0.8.123") return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.122"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.123"}. Hooks active.`;
   } catch {
     return "";
   }
@@ -3049,7 +3077,7 @@ function checkPostUpdate() {
 function markVersionActivated() {
   try {
     mkdirSync2(join2(homedir4(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.122", "utf-8");
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.123", "utf-8");
   } catch {
   }
 }
@@ -3130,7 +3158,7 @@ async function main() {
       const statsText = await remoteMcpText(client, "context_stats", { project: input.cwd });
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1]) remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.122"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.123"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3229,7 +3257,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.122"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.123"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

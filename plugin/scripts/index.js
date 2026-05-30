@@ -367,6 +367,7 @@ var init_sqlite = __esm({
         this.migrateAddSessionSource();
         this.migrateTagsToJson();
         this.migrateAddLessonType();
+        this.migrateAddSkillColumn();
         this.migrateAddDecisionsTable();
         this.migrateAddPinnedAndAccessCount();
         this.migrateAddMetaTable();
@@ -444,6 +445,7 @@ var init_sqlite = __esm({
           tags: row.tags ? row.tags.startsWith("[") ? JSON.parse(row.tags) : row.tags.split(",").filter(Boolean) : void 0,
           content_hash: row.content_hash || void 0,
           lesson_type: row.lesson_type ?? null,
+          skill: row.skill ?? null,
           pinned: row.pinned ?? 0,
           access_count: row.access_count ?? 0,
           branch: row.branch ?? null,
@@ -508,8 +510,8 @@ ${storedOutput}`;
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, lesson_type, branch, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, skill, branch, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
         const tagsValue = observation.tags && observation.tags.length > 0 ? JSON.stringify(observation.tags) : null;
         const info = stmt.run(
@@ -526,6 +528,7 @@ ${storedOutput}`;
           tagsValue,
           contentHash,
           observation.lesson_type ?? null,
+          observation.skill ?? null,
           observation.branch ?? null,
           observation.created_at
         );
@@ -1830,6 +1833,31 @@ ${storedOutput}`;
       CREATE INDEX IF NOT EXISTS idx_observations_lesson_type
       ON observations(project, lesson_type, created_at DESC)
       WHERE lesson_type IS NOT NULL
+    `);
+      }
+      /**
+       * Migration: add skill column for Skill/Agent/Task invocation indexing.
+       * skill stores the invoked skill or agent name extracted from tool_input at capture time.
+       * Null for all other tool types.
+       */
+      migrateAddSkillColumn() {
+        const columns = this.db.prepare("PRAGMA table_info(observations)").all();
+        const columnNames = new Set(columns.map((c) => c.name));
+        if (!columnNames.has("skill")) {
+          this.db.exec(`ALTER TABLE observations ADD COLUMN skill TEXT`);
+          this.db.exec(`
+        UPDATE observations SET skill = json_extract(metadata, '$.tool_input.skill')
+          WHERE tool_name = 'Skill' AND skill IS NULL AND metadata IS NOT NULL
+      `);
+          this.db.exec(`
+        UPDATE observations SET skill = json_extract(metadata, '$.tool_input.subagent_type')
+          WHERE tool_name IN ('Agent', 'Task') AND skill IS NULL AND metadata IS NOT NULL
+      `);
+        }
+        this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_skill
+      ON observations(project, skill, created_at DESC)
+      WHERE skill IS NOT NULL
     `);
       }
       async getOrCreateManualSession(project) {
@@ -64702,7 +64730,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.122" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.123" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -64911,7 +64939,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.122" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.123" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -66803,7 +66831,7 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.122") return "0.8.122";
+      if ("0.8.123") return "0.8.123";
       try {
         const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version) return pkg.version;

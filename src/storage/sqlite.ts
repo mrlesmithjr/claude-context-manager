@@ -376,6 +376,9 @@ export class SQLiteStorage implements ContextStorage {
     // Migration: add lesson_type column for error lesson classification
     this.migrateAddLessonType();
 
+    // Migration: add skill column for Skill/Agent/Task invocation indexing
+    this.migrateAddSkillColumn();
+
     // Migration: add decisions table for first-class decision tracking
     this.migrateAddDecisionsTable();
 
@@ -485,6 +488,7 @@ export class SQLiteStorage implements ContextStorage {
       ) : undefined,
       content_hash: (row.content_hash as string) || undefined,
       lesson_type: (row.lesson_type as string | null) ?? null,
+      skill: (row.skill as string | null) ?? null,
       pinned: (row.pinned as number) ?? 0,
       access_count: (row.access_count as number) ?? 0,
       branch: (row.branch as string | null) ?? null,
@@ -579,8 +583,8 @@ export class SQLiteStorage implements ContextStorage {
       INSERT INTO observations (
         session_id, project, package, tool_name, summary,
         files_touched, metadata, token_estimate,
-        importance, importance_score, tags, content_hash, lesson_type, branch, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        importance, importance_score, tags, content_hash, lesson_type, skill, branch, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const tagsValue = observation.tags && observation.tags.length > 0
@@ -601,6 +605,7 @@ export class SQLiteStorage implements ContextStorage {
       tagsValue,
       contentHash,
       observation.lesson_type ?? null,
+      observation.skill ?? null,
       observation.branch ?? null,
       observation.created_at
     );
@@ -2470,6 +2475,42 @@ export class SQLiteStorage implements ContextStorage {
       CREATE INDEX IF NOT EXISTS idx_observations_lesson_type
       ON observations(project, lesson_type, created_at DESC)
       WHERE lesson_type IS NOT NULL
+    `);
+  }
+
+  /**
+   * Migration: add skill column for Skill/Agent/Task invocation indexing.
+   * skill stores the invoked skill or agent name extracted from tool_input at capture time.
+   * Null for all other tool types.
+   */
+  private migrateAddSkillColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('skill')) {
+      this.db.exec(`ALTER TABLE observations ADD COLUMN skill TEXT`);
+
+      // Backfill existing Skill rows from metadata JSON blob.
+      this.db.exec(`
+        UPDATE observations SET skill = json_extract(metadata, '$.tool_input.skill')
+          WHERE tool_name = 'Skill' AND skill IS NULL AND metadata IS NOT NULL
+      `);
+
+      // Backfill existing Agent/Task rows from metadata JSON blob.
+      this.db.exec(`
+        UPDATE observations SET skill = json_extract(metadata, '$.tool_input.subagent_type')
+          WHERE tool_name IN ('Agent', 'Task') AND skill IS NULL AND metadata IS NOT NULL
+      `);
+    }
+
+    // Always ensure index exists — idempotent via IF NOT EXISTS.
+    // Running this outside the column guard ensures the index is created even when
+    // the column was added in a previous run but the index was never created
+    // (e.g., a partial migration or a DB migrated before this index was introduced).
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_observations_skill
+      ON observations(project, skill, created_at DESC)
+      WHERE skill IS NOT NULL
     `);
   }
 
