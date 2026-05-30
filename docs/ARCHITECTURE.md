@@ -3,7 +3,7 @@
 Detailed technical architecture for claude-context-manager.
 
 **Status**: ACTIVE
-**Last Updated**: May 29, 2026 (v0.8.125)
+**Last Updated**: May 30, 2026 (v0.8.128)
 
 ---
 
@@ -74,6 +74,25 @@ Claude Code plugins can register hooks for lifecycle events. We use three:
 - **Purpose**: Inject a compact history of prior work on the file being read, so Claude has file-level context before seeing the current contents
 - **Scope**: Only fires on the first Read per file per session, and only when at least 2 prior observations exist for that file
 - **Response Format**: Returns prior observations as `additionalContext` injected before the Read output
+
+#### PreToolUse Hook (`skill-context.ts`)
+- **Trigger**: Before any `Skill` tool invocation (5s timeout)
+- **Matcher**: `Skill`
+- **Purpose**: Inject accumulated `.lessons.md` content before Claude loads a skill, so learned corrections and workarounds are available alongside the skill's SKILL.md in the same invocation
+- **Path read**: `~/.dotfiles/.claude/skills/<skill>/.lessons.md` — the sidecar file written by doc-writer
+- **Response format**:
+  ```json
+  {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "additionalContext": "<lessons content>"
+    }
+  }
+  ```
+- **No-lessons fallback**: Returns `{}` when the lessons file does not exist — never blocks a Skill invocation
+- **Content cap**: 3000 characters; truncated at the last `\n` boundary before the cap to avoid mid-sentence cuts
+- **Remote mode**: Returns `{}` immediately — `.lessons.md` files are always local; no remote fetch is attempted
+- **Error handling**: Any error (invalid skill name, read failure, parse error) returns `{}` silently
 
 #### PostToolUse Hook (`capture-tool.ts`)
 - **Trigger**: After every tool execution (Read, Write, Bash, etc.) — 5s timeout
@@ -1100,4 +1119,4 @@ See `web/server/index.ts` for server implementation and `web/client/index.html` 
 
 ---
 
-**Last Updated**: May 27, 2026 (v0.8.103)
+**Last Updated**: May 30, 2026 (v0.8.128)
