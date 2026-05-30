@@ -129,17 +129,34 @@ info "DB seeded, invoking session-end.js in local mode..."
 
 # --- Pre-flight diagnostics ---
 # Verify the seed DB has the expected observations before invoking the hook.
-DIAG_OBS_COUNT=$(HOME="$TEMP_HOME" CONTEXT_MANAGER_DB="$TEST_DB" node --input-type=module <<EOF
+DIAG=$(HOME="$TEMP_HOME" CONTEXT_MANAGER_DB="$TEST_DB" node --input-type=module <<EOF
 import { SQLiteStorage } from '/app/dist/storage/sqlite.js';
+import { writeSessionLessons } from '/app/dist/utils/lessons.js';
+import { existsSync } from 'fs';
+import { homedir } from 'os';
+
 const storage = new SQLiteStorage(process.env.CONTEXT_MANAGER_DB);
 await storage.initialize();
 const obs = await storage.getSessionObservations('${HOOK_SESSION}');
 const candidates = storage.getSessionLessonCandidates('${HOOK_SESSION}');
 await storage.close();
-console.log(JSON.stringify({ obs: obs.length, candidates: candidates.length }));
+
+// Test writeSessionLessons directly from tsc output with these candidates
+const result = writeSessionLessons(candidates);
+const agentFile = homedir() + '/.dotfiles/.claude/agents/e2e-test-agent.lessons.md';
+const skillFile = homedir() + '/.dotfiles/.claude/skills/e2e-test-skill/.lessons.md';
+console.log(JSON.stringify({
+  obs: obs.length,
+  candidates: candidates.length,
+  candidateSkills: candidates.map(c => c.skill),
+  writeResult: result,
+  agentFileExists: existsSync(agentFile),
+  skillFileExists: existsSync(skillFile),
+  homedir: homedir(),
+}));
 EOF
 )
-info "Pre-flight: DB check: ${DIAG_OBS_COUNT}"
+info "Pre-flight: ${DIAG}"
 
 # Verify os.homedir() respects HOME override in this environment.
 DIAG_HOMEDIR=$(HOME="$TEMP_HOME" node -e "const os = require('os'); console.log(os.homedir())")
@@ -159,6 +176,9 @@ STOP_RESPONSE=$(echo "$STOP_INPUT" | \
 HOOK_STDERR_CONTENT=$(cat "$HOOK_STDERR")
 rm -f "$HOOK_STDERR"
 info "Hook stderr: ${HOOK_STDERR_CONTENT}"
+
+# Check if files were written anywhere on the filesystem
+info "Lessons files found in container: $(find /tmp /root -name '*.lessons.md' 2>/dev/null | head -10 || echo '(none)')"
 
 STOP_STATUS=$(echo "$STOP_RESPONSE" | jq -r '.status // ""')
 if [ "$STOP_STATUS" = "complete" ]; then
