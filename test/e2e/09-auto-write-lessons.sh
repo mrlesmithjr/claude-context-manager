@@ -51,7 +51,7 @@ mkdir -p "${TEMP_HOME}/.dotfiles/.claude/skills"
 # --- Seed the DB with a session and three skill-attributed observations ---
 # We use the tsc-compiled dist/ output directly (not the esbuild bundle) because
 # we are importing SQLiteStorage as a module, not running a standalone hook script.
-node --input-type=module <<EOF
+HOME="$TEMP_HOME" CONTEXT_MANAGER_DB="$TEST_DB" node --input-type=module <<EOF
 import { SQLiteStorage } from '/app/dist/storage/sqlite.js';
 
 const storage = new SQLiteStorage(process.env.CONTEXT_MANAGER_DB);
