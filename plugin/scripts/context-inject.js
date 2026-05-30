@@ -1308,6 +1308,32 @@ ${storedOutput}`;
     const rows = stmt.all(sessionId);
     return rows.map((row) => this.mapRow(row));
   }
+  /**
+   * Return observations for the session that are candidates for lesson writing.
+   * Includes observations attributed to a skill/agent, observations with an
+   * error/lesson_type, and any high-importance observation (score >= 0.65).
+   *
+   * This method is intentionally NOT on the ContextStorage interface — it is
+   * hook-internal and only called from session-end.ts in local mode.
+   *
+   * Uses better-sqlite3 synchronous API (no await) to stay within the 10s
+   * Stop hook timing budget.
+   */
+  getSessionLessonCandidates(sessionId) {
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ?
+        AND is_compacted = 0
+        AND superseded_by IS NULL
+        AND (
+          skill IS NOT NULL
+          OR lesson_type IS NOT NULL
+          OR importance_score >= 0.65
+        )
+      ORDER BY created_at ASC
+    `).all(sessionId);
+    return rows.map((row) => this.mapRow(row));
+  }
   async getSessionPrompts(sessionId) {
     const stmt = this.db.prepare(`
       SELECT * FROM user_prompts
@@ -3159,11 +3185,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.135") {
+    if (installedVersion !== "0.8.136") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.135"}
+   Source:    v${"0.8.136"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -3177,9 +3203,9 @@ var PLUGIN_VERSION_FILE = join2(homedir4(), ".claude-context", ".plugin-version"
 function checkPostUpdate() {
   try {
     const stored = existsSync(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.135") return "";
+    if (stored === "0.8.136") return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.135"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.136"}. Hooks active.`;
   } catch {
     return "";
   }
@@ -3187,7 +3213,7 @@ function checkPostUpdate() {
 function markVersionActivated() {
   try {
     mkdirSync2(join2(homedir4(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.135", "utf-8");
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.136", "utf-8");
   } catch {
   }
 }
@@ -3268,7 +3294,7 @@ async function main() {
       const statsText = await remoteMcpText(client, "context_stats", { project: input.cwd });
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1]) remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.135"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.136"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3367,7 +3393,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.135"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.136"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

@@ -1887,6 +1887,33 @@ export class SQLiteStorage implements ContextStorage {
     return rows.map(row => this.mapRow(row));
   }
 
+  /**
+   * Return observations for the session that are candidates for lesson writing.
+   * Includes observations attributed to a skill/agent, observations with an
+   * error/lesson_type, and any high-importance observation (score >= 0.65).
+   *
+   * This method is intentionally NOT on the ContextStorage interface — it is
+   * hook-internal and only called from session-end.ts in local mode.
+   *
+   * Uses better-sqlite3 synchronous API (no await) to stay within the 10s
+   * Stop hook timing budget.
+   */
+  getSessionLessonCandidates(sessionId: string): Observation[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ?
+        AND is_compacted = 0
+        AND superseded_by IS NULL
+        AND (
+          skill IS NOT NULL
+          OR lesson_type IS NOT NULL
+          OR importance_score >= 0.65
+        )
+      ORDER BY created_at ASC
+    `).all(sessionId) as Array<Record<string, unknown>>;
+    return rows.map(row => this.mapRow(row));
+  }
+
   async getSessionPrompts(sessionId: string): Promise<UserPrompt[]> {
     const stmt = this.db.prepare(`
       SELECT * FROM user_prompts

@@ -60754,7 +60754,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.135" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.136" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -61006,7 +61006,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.135" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.136" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -63647,6 +63647,32 @@ ${storedOutput}`;
     const rows = stmt.all(sessionId);
     return rows.map((row) => this.mapRow(row));
   }
+  /**
+   * Return observations for the session that are candidates for lesson writing.
+   * Includes observations attributed to a skill/agent, observations with an
+   * error/lesson_type, and any high-importance observation (score >= 0.65).
+   *
+   * This method is intentionally NOT on the ContextStorage interface — it is
+   * hook-internal and only called from session-end.ts in local mode.
+   *
+   * Uses better-sqlite3 synchronous API (no await) to stay within the 10s
+   * Stop hook timing budget.
+   */
+  getSessionLessonCandidates(sessionId) {
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ?
+        AND is_compacted = 0
+        AND superseded_by IS NULL
+        AND (
+          skill IS NOT NULL
+          OR lesson_type IS NOT NULL
+          OR importance_score >= 0.65
+        )
+      ORDER BY created_at ASC
+    `).all(sessionId);
+    return rows.map((row) => this.mapRow(row));
+  }
   async getSessionPrompts(sessionId) {
     const stmt = this.db.prepare(`
       SELECT * FROM user_prompts
@@ -65343,7 +65369,7 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path7.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.135") return "0.8.135";
+  if ("0.8.136") return "0.8.136";
   try {
     const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path7.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;

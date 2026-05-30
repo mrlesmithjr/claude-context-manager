@@ -1308,6 +1308,32 @@ ${storedOutput}`;
     const rows = stmt.all(sessionId);
     return rows.map((row) => this.mapRow(row));
   }
+  /**
+   * Return observations for the session that are candidates for lesson writing.
+   * Includes observations attributed to a skill/agent, observations with an
+   * error/lesson_type, and any high-importance observation (score >= 0.65).
+   *
+   * This method is intentionally NOT on the ContextStorage interface — it is
+   * hook-internal and only called from session-end.ts in local mode.
+   *
+   * Uses better-sqlite3 synchronous API (no await) to stay within the 10s
+   * Stop hook timing budget.
+   */
+  getSessionLessonCandidates(sessionId) {
+    const rows = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE session_id = ?
+        AND is_compacted = 0
+        AND superseded_by IS NULL
+        AND (
+          skill IS NOT NULL
+          OR lesson_type IS NOT NULL
+          OR importance_score >= 0.65
+        )
+      ORDER BY created_at ASC
+    `).all(sessionId);
+    return rows.map((row) => this.mapRow(row));
+  }
   async getSessionPrompts(sessionId) {
     const stmt = this.db.prepare(`
       SELECT * FROM user_prompts
@@ -3625,6 +3651,109 @@ function getCurrentBranch(cwd) {
   }
 }
 
+// src/utils/lessons.ts
+import { existsSync as existsSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "fs";
+import { join as join4 } from "path";
+import { homedir as homedir6 } from "os";
+var SAFE_NAME = /^[a-z0-9][a-z0-9-]*$/;
+var INVOCATION_THRESHOLD = 0.5;
+function summarizeObservation(obs) {
+  if (!obs.summary) return "";
+  const firstLine = obs.summary.split("\n")[0] ?? "";
+  return firstLine.trim().substring(0, 200);
+}
+function buildLessonBullets(observations) {
+  const bullets = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const obs of observations) {
+    const text = summarizeObservation(obs);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    const prefix = obs.lesson_type ? `[${obs.lesson_type}] ` : "";
+    bullets.push(`- ${prefix}${text}`);
+  }
+  return bullets;
+}
+function resolveLessonsPath(name, toolKind) {
+  if (toolKind === "agent") {
+    return join4(homedir6(), ".dotfiles", ".claude", "agents", `${name}.lessons.md`);
+  }
+  return join4(homedir6(), ".dotfiles", ".claude", "skills", name, ".lessons.md");
+}
+function appendLessons(filePath, name, toolKind, today, bullets) {
+  const mcpTool = toolKind === "agent" ? `context_agent_lessons` : `context_skill_lessons skill:${name}`;
+  const header = `# Lessons: ${name}
+
+> Accumulated experience. Load via MCP: ${mcpTool}
+`;
+  const dateHeading = `## ${today}`;
+  const bulletBlock = bullets.join("\n");
+  if (!existsSync2(filePath)) {
+    const parentDir = filePath.substring(0, filePath.lastIndexOf("/"));
+    mkdirSync4(parentDir, { recursive: true });
+    writeFileSync3(filePath, `${header}
+${dateHeading}
+${bulletBlock}
+`, "utf8");
+    return;
+  }
+  const content = readFileSync4(filePath, "utf8");
+  const rawLines = content.split("\n");
+  const lines = rawLines.at(-1) === "" ? rawLines.slice(0, -1) : rawLines;
+  const headingIdx = lines.findIndex((l) => l.trim() === dateHeading);
+  if (headingIdx !== -1) {
+    let insertIdx = headingIdx + 1;
+    while (insertIdx < lines.length && !lines[insertIdx].startsWith("## ")) {
+      insertIdx++;
+    }
+    lines.splice(insertIdx, 0, ...bullets);
+    writeFileSync3(filePath, lines.join("\n") + "\n", "utf8");
+  } else {
+    const suffix = content.endsWith("\n") ? "" : "\n";
+    writeFileSync3(filePath, `${content}${suffix}
+${dateHeading}
+${bulletBlock}
+`, "utf8");
+  }
+}
+function writeSessionLessons(observations, today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const obs of observations) {
+    if (!obs.skill) continue;
+    if (!groups.has(obs.skill)) groups.set(obs.skill, []);
+    groups.get(obs.skill).push(obs);
+  }
+  const result = { written: [], skipped: [], errors: [] };
+  for (const [name, group] of groups) {
+    try {
+      if (!SAFE_NAME.test(name)) {
+        result.skipped.push(name);
+        continue;
+      }
+      const toolKind = group.some((o) => o.tool_name === "Agent") ? "agent" : "skill";
+      const hasSignificantInvocation = group.some(
+        (o) => (o.tool_name === "Agent" || o.tool_name === "Skill") && (o.importance_score ?? 0) >= INVOCATION_THRESHOLD
+      );
+      const hasLessonType = group.some((o) => o.lesson_type != null);
+      if (!hasSignificantInvocation && !hasLessonType) {
+        result.skipped.push(name);
+        continue;
+      }
+      const bullets = buildLessonBullets(group);
+      if (bullets.length === 0) {
+        result.skipped.push(name);
+        continue;
+      }
+      const filePath = resolveLessonsPath(name, toolKind);
+      appendLessons(filePath, name, toolKind, today, bullets);
+      result.written.push(name);
+    } catch (err) {
+      result.errors.push(`${name}: ${String(err)}`);
+    }
+  }
+  return result;
+}
+
 // plugin/hooks/session-end.ts
 var NO_NATIVE_ERROR = "[context-manager] No server configured and native SQLite modules are not available.\nRun 'make server-quickstart' (macOS) or 'make server-start' (Docker) to set up a server,\nthen restart Claude Code.\nFor local SQLite mode: clone the repo, run 'npm install', and install locally with\n'/plugin marketplace add /path/to/repo'.";
 var debugLog = createDebugLogger("stop-hook-debug.log");
@@ -4049,6 +4178,21 @@ async function main() {
       }
     } catch (exportError) {
       console.error("[context-manager] Auto-memory export failed:", exportError);
+    }
+    try {
+      const lessonCandidates = storage.getSessionLessonCandidates(input.session_id);
+      if (lessonCandidates.length > 0) {
+        const lessonResult = writeSessionLessons(lessonCandidates);
+        if (lessonResult.written.length > 0) {
+          debugLog("LESSONS_WRITTEN", { written: lessonResult.written });
+          console.error(`[context-manager] Wrote lessons for: ${lessonResult.written.join(", ")}`);
+        }
+        if (lessonResult.errors.length > 0) {
+          debugLog("LESSONS_ERRORS", { errors: lessonResult.errors });
+        }
+      }
+    } catch (lessonError) {
+      debugLog("LESSONS_WRITE_ERROR", { error: String(lessonError) });
     }
     try {
       const lastReflection = await storage.getLastReflectionDate(input.cwd);
