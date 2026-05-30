@@ -33472,7 +33472,9 @@ var EMPTY_COMPLETION_RESULT = {
 
 // src/mcp/create-server.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync5 } from "fs";
+import { existsSync as existsSync5, readFileSync as readFileSync4 } from "fs";
+import { join as pathJoin } from "path";
+import { homedir as homedir5 } from "os";
 
 // src/export/memory.ts
 import { mkdirSync as mkdirSync3, readFileSync, writeFileSync as writeFileSync2, existsSync as existsSync2 } from "fs";
@@ -34633,7 +34635,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.124" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.125" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -34885,7 +34887,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.124" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.125" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -36101,6 +36103,37 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
     }
   );
   server.tool(
+    "context_skill_lessons",
+    "Read accumulated lessons for a named skill. Returns the .lessons.md sidecar content if it exists, or a message indicating no lessons have been recorded yet.",
+    {
+      skill: external_exports.string().describe('The skill directory name (e.g. "vehicle-maintenance")')
+    },
+    async ({ skill }) => {
+      if (isProxy) {
+        return proxyToolCall("context_skill_lessons", { skill }, remoteUrl, remoteToken);
+      }
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(skill)) {
+        return {
+          content: [{
+            type: "text",
+            text: `Invalid skill name: '${skill}'. Skill names must use only lowercase letters, digits, and hyphens.`
+          }]
+        };
+      }
+      const lessonsPath = pathJoin(homedir5(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
+      if (!existsSync5(lessonsPath)) {
+        return {
+          content: [{
+            type: "text",
+            text: `No lessons accumulated for '${skill}' yet.`
+          }]
+        };
+      }
+      const content = readFileSync4(lessonsPath, "utf8");
+      return { content: [{ type: "text", text: content }] };
+    }
+  );
+  server.tool(
     "context_reflect",
     "Analyze accumulated observations for a project and identify recurring patterns. Groups high-importance observations by tag, finds themes appearing across 3 or more observations, and produces proposed CLAUDE.md additions. No LLM inference -- deterministic pattern matching only.",
     {
@@ -36167,13 +36200,13 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
 }
 
 // src/utils/env.ts
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 import { join as join5 } from "node:path";
-import { homedir as homedir5 } from "node:os";
+import { homedir as homedir6 } from "node:os";
 function loadDotEnv() {
-  const envPath = join5(homedir5(), ".claude-context", ".env");
+  const envPath = join5(homedir6(), ".claude-context", ".env");
   try {
-    const content = readFileSync4(envPath, "utf8");
+    const content = readFileSync5(envPath, "utf8");
     for (const line of content.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;

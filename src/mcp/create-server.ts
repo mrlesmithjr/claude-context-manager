@@ -10,7 +10,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { join as pathJoin } from 'path';
+import { homedir } from 'os';
 import { SQLiteStorage } from '../storage/sqlite.js';
 import type { SkillStat, AttributedLesson } from '../storage/sqlite.js';
 import {
@@ -2106,6 +2108,43 @@ export function createContextManagerServer(
       });
       const text = formatSkillStats(result);
       return { content: [{ type: 'text' as const, text }] };
+    }
+  );
+
+  server.tool(
+    'context_skill_lessons',
+    "Read accumulated lessons for a named skill. Returns the .lessons.md sidecar content if it exists, or a message indicating no lessons have been recorded yet.",
+    {
+      skill: z.string().describe('The skill directory name (e.g. "vehicle-maintenance")'),
+    },
+    async ({ skill }) => {
+      if (isProxy) {
+        return proxyToolCall('context_skill_lessons', { skill }, remoteUrl, remoteToken);
+      }
+
+      // Allowlist: skill names are kebab-case directory names only
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(skill)) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Invalid skill name: '${skill}'. Skill names must use only lowercase letters, digits, and hyphens.`,
+          }],
+        };
+      }
+
+      const lessonsPath = pathJoin(homedir(), '.dotfiles', '.claude', 'skills', skill, '.lessons.md');
+
+      if (!existsSync(lessonsPath)) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `No lessons accumulated for '${skill}' yet.`,
+          }],
+        };
+      }
+
+      const content = readFileSync(lessonsPath, 'utf8');
+      return { content: [{ type: 'text' as const, text: content }] };
     }
   );
 

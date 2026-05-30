@@ -64805,7 +64805,9 @@ var init_remote_client = __esm({
 
 // src/mcp/create-server.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync5 } from "fs";
+import { existsSync as existsSync5, readFileSync as readFileSync4 } from "fs";
+import { join as pathJoin } from "path";
+import { homedir as homedir5 } from "os";
 function formatObservations(observations) {
   if (observations.length === 0) {
     return "No observations found.";
@@ -64840,7 +64842,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.124" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.125" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -65092,7 +65094,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.124" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.125" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -66308,6 +66310,37 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
     }
   );
   server.tool(
+    "context_skill_lessons",
+    "Read accumulated lessons for a named skill. Returns the .lessons.md sidecar content if it exists, or a message indicating no lessons have been recorded yet.",
+    {
+      skill: external_exports.string().describe('The skill directory name (e.g. "vehicle-maintenance")')
+    },
+    async ({ skill }) => {
+      if (isProxy) {
+        return proxyToolCall("context_skill_lessons", { skill }, remoteUrl, remoteToken);
+      }
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(skill)) {
+        return {
+          content: [{
+            type: "text",
+            text: `Invalid skill name: '${skill}'. Skill names must use only lowercase letters, digits, and hyphens.`
+          }]
+        };
+      }
+      const lessonsPath = pathJoin(homedir5(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
+      if (!existsSync5(lessonsPath)) {
+        return {
+          content: [{
+            type: "text",
+            text: `No lessons accumulated for '${skill}' yet.`
+          }]
+        };
+      }
+      const content = readFileSync4(lessonsPath, "utf8");
+      return { content: [{ type: "text", text: content }] };
+    }
+  );
+  server.tool(
     "context_reflect",
     "Analyze accumulated observations for a project and identify recurring patterns. Groups high-importance observations by tag, finds themes appearing across 3 or more observations, and produces proposed CLAUDE.md additions. No LLM inference -- deterministic pattern matching only.",
     {
@@ -66508,9 +66541,9 @@ __export(http_exports, {
   startHttpServer: () => startHttpServer
 });
 import { timingSafeEqual } from "crypto";
-import { homedir as homedir5 } from "os";
+import { homedir as homedir6 } from "os";
 import { join as join5, dirname as dirname2 } from "path";
-import { readFileSync as readFileSync4 } from "fs";
+import { readFileSync as readFileSync5 } from "fs";
 import { fileURLToPath as fileURLToPath2 } from "url";
 function abortableSleep(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -66660,7 +66693,7 @@ async function startHttpServer(options = {}) {
   const port = options.port ?? parseInt(process.env.CONTEXT_MANAGER_PORT || "4666", 10);
   const host = options.host ?? (process.env.CONTEXT_MANAGER_HOST || "0.0.0.0");
   const token = options.token ?? (process.env.CONTEXT_MANAGER_TOKEN || "");
-  const dbPath = options.dbPath ?? (process.env.CONTEXT_MANAGER_DB || join5(homedir5(), ".claude-context", "context.db"));
+  const dbPath = options.dbPath ?? (process.env.CONTEXT_MANAGER_DB || join5(homedir6(), ".claude-context", "context.db"));
   if (!token) {
     console.error("[context-manager-http] CONTEXT_MANAGER_TOKEN is required for HTTP server mode");
     console.error("  Generate one: openssl rand -hex 32");
@@ -66883,7 +66916,7 @@ async function startHttpServer(options = {}) {
       let content = "";
       const memFile = join5(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       try {
-        content = readFileSync4(memFile, "utf-8");
+        content = readFileSync5(memFile, "utf-8");
       } catch {
       }
       await reply.send({ status: "ok", exported: result.exported, content });
@@ -66920,7 +66953,7 @@ async function startHttpServer(options = {}) {
       const memFile = join5(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       let content = "";
       try {
-        content = readFileSync4(memFile, "utf-8");
+        content = readFileSync5(memFile, "utf-8");
       } catch {
       }
       await reply.send({ content });
@@ -67008,9 +67041,9 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.124") return "0.8.124";
+      if ("0.8.125") return "0.8.125";
       try {
-        const pkg = JSON.parse(readFileSync4(join5(__serverDir, "../../package.json"), "utf-8"));
+        const pkg = JSON.parse(readFileSync5(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version) return pkg.version;
         throw new Error("version missing");
       } catch {

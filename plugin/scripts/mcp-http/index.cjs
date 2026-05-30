@@ -51394,8 +51394,8 @@ var StreamableHTTPServerTransport = class {
 
 // src/server/http.ts
 var import_crypto6 = require("crypto");
-var import_os5 = require("os");
-var import_path6 = require("path");
+var import_os6 = require("os");
+var import_path7 = require("path");
 var import_fs7 = require("fs");
 var import_url2 = require("url");
 
@@ -59326,6 +59326,8 @@ var EMPTY_COMPLETION_RESULT = {
 // src/mcp/create-server.ts
 var import_crypto3 = require("crypto");
 var import_fs5 = require("fs");
+var import_path5 = require("path");
+var import_os4 = require("os");
 
 // src/export/memory.ts
 var import_fs = require("fs");
@@ -60752,7 +60754,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.124" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.125" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -61004,7 +61006,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.124" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.125" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -62220,6 +62222,37 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
     }
   );
   server.tool(
+    "context_skill_lessons",
+    "Read accumulated lessons for a named skill. Returns the .lessons.md sidecar content if it exists, or a message indicating no lessons have been recorded yet.",
+    {
+      skill: external_exports.string().describe('The skill directory name (e.g. "vehicle-maintenance")')
+    },
+    async ({ skill }) => {
+      if (isProxy) {
+        return proxyToolCall("context_skill_lessons", { skill }, remoteUrl, remoteToken);
+      }
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(skill)) {
+        return {
+          content: [{
+            type: "text",
+            text: `Invalid skill name: '${skill}'. Skill names must use only lowercase letters, digits, and hyphens.`
+          }]
+        };
+      }
+      const lessonsPath = (0, import_path5.join)((0, import_os4.homedir)(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
+      if (!(0, import_fs5.existsSync)(lessonsPath)) {
+        return {
+          content: [{
+            type: "text",
+            text: `No lessons accumulated for '${skill}' yet.`
+          }]
+        };
+      }
+      const content = (0, import_fs5.readFileSync)(lessonsPath, "utf8");
+      return { content: [{ type: "text", text: content }] };
+    }
+  );
+  server.tool(
     "context_reflect",
     "Analyze accumulated observations for a project and identify recurring patterns. Groups high-importance observations by tag, finds themes appearing across 3 or more observations, and produces proposed CLAUDE.md additions. No LLM inference -- deterministic pattern matching only.",
     {
@@ -62289,9 +62322,9 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
 var better_sqlite3_default = __betterSqlite3;
 
 // src/storage/sqlite.ts
-var import_os4 = require("os");
+var import_os5 = require("os");
 var import_crypto5 = require("crypto");
-var import_path5 = __toESM(require("path"), 1);
+var import_path6 = __toESM(require("path"), 1);
 var import_fs6 = require("fs");
 
 // shim:sqlite-vec
@@ -62359,7 +62392,7 @@ function detectFactType(summary) {
 }
 
 // src/storage/sqlite.ts
-var DEFAULT_DB_PATH = import_path5.default.join((0, import_os4.homedir)(), ".claude-context", "context.db");
+var DEFAULT_DB_PATH = import_path6.default.join((0, import_os5.homedir)(), ".claude-context", "context.db");
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
 var _rawHalflife = parseFloat(process.env.CONTEXT_MANAGER_DECAY_HALFLIFE ?? "");
 var DECAY_HALFLIFE_DAYS = Number.isFinite(_rawHalflife) && _rawHalflife >= 1 && _rawHalflife <= 3650 ? _rawHalflife : 60;
@@ -62420,7 +62453,7 @@ var SQLiteStorage = class {
   db;
   vecEnabled = false;
   constructor(dbPath = DEFAULT_DB_PATH) {
-    const dir = import_path5.default.dirname(dbPath);
+    const dir = import_path6.default.dirname(dbPath);
     (0, import_fs6.mkdirSync)(dir, { recursive: true });
     this.db = new better_sqlite3_default(dbPath);
     this.db.pragma("journal_mode = WAL");
@@ -65277,11 +65310,11 @@ function sanitizeContent(content) {
 
 // src/server/http.ts
 var import_meta2 = {};
-var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path6.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
+var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path7.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.124") return "0.8.124";
+  if ("0.8.125") return "0.8.125";
   try {
-    const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path6.join)(__serverDir, "../../package.json"), "utf-8"));
+    const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path7.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;
     throw new Error("version missing");
   } catch {
@@ -65436,7 +65469,7 @@ async function startHttpServer(options = {}) {
   const port = options.port ?? parseInt(process.env.CONTEXT_MANAGER_PORT || "4666", 10);
   const host = options.host ?? (process.env.CONTEXT_MANAGER_HOST || "0.0.0.0");
   const token = options.token ?? (process.env.CONTEXT_MANAGER_TOKEN || "");
-  const dbPath = options.dbPath ?? (process.env.CONTEXT_MANAGER_DB || (0, import_path6.join)((0, import_os5.homedir)(), ".claude-context", "context.db"));
+  const dbPath = options.dbPath ?? (process.env.CONTEXT_MANAGER_DB || (0, import_path7.join)((0, import_os6.homedir)(), ".claude-context", "context.db"));
   if (!token) {
     console.error("[context-manager-http] CONTEXT_MANAGER_TOKEN is required for HTTP server mode");
     console.error("  Generate one: openssl rand -hex 32");
@@ -65657,7 +65690,7 @@ async function startHttpServer(options = {}) {
       const normalizedProject = normalizePath(project, pathMap);
       const result = await exportToAutoMemory(storage, normalizedProject, sessionId);
       let content = "";
-      const memFile = (0, import_path6.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
+      const memFile = (0, import_path7.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       try {
         content = (0, import_fs7.readFileSync)(memFile, "utf-8");
       } catch {
@@ -65693,7 +65726,7 @@ async function startHttpServer(options = {}) {
         return;
       }
       const normalizedProject = normalizePath(project, pathMap);
-      const memFile = (0, import_path6.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
+      const memFile = (0, import_path7.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       let content = "";
       try {
         content = (0, import_fs7.readFileSync)(memFile, "utf-8");
