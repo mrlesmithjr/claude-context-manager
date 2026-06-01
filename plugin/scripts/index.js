@@ -64868,7 +64868,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.139" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.141" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -65120,7 +65120,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.139" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.141" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -66602,6 +66602,35 @@ import { homedir as homedir6 } from "os";
 import { join as join5, dirname as dirname2 } from "path";
 import { readFileSync as readFileSync5 } from "fs";
 import { fileURLToPath as fileURLToPath2 } from "url";
+async function backgroundCompact(storage2, signal) {
+  try {
+    await abortableSleep(1e4, signal);
+  } catch {
+    return;
+  }
+  const rawInterval = parseInt(process.env.CONTEXT_MANAGER_COMPACT_INTERVAL || "24", 10);
+  const intervalHours = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 24;
+  const intervalMs = intervalHours * 60 * 60 * 1e3;
+  console.error(`[context-manager-http] Background compaction loop: interval ${intervalHours}h`);
+  while (!signal.aborted) {
+    try {
+      const result = await storage2.compactObservations(7);
+      if (result.compacted > 0 || result.originals > 0) {
+        console.error(
+          `[context-manager-http] Background compaction complete: ${result.compacted} groups, ${result.originals} originals removed`
+        );
+      }
+    } catch (err) {
+      if (signal.aborted) break;
+      console.error("[context-manager-http] Background compaction error:", err);
+    }
+    try {
+      await abortableSleep(intervalMs, signal);
+    } catch {
+      break;
+    }
+  }
+}
 function abortableSleep(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -67050,16 +67079,22 @@ async function startHttpServer(options = {}) {
   });
   const abortController = new AbortController();
   let embedTask;
+  let compactTask;
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.error("[context-manager-http] Shutting down...");
     abortController.abort();
-    if (embedTask) {
+    const backgroundTasks = [
+      embedTask?.catch(() => {
+      }),
+      compactTask?.catch(() => {
+      })
+    ].filter(Boolean);
+    if (backgroundTasks.length > 0) {
       await Promise.race([
-        embedTask.catch(() => {
-        }),
+        Promise.all(backgroundTasks),
         new Promise((resolve) => setTimeout(resolve, 1e4))
       ]);
     }
@@ -67080,6 +67115,12 @@ async function startHttpServer(options = {}) {
     embedTask.catch((err) => {
       if (!abortController.signal.aborted) {
         console.error("[context-manager-http] Background embedding uncaught error:", err);
+      }
+    });
+    compactTask = backgroundCompact(storage2, abortController.signal);
+    compactTask.catch((err) => {
+      if (!abortController.signal.aborted) {
+        console.error("[context-manager-http] Background compaction uncaught error:", err);
       }
     });
   } catch (err) {
@@ -67107,7 +67148,7 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname2(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.139") return "0.8.139";
+      if ("0.8.141") return "0.8.141";
       try {
         const pkg = JSON.parse(readFileSync5(join5(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version) return pkg.version;

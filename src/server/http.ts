@@ -47,6 +47,50 @@ const SERVER_VERSION: string = (() => {
   }
 })();
 
+// --- Background Compaction ---
+
+/**
+ * Compact old observations in the background after the HTTP server starts.
+ * Runs until the abort signal fires. After each pass, waits
+ * CONTEXT_MANAGER_COMPACT_INTERVAL hours before running again. Uses the same
+ * 7-day threshold as the vacuum() / context_vacuum MCP tool. Silently skips
+ * passes when nothing is eligible.
+ */
+async function backgroundCompact(storage: SQLiteStorage, signal: AbortSignal): Promise<void> {
+  // Short delay — compaction is non-urgent; 10s gives server startup and embed initialization a clean head start.
+  try {
+    await abortableSleep(10000, signal);
+  } catch {
+    return; // Aborted before we even started — exit cleanly
+  }
+
+  const rawInterval = parseInt(process.env.CONTEXT_MANAGER_COMPACT_INTERVAL || '24', 10);
+  const intervalHours = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 24;
+  const intervalMs = intervalHours * 60 * 60 * 1000;
+  console.error(`[context-manager-http] Background compaction loop: interval ${intervalHours}h`);
+
+  while (!signal.aborted) {
+    try {
+      const result = await storage.compactObservations(7);
+      if (result.compacted > 0 || result.originals > 0) {
+        console.error(
+          `[context-manager-http] Background compaction complete: ${result.compacted} groups, ${result.originals} originals removed`
+        );
+      }
+    } catch (err) {
+      if (signal.aborted) break;
+      console.error('[context-manager-http] Background compaction error:', err);
+    }
+
+    // Wait before next pass (abortable)
+    try {
+      await abortableSleep(intervalMs, signal);
+    } catch {
+      break; // Aborted during inter-pass sleep
+    }
+  }
+}
+
 // --- Background Embedding ---
 
 /**
@@ -764,9 +808,9 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
 
   // Graceful shutdown on SIGINT / SIGTERM.
   // Order matters:
-  //   1. Abort the embed loop so it exits after the current ONNX batch.
-  //   2. Wait for the loop to fully resolve (up to 10s — MiniLM batches are
-  //      ~50ms, so this is generous, but ensures ONNX is idle before step 3).
+  //   1. Abort background loops (embed + compact) so they exit cleanly.
+  //   2. Wait for both loops to fully resolve (up to 10s — MiniLM batches are
+  //      ~50ms, compaction is a fast SQLite transaction; this is generous).
   //   3. Dispose the ONNX pipeline — handles the clean case where threads are
   //      already idle after the embed loop drains.
   //   4. Close Fastify, then SQLite.
@@ -775,15 +819,20 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
   //      SIGKILL bypasses V8 teardown, avoiding the libc++ mutex race (#114).
   //      Natural exit fires instead if Node.js drains on its own.
   let embedTask: Promise<void> | undefined;
+  let compactTask: Promise<void> | undefined;
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.error('[context-manager-http] Shutting down...');
     abortController.abort();
-    if (embedTask) {
+    const backgroundTasks = [
+      embedTask?.catch(() => {}),
+      compactTask?.catch(() => {}),
+    ].filter(Boolean) as Promise<void>[];
+    if (backgroundTasks.length > 0) {
       await Promise.race([
-        embedTask.catch(() => {}),
+        Promise.all(backgroundTasks),
         new Promise(resolve => setTimeout(resolve, 10000)),
       ]);
     }
@@ -809,6 +858,13 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     embedTask.catch((err) => {
       if (!abortController.signal.aborted) {
         console.error('[context-manager-http] Background embedding uncaught error:', err);
+      }
+    });
+    // Start the background compaction loop. Shares the same abort signal as the embed loop.
+    compactTask = backgroundCompact(storage, abortController.signal);
+    compactTask.catch((err) => {
+      if (!abortController.signal.aborted) {
+        console.error('[context-manager-http] Background compaction uncaught error:', err);
       }
     });
   } catch (err) {

@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 30, 2026 (v0.8.134)
+**Last Updated**: May 30, 2026 (v0.8.139)
 
 ---
 
@@ -33,10 +33,10 @@ This file provides guidance to Claude Code when working in this repository.
 
 **Release workflow (develop to main):**
 ```bash
-make release
+make ship
 ```
 
-`make release` opens the PR, polls CI until the `test` check passes, squash-merges, and pushes the tag. After it completes, run `/plugin update context-manager` inside Claude Code.
+`make ship` is the correct end-to-end release command. It: bumps the patch version, runs `make update` (build, commit artifacts, push develop, restart server), then runs `make release` (open PR, poll CI, squash-merge, tag, create GitHub Release). Do not run `make release` directly — it skips the build step. After `make ship` completes, run `/plugin update context-manager` inside Claude Code.
 
 ---
 
@@ -54,7 +54,7 @@ This is a TypeScript Claude Code plugin. All code changes follow the mandatory m
 - `doc-writer` - update this CLAUDE.md, README.md, and any affected skill/agent descriptions
 
 **Plugin release workflow** (after code review and doc-writer pass):
-1. `make ship` - bumps patch version, builds, commits, pushes develop, restarts server, opens PR, waits for CI, merges to main, tags
+1. `make ship` - bumps patch version + `make update` (build, commit, push develop, restart) + `make release` (PR, CI wait, squash-merge, tag, GitHub Release). This is the only correct release command; never run `make release` alone (it skips the build step).
 2. `/plugin update context-manager` inside Claude Code
 3. Restart Claude Code
 
@@ -206,8 +206,9 @@ claude-context-manager/
 |   +-- utils/reflect.ts                # buildReflection() / formatReflection() pure functions
 |   +-- utils/facts.ts                  # FACT_CATEGORIES + detectFactType() for supersession
 |   +-- utils/correct-tokens.ts         # correctTokens() fuzzy typo-correction pre-pass
+|   +-- utils/lessons.ts                # Auto-write lesson utilities for skill/agent .lessons.md sidecars
 +-- web/                            # Fastify web dashboard
-+-- test/e2e/                       # Docker-based E2E scenarios (5 scenarios, 36 assertions)
++-- test/e2e/                       # Docker-based E2E scenarios (9 scenarios)
 +-- docs/ARCHITECTURE.md            # Full design decision details
 +-- Makefile                        # All build, server, and E2E targets
 ```
@@ -245,7 +246,7 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 23 | MCP summary cap | MCP tool summaries truncated to ~40 tokens (160 chars) when importance < 0.3; observation still stored for relationship tracking and dedup |
 | 24 | Bearer token injection | Web server dynamically serves `index.html` with `window.__CTX_TOKEN` injected before `</head>`; `Cache-Control: no-store`; GET / bypassed from auth hook |
 | 25 | Network mode project scoping | `isNetworkMode = token.length > 0`; all components gate fetch + render behind project selection; `ProjectFilter` auto-selects first project on load |
-| 26 | Continuous embedding loop | `backgroundEmbed(storage, signal)` accepts an `AbortSignal`; loops on `while (!signal.aborted)`; `abortableSleep()` throws on abort; `CONTEXT_MANAGER_EMBED_INTERVAL` controls sleep; errors caught per-iteration; NaN guard on env var |
+| 26 | Continuous embedding loop | `backgroundEmbed(storage, signal)` accepts an `AbortSignal`; loops on `while (!signal.aborted)`; `abortableSleep()` throws on abort; `CONTEXT_MANAGER_EMBED_INTERVAL` controls sleep; errors caught per-iteration; `parseInt` with NaN guard on env var |
 | 28 | Clean HTTP server shutdown | `abortController.abort()` signals the embed loop to stop; shutdown races `embedTask` against a 3s deadline before calling `fastify.close()` then `storage.close()`; `shuttingDown` flag prevents concurrent double-shutdown; startup failure path removes signal handlers before closing storage; both launchd plist templates include `ThrottleInterval: 30` to prevent rapid restart loops |
 | 27 | SQLite DB import | `POST /api/import` on web server; multipart upload; magic byte + PRAGMA schema pre-flight; ATTACH/INSERT OR IGNORE in single transaction; skips vec tables and observation_relationships |
 | 29 | Temporal query routing | `classifyTemporalIntent()` in `temporal.ts`; current/historical/neutral; applied before all search paths including tag: |
@@ -261,6 +262,8 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 44 | skill-context PreToolUse hook | Fires on every `Skill` tool invocation; reads `~/.dotfiles/.claude/skills/<skill>/.lessons.md`; injects content as `additionalContext` via `hookSpecificOutput` (PreToolUse format); returns `{}` if no file, invalid name, or any error; remote mode: returns `{}` immediately (file is always local); content capped at 3000 chars, truncated at last `\n` boundary |
 | 45 | agent-context PreToolUse hook | Fires on every `Agent` tool invocation; reads `~/.dotfiles/.claude/agents/<name>.lessons.md` (from `tool_input.subagent_type`); injects content as `additionalContext` via `hookSpecificOutput`; returns `{}` if no file, invalid name, or any error; content capped at 3000 chars |
 | 46 | context_agent_lessons | Reads `~/.dotfiles/.claude/agents/<agent>.lessons.md` flat sidecar; kebab-case validation (`/^[a-z0-9][a-z0-9-]*$/`); returns file content or "No lessons accumulated for agent '<name>' yet." |
+| 47 | Auto-write lessons at Stop | `getSessionLessonCandidates()` fetches observations where `skill IS NOT NULL`, `lesson_type IS NOT NULL`, or `importance_score >= 0.65`; `writeSessionLessons()` groups by skill name, threshold: invocation importance >= 0.5 OR `lesson_type` present; appends dated bullet entries to `~/.dotfiles/.claude/agents/<name>.lessons.md` (agents) or `~/.dotfiles/.claude/skills/<name>/.lessons.md` (skills); local mode only; rule-based, no LLM calls |
+| 48 | Background compaction loop | `backgroundCompact(storage, signal)` in `src/server/http.ts`; mirrors `backgroundEmbed()` pattern; 10s startup delay (non-urgent, gives embed initialization head start); `CONTEXT_MANAGER_COMPACT_INTERVAL` controls interval in hours (default 24); only runs in HTTP server mode; abortable via same `AbortSignal` as embed loop |
 | 36 | Fuzzy search pre-pass | `token_index` table; `addTokens()` on every save (4+ char tokens, freq upsert); `findClosestToken()` exact-match short-circuit: if token exists verbatim in `token_index`, correction is skipped entirely; otherwise Levenshtein DP <= 2 edit distance, freq >= 3; `correctTokens()` skips operator-prefixed tokens; `fuzzy` param (default true) on `context_search`; correction notice in response header |
 | 37 | Progressive disclosure | `context_search` (compact, default) + `context_get` (full detail by ID) + `context_timeline` (session context around IDs); 3-layer pattern |
 | 38 | Remote parity | `remoteCreateSession` forwards branch; `GET /api/decisions/next-number` for globally sequential decision numbering in remote mode; `POST /capture/observation` forwards `lesson_type`, `skill`, `branch`, and `package` so remote captures have full field parity with local captures |
@@ -303,6 +306,7 @@ All env vars read from `~/.claude-context/.env` (loaded at hook and MCP server s
 | `CONTEXT_MANAGER_TOKEN` | _(unset)_ | Bearer token; required when URL is set |
 | `CONTEXT_MANAGER_CHECKPOINT_INTERVAL` | `30` | Minutes between checkpoint exports |
 | `CONTEXT_MANAGER_EMBED_INTERVAL` | `10` | Minutes between background embedding passes in HTTP server; invalid values fall back to 10 |
+| `CONTEXT_MANAGER_COMPACT_INTERVAL` | `24` | Hours between background compaction passes in HTTP server; invalid values fall back to 24 |
 | `CONTEXT_MANAGER_CAPTURE_FLOOR` | `0.15` | Minimum importance score for any observation to be stored; observations scoring below this are dropped at capture time. Values are clamped to [0.0, 0.65]; values outside this range are silently adjusted. Setting 0.0 disables the floor entirely. |
 | `CONTEXT_MANAGER_DECAY_HALFLIFE` | `60` | Half-life in days for memory decay formula; clamped to [1, 3650] |
 
