@@ -24,7 +24,7 @@ LAUNCHD_LABEL_WEB    := com.mrlesmithjr.context-manager-web
 LAUNCHD_PLIST_WEB    := $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL_WEB).plist
 NODE_BIN         := $(shell which node)
 
-.PHONY: help build test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
+.PHONY: help build rebuild-native test-unit test-e2e test-e2e-up test-e2e-down e2e-build e2e-clean \
         server-build server-clean server-init server-start server-stop server-logs \
         server-status server-env server-restart server-apply-env update release ship \
         server-native-start server-native-stop server-native-status \
@@ -84,6 +84,9 @@ help:
 
 build:
 	npm run build
+
+rebuild-native:
+	npm rebuild better-sqlite3 sqlite-vec
 
 # --- Unit tests ---
 
@@ -533,7 +536,7 @@ server-native-status:
 
 # Install launchd agent for automatic startup on macOS login.
 # Reads token from ~/.claude-context/.env. Must run 'make server-init' first.
-server-launchd-install: server-init build
+server-launchd-install: server-init rebuild-native build
 	@if [ ! -f "$(SERVER_ENV)" ]; then \
 		echo "ERROR: $(SERVER_ENV) not found. Run 'make server-init' first."; exit 1; \
 	fi

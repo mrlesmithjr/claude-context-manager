@@ -330,7 +330,7 @@ Unclosed tags redact all remaining content. `old_string`/`new_string`/`content` 
 
 **Updates not applying:** The plugin caches by version number. Always `npm version patch --no-git-tag-version` before `/plugin update context-manager`. Also confirm that `npm run build:plugin` has run AND the built artifacts in `plugin/scripts/`, `plugin/.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json` have been committed and pushed to GitHub. For marketplace installs, `/plugin update` pulls from GitHub, so local-only builds will not take effect. If still stale after pushing: `/plugin uninstall context-manager` then `/plugin install context-manager`, then restart.
 
-**Native module errors:** `npm rebuild better-sqlite3`
+**Native module errors / server silent crash after Node.js upgrade:** `make rebuild-native` (or `npm rebuild better-sqlite3 sqlite-vec`). `make server-restart` runs this automatically via `server-launchd-install`, but if the server crashes silently with an empty `server.log`, run `make rebuild-native` then `make server-restart`.
 
 **E2E server startup fails:** Ensure `npm run build` has run first (E2E uses tsc output, not the esbuild bundle — esbuild inlines fastify's `require()` calls which Node.js rejects as CJS/ESM conflict).
 
