@@ -57,7 +57,7 @@ const SERVER_VERSION: string = (() => {
  * passes when nothing is eligible.
  */
 async function backgroundCompact(storage: SQLiteStorage, signal: AbortSignal): Promise<void> {
-  // Short delay to let the server finish startup and let backgroundEmbed claim resources first.
+  // Short delay — compaction is non-urgent; 10s gives server startup and embed initialization a clean head start.
   try {
     await abortableSleep(10000, signal);
   } catch {
@@ -808,9 +808,9 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
 
   // Graceful shutdown on SIGINT / SIGTERM.
   // Order matters:
-  //   1. Abort the embed loop so it exits after the current ONNX batch.
-  //   2. Wait for the loop to fully resolve (up to 10s — MiniLM batches are
-  //      ~50ms, so this is generous, but ensures ONNX is idle before step 3).
+  //   1. Abort background loops (embed + compact) so they exit cleanly.
+  //   2. Wait for both loops to fully resolve (up to 10s — MiniLM batches are
+  //      ~50ms, compaction is a fast SQLite transaction; this is generous).
   //   3. Dispose the ONNX pipeline — handles the clean case where threads are
   //      already idle after the embed loop drains.
   //   4. Close Fastify, then SQLite.
