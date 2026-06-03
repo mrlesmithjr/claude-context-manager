@@ -36,6 +36,8 @@ interface ObservationsQuerystring {
   tag?: string;
   /** Filter by git branch (exact match against observations.branch). refs #227 */
   branch?: string;
+  /** When true, restrict results to pinned observations only. refs #230 */
+  pinned?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -300,6 +302,7 @@ export async function registerApiRoutes(
             importance: { type: 'string', enum: ['high', 'medium', 'low'] },
             tag: { type: 'string', maxLength: 64 },
             branch: { type: 'string', maxLength: 255 },
+            pinned: { type: 'boolean' },
             limit: { type: 'integer', minimum: 1, maximum: 200 },
             offset: { type: 'integer', minimum: 0 },
           },
@@ -307,7 +310,7 @@ export async function registerApiRoutes(
       },
     },
     async (request, reply) => {
-      const { q, project, tool, importance, tag, branch, limit = 50, offset = 0 } = request.query;
+      const { q, project, tool, importance, tag, branch, pinned, limit = 50, offset = 0 } = request.query;
 
       if (isNetworkMode && !project) {
         reply.status(400).send({ error: 'project parameter is required in network mode' });
@@ -324,11 +327,11 @@ export async function registerApiRoutes(
         let total: number;
 
         if (tag) {
-          // Tag-based search: searchByTag has no importance/tool/branch awareness, so
+          // Tag-based search: searchByTag has no importance/tool/branch/pinned awareness, so
           // post-filter in memory. Pagination is not supported for tag queries
           // (searchByTag applies LIMIT before post-filtering).
-          // NOTE: branch post-filter here has the same LIMIT-before-filter caveat as
-          // tool and importance: the page may be under-filled when branch is active.
+          // NOTE: branch/pinned post-filters here have the same LIMIT-before-filter caveat as
+          // tool and importance: the page may be under-filled when these filters are active.
           observations = await storage.searchByTag(tag, project, limit);
           if (tool) {
             observations = observations.filter((obs) => obs.tool_name === tool);
@@ -339,11 +342,15 @@ export async function registerApiRoutes(
           if (branch) {
             observations = observations.filter((obs) => obs.branch === branch);
           }
+          if (pinned) {
+            observations = observations.filter((obs) => obs.pinned === 1);
+          }
           // Total reflects post-filtered count; no DB count available for tag queries
           total = observations.length;
-        } else if (q || importance || branch) {
-          // Full-text search with DB-level importance, tool, and branch filters for correct
-          // pagination. Route the no-query+importance/branch case through search() so
+        } else if (q || importance || branch || pinned) {
+          // Full-text search with DB-level importance, tool, branch, and pinned filters for
+          // correct pagination. Route the no-query+importance/branch/pinned case through
+          // search() so
           // filtering happens in SQL rather than in memory (avoids under-filled pages).
           // The empty-query guard in search() prevents FTS5 MATCH '' errors when only
           // branch or importance is set. refs #227
@@ -355,8 +362,9 @@ export async function registerApiRoutes(
             importance,
             toolName: tool,
             branch,
+            pinned: pinned ? 1 : undefined,
           });
-          total = await storage.countObservations(project, tool, importance, branch);
+          total = await storage.countObservations(project, tool, importance, branch, pinned ? 1 : undefined);
         } else {
           // Plain recent observations -- no search query, no importance/branch filter.
           // toolName pushed into SQL so pages are dense (fixes #127).

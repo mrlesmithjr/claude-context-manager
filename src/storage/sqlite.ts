@@ -844,6 +844,10 @@ export class SQLiteStorage implements ContextStorage {
     const toolName = typeof projectOrOptions === 'object' && projectOrOptions !== null
       ? projectOrOptions.toolName
       : undefined;
+    // pinned: when 1, restrict to pinned observations only. refs #230
+    const pinned = typeof projectOrOptions === 'object' && projectOrOptions !== null
+      ? projectOrOptions.pinned
+      : undefined;
 
     let sql: string;
     let params: unknown[];
@@ -864,6 +868,8 @@ export class SQLiteStorage implements ContextStorage {
     const importanceClause = importance ? ' AND o.importance = ?' : '';
     // Tool name filter clause (fixes #127)
     const toolClause = toolName ? ' AND o.tool_name = ?' : '';
+    // Pinned filter clause (refs #230)
+    const pinnedClause = pinned === 1 ? ' AND o.pinned = 1' : '';
     // Limit for FTS queries (searchOffset only non-zero when called via web API).
     // Math.floor() guards against float inputs at the storage layer.
     // API contract enforces maximum: 200; 500 is the storage-layer safety net for direct callers.
@@ -899,6 +905,9 @@ export class SQLiteStorage implements ContextStorage {
       if (toolName) {
         plainConditions.push('o.tool_name = ?');
         plainParams.push(toolName);
+      }
+      if (pinned === 1) {
+        plainConditions.push('o.pinned = 1');
       }
       const whereClause = plainConditions.length > 0 ? `WHERE ${plainConditions.join(' AND ')}` : '';
       const plainSql = `
@@ -948,7 +957,7 @@ export class SQLiteStorage implements ContextStorage {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -961,7 +970,7 @@ export class SQLiteStorage implements ContextStorage {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -972,7 +981,7 @@ export class SQLiteStorage implements ContextStorage {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -983,7 +992,7 @@ export class SQLiteStorage implements ContextStorage {
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -2093,9 +2102,10 @@ export class SQLiteStorage implements ContextStorage {
     }));
   }
 
-  async countObservations(project?: string, tool?: string, importance?: ImportanceLevel, branch?: string): Promise<number> {
+  async countObservations(project?: string, tool?: string, importance?: ImportanceLevel, branch?: string, pinned?: number): Promise<number> {
     // refs #131: added optional importance parameter
     // refs #227: added optional branch parameter
+    // refs #230: added optional pinned parameter
     const conditions: string[] = [];
     const params: unknown[] = [];
 
@@ -2114,6 +2124,10 @@ export class SQLiteStorage implements ContextStorage {
     if (branch) {
       conditions.push('branch = ?');
       params.push(branch);
+    }
+    if (pinned === 1) {
+      conditions.push('pinned = ?');
+      params.push(1);
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
