@@ -3298,11 +3298,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.145") {
+    if (installedVersion !== "0.8.148") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.145"}
+   Source:    v${"0.8.148"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -3316,9 +3316,9 @@ var PLUGIN_VERSION_FILE = join3(homedir5(), ".claude-context", ".plugin-version"
 function checkPostUpdate() {
   try {
     const stored = existsSync2(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.145") return "";
+    if (stored === "0.8.148") return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.145"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.148"}. Hooks active.`;
   } catch {
     return "";
   }
@@ -3326,7 +3326,7 @@ function checkPostUpdate() {
 function markVersionActivated() {
   try {
     mkdirSync2(join3(homedir5(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.145", "utf-8");
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.148", "utf-8");
   } catch {
   }
 }
@@ -3407,7 +3407,7 @@ async function main() {
       const statsText = await remoteMcpText(client, "context_stats", { project: input.cwd });
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1]) remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.145"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.148"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3506,7 +3506,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.145"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.148"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

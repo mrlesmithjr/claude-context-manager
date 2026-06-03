@@ -64984,7 +64984,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.145" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.148" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -65236,7 +65236,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.145" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.148" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -67353,7 +67353,7 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname3(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.145") return "0.8.145";
+      if ("0.8.148") return "0.8.148";
       try {
         const pkg = JSON.parse(readFileSync5(join6(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version) return pkg.version;
