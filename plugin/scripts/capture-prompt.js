@@ -3666,10 +3666,9 @@ async function exportToAutoMemory(storage, projectPath, sessionId) {
     if (!sessionId) {
       return { exported: 0, filePath: null };
     }
-    const sessions2 = await storage.getRecentSessions(projectPath, 50);
-    const session = sessions2.find((s) => s.id === sessionId);
+    const session = await storage.getSession(sessionId);
     if (!session) {
-      console.error(`[context-manager] exportToAutoMemory: session ${sessionId.substring(0, 8)} not found in recent sessions; heading update skipped`);
+      console.warn(`[context-manager] exportToAutoMemory: session ${sessionId.substring(0, 8)} not found in DB; heading update skipped`);
       return { exported: 0, filePath: null };
     }
     if (session.status !== "complete") {
