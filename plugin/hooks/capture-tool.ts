@@ -111,7 +111,10 @@ async function main() {
         : {};
 
       const sessionId = typeof obj.session_id === 'string' ? obj.session_id.slice(0, 256) : '';
-      const rawCwd = typeof obj.cwd === 'string' ? obj.cwd.slice(0, 1024) : '';
+      // Fall back to process.cwd() when cwd is absent — Claude Code omits it for Agent PostToolUse.
+      // Local mode already does this via validatePostToolUseInput(); this aligns remote mode.
+      // refs #238
+      const rawCwd = typeof obj.cwd === 'string' ? obj.cwd.slice(0, 1024) : process.cwd();
       const cwd = rawCwd ? findProjectRoot(rawCwd) : '';
       const toolName = typeof obj.tool_name === 'string' ? obj.tool_name.slice(0, 128) : '';
 
