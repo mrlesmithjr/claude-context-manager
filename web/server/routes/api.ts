@@ -85,6 +85,17 @@ interface LessonsQuerystring {
   days?: number;
 }
 
+interface SkillsQuerystring {
+  project?: string;
+  days?: number;
+  limit?: number;
+}
+
+interface SkillDetailQuerystring {
+  project?: string;
+  days?: number;
+}
+
 interface PruneBody {
   toolName?: string;
   importance?: 'high' | 'medium' | 'low';
@@ -654,6 +665,81 @@ export async function registerApiRoutes(
       } catch (error) {
         fastify.log.error(error);
         reply.status(500).send({ error: 'Failed to retrieve lessons' });
+      }
+    }
+  );
+
+  // GET /api/skills - Aggregate skill/agent usage stats (refs #232)
+  // IMPORTANT: registered BEFORE /api/skills/:name to prevent Fastify capturing 'name' ambiguity
+  fastify.get<{ Querystring: SkillsQuerystring }>(
+    '/api/skills',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
+            days:    { type: 'number', minimum: 1, maximum: 365 },
+            limit:   { type: 'number', minimum: 1, maximum: 100 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { project, days, limit = 50 } = request.query;
+
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
+
+      try {
+        const result = await (storage as SQLiteStorage).getSkillStats({ project, days, limit });
+        reply.send(result);
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: 'Failed to retrieve skill stats' });
+      }
+    }
+  );
+
+  // GET /api/skills/:name - Detail view for one skill or agent (refs #232)
+  fastify.get<{ Params: { name: string }; Querystring: SkillDetailQuerystring }>(
+    '/api/skills/:name',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
+            days:    { type: 'number', minimum: 1, maximum: 365 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { project, days } = request.query;
+      const skillName = decodeURIComponent(request.params.name);
+
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
+
+      try {
+        const result = await (storage as SQLiteStorage).getSkillStats({ project, days, skill: skillName });
+        reply.send(result);
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: 'Failed to retrieve skill detail' });
       }
     }
   );

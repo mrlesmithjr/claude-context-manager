@@ -12,6 +12,7 @@ import { TokenAnalytics } from './components/TokenAnalytics.js';
 import { ImportPanel } from './components/ImportPanel.js';
 import { DecisionLog } from './components/DecisionLog.js';
 import { LessonsView } from './components/LessonsView.js';
+import { SkillStats } from './components/SkillStats.js';
 import { AdminPanel } from './components/AdminPanel.js';
 
 /**
@@ -59,7 +60,7 @@ class App extends Component {
 
   updateRouteFromHash() {
     const hash = window.location.hash.slice(1) || 'sessions';
-    const validRoutes = ['sessions', 'search', 'decisions', 'lessons', 'analytics', 'admin', 'import'];
+    const validRoutes = ['sessions', 'search', 'decisions', 'lessons', 'skills', 'analytics', 'admin', 'import'];
     const route = validRoutes.includes(hash) ? hash : 'sessions';
     this.setState({ currentRoute: route });
   }
@@ -101,6 +102,8 @@ class App extends Component {
         return html`<${DecisionLog} project=${selectedProject} projectRequired=${isNetworkMode} />`;
       case 'lessons':
         return html`<${LessonsView} project=${selectedProject} projectRequired=${isNetworkMode} />`;
+      case 'skills':
+        return html`<${SkillStats} project=${selectedProject} projectRequired=${isNetworkMode} />`;
       case 'analytics':
         return html`<${TokenAnalytics} project=${selectedProject} projectRequired=${isNetworkMode} />`;
       case 'admin':
@@ -170,7 +173,7 @@ class App extends Component {
         <nav class="bg-gray-800 border-b border-gray-700">
           <div class="container mx-auto px-4">
             <div class="flex space-x-1">
-              ${['sessions', 'search', 'decisions', 'lessons', 'analytics', 'admin', 'import'].map(
+              ${['sessions', 'search', 'decisions', 'lessons', 'skills', 'analytics', 'admin', 'import'].map(
                 (route) => html`
                   <button
                     class="${currentRoute === route
