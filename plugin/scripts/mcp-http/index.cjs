@@ -60792,7 +60792,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.157" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.158" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -61044,7 +61044,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.157" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.158" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -65648,7 +65648,7 @@ function sanitizeContent(content) {
 var import_meta2 = {};
 var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path8.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.157") return "0.8.157";
+  if ("0.8.158") return "0.8.158";
   try {
     const pkg = JSON.parse((0, import_fs8.readFileSync)((0, import_path8.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;
@@ -65952,7 +65952,7 @@ async function startHttpServer(options = {}) {
       const rawCreatedAt = body["created_at"];
       const createdAt = typeof rawCreatedAt === "string" && !isNaN(Date.parse(rawCreatedAt)) ? rawCreatedAt : (/* @__PURE__ */ new Date()).toISOString();
       const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
-      await storage.save({
+      const observationPayload = {
         session_id: sessionId,
         project: normalizedProject,
         tool_name: toolName,
@@ -65969,7 +65969,17 @@ async function startHttpServer(options = {}) {
         skill,
         branch,
         package: pkg
-      });
+      };
+      try {
+        await storage.save(observationPayload);
+      } catch (saveErr) {
+        if (saveErr instanceof Error && saveErr.message.includes("FOREIGN KEY")) {
+          await storage.createSession(sessionId, normalizedProject, branch ?? null);
+          await storage.save(observationPayload);
+        } else {
+          throw saveErr;
+        }
+      }
       await reply.send({ status: "ok" });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

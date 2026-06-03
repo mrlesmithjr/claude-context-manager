@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: June 3, 2026 (v0.8.146)
+**Last Updated**: June 3, 2026 (v0.8.157)
 
 ---
 
@@ -249,9 +249,10 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 25 | Network mode project scoping | `isNetworkMode = token.length > 0`; all components gate fetch + render behind project selection; `ProjectFilter` auto-selects first project on load |
 | 26 | Continuous embedding loop | `backgroundEmbed(storage, signal)` accepts an `AbortSignal`; loops on `while (!signal.aborted)`; `abortableSleep()` throws on abort; `CONTEXT_MANAGER_EMBED_INTERVAL` controls sleep; errors caught per-iteration; `parseInt` with NaN guard on env var |
 | 28 | Clean HTTP server shutdown | `abortController.abort()` signals the embed loop to stop; shutdown races `embedTask` against a 3s deadline before calling `fastify.close()` then `storage.close()`; `shuttingDown` flag prevents concurrent double-shutdown; startup failure path removes signal handlers before closing storage; both launchd plist templates include `ThrottleInterval: 30` to prevent rapid restart loops |
-| 27 | SQLite DB import | `POST /api/import` on web server; multipart upload; magic byte + PRAGMA schema pre-flight; ATTACH/INSERT OR IGNORE in single transaction; skips vec tables and observation_relationships |
+| 27 | SQLite DB import | `POST /api/import` on web server; multipart upload; magic byte + PRAGMA schema pre-flight; ATTACH/INSERT OR IGNORE in single transaction; imports `decisions` table (pre-flight checks for `src.decisions` existence; older DBs without the table skip gracefully; dedup uses `decision_number` when non-null, falls back to `decision_text`); skips vec tables and observation_relationships |
 | 29 | Temporal query routing | `classifyTemporalIntent()` in `temporal.ts`; current/historical/neutral; applied before all search paths including tag: |
 | 30 | Branch-aware capture | `getCurrentBranch()` via `spawnSync`; branch stored on observations and sessions; soft-rank boost in search; filter on tag path |
+| 30a | Empty-query plain-SQL guard | `search()` detects queries with no FTS terms (branch/importance/tool-only filters) and falls back to a plain-SQL path instead of FTS5; `countObservations()` accepts `branch` and `pinned` params for consistent filter parity; `GET /api/observations/branches` backed by `getDistinctObservationBranches()` (queries `observations.branch`, not `sessions.branch`) |
 | 31 | Fact supersession | `FACT_CATEGORIES` in `facts.ts`; `superseded_by` column; `findConflictingFact()` marks old fact superseded on save; excluded from search by default; `include_superseded` param to opt in |
 | 32 | Memory decay | `applyDecay()`: 60% base_importance + 25% recency (60-day half-life, configurable via `CONTEXT_MANAGER_DECAY_HALFLIFE`) + 15% log-frequency; only in neutral temporal path; pinned/decision/lesson observations exempt |
 | 33 | Decisions entity | `decisions` table with FTS5 triggers; `extractDecisions()` in Stop hook; `context_decisions` tool; `decision:` prefix in `context_search` |
@@ -259,6 +260,7 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 35 | context_reflect | `buildReflection()` / `formatReflection()` pure functions in `reflect.ts`; groups by first tag; 3+ obs threshold; lesson groups get "Avoid:" prefix; Stop hook reminder at 7+ days / 10+ high-importance obs |
 | 41 | Skill invocation tracking | `skill TEXT` nullable column on `observations`; backfilled from `metadata.tool_input.skill` (Skill rows) and `metadata.tool_input.subagent_type` (Agent/Task rows); partial index on `(project, skill, created_at DESC) WHERE skill IS NOT NULL` |
 | 42 | context_skill_stats | Aggregate mode (no `skill` param): all skills sorted by `invocation_count DESC`, returns `{ skills[], total }`; detail mode (`skill` param): single skill stats + attributed lessons (`lesson_type IS NOT NULL`); supports `project`, `days`, `limit` |
+| 42a | Web dashboard Skills tab | `GET /api/skills` (aggregate) and `GET /api/skills/:name` (detail + attributed lessons) backed by `getSkillStats()` via `SQLiteStorage` cast; `SkillStats.js` component: list view with days filter, tool type badges (blue=Skill/purple=Agent/gray=Task), drill-in detail with lesson cards; tab positioned between Lessons and Analytics |
 | 43 | context_skill_lessons | Reads `~/.dotfiles/.claude/skills/<skill>/.lessons.md` sidecar; kebab-case validation (`/^[a-z0-9][a-z0-9-]*$/`); returns file content or "No lessons accumulated for '<name>' yet." |
 | 44 | skill-context PreToolUse hook | Fires on every `Skill` tool invocation; reads `~/.dotfiles/.claude/skills/<skill>/.lessons.md`; injects content as `additionalContext` via `hookSpecificOutput` (PreToolUse format); returns `{}` if no file, invalid name, or any error; remote mode: returns `{}` immediately (file is always local); content capped at 3000 chars, truncated at last `\n` boundary |
 | 45 | agent-context PreToolUse hook | Fires on every `Agent` tool invocation; reads `~/.dotfiles/.claude/agents/<name>.lessons.md` (from `tool_input.subagent_type`); injects content as `additionalContext` via `hookSpecificOutput`; returns `{}` if no file, invalid name, or any error; content capped at 3000 chars |
