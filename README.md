@@ -96,7 +96,7 @@ To enable semantic (vector) search, run `context_embed` once. It auto-installs d
 | Memory audit | Detect orphaned memory directories when launch points change |
 | Memory consolidation | Migrate orphaned memories to parent with dedup and index rebuild |
 | Transcript import | Import historical sessions from Claude Code backups |
-| Web dashboard | Browse sessions, search observations, view analytics at `http://localhost:3847` |
+| Web dashboard | Browse sessions, search observations, view analytics at `http://localhost:3847`. Tabs: Sessions, Search (branch and pinned filters), Decisions, Lessons, Skills, Analytics, Admin, Import |
 | PreCompact hook | Saves session state before `/compact` so context survives compaction |
 | Skill lessons | Per-skill `.lessons.md` sidecar files accumulate session experience; PreToolUse hook injects them automatically before a skill loads, no configuration required |
 | Agent lessons | Per-agent `.lessons.md` sidecar files accumulate session experience; PreToolUse hook injects them automatically before an agent is spawned, mirroring the skill lessons pattern |
