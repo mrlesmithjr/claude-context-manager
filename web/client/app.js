@@ -123,6 +123,10 @@ class App extends Component {
       `;
     }
 
+    const budgetPct = (stats.token_budget ?? 0) > 0
+      ? Math.round(((stats.budget_fill_tokens ?? 0) / stats.token_budget) * 100)
+      : 0;
+
     return html`
       <div class="flex flex-wrap gap-6 text-sm">
         <div>
@@ -134,8 +138,8 @@ class App extends Component {
           <span class="ml-2 font-semibold">${stats.total_sessions.toLocaleString()}</span>
         </div>
         <div>
-          <span class="text-gray-400">Total Tokens:</span>
-          <span class="ml-2 font-semibold">${stats.total_tokens.toLocaleString()}</span>
+          <span class="text-gray-400">Context Budget:</span>
+          <span class="ml-2 font-semibold">${(stats.budget_fill_tokens ?? 0).toLocaleString()} / ${(stats.token_budget ?? 0).toLocaleString()} (${budgetPct}%)</span>
         </div>
         <div>
           <span class="text-gray-400">Avg Tokens/Session:</span>
