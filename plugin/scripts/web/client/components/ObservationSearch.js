@@ -155,7 +155,12 @@ export class ObservationSearch extends Component {
     }
 
     if (query.trim().length === 0) {
-      // Clear results if query is empty
+      // If another filter is active (pinned, branch, etc.), re-run without the query rather than clearing
+      if (this.state.pinnedOnly || this.state.selectedBranch || this.state.selectedImportance || this.state.selectedTool || this.state.selectedTag) {
+        clearTimeout(this.debounceTimer);
+        this.setState({ offset: 0, hasSearched: true }, () => this.performSearch());
+        return;
+      }
       this.setState({ observations: [], total: 0, hasSearched: false });
       return;
     }
