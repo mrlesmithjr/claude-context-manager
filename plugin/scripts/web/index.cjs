@@ -46720,6 +46720,8 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
           });
           return;
         }
+        const srcTables = db.prepare("SELECT name FROM src.sqlite_master WHERE type='table'").all().map((r) => r.name);
+        const hasDecisions = srcTables.includes("decisions");
         const results = db.transaction(() => {
           const sessionsResult = db.prepare(`
             INSERT OR IGNORE INTO main.sessions
@@ -46753,14 +46755,35 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
             INSERT OR IGNORE INTO main.file_encounter_counts
             SELECT * FROM src.file_encounter_counts
           `).run();
-          return { sessionsResult, obsResult, promptsResult, fileCountsResult };
+          const decisionsResult = hasDecisions ? db.prepare(`
+                INSERT INTO main.decisions
+                  (session_id, project, decision_text, context,
+                   decision_number, captured_at, importance_score, tags)
+                SELECT
+                  session_id, project, decision_text, context,
+                  decision_number, captured_at, importance_score, tags
+                FROM src.decisions
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM main.decisions d2
+                  WHERE d2.session_id = src.decisions.session_id
+                    AND (
+                      (src.decisions.decision_number IS NOT NULL
+                       AND d2.decision_number = src.decisions.decision_number)
+                      OR
+                      (src.decisions.decision_number IS NULL
+                       AND d2.decision_text = src.decisions.decision_text)
+                    )
+                )
+              `).run() : { changes: 0 };
+          return { sessionsResult, obsResult, promptsResult, fileCountsResult, decisionsResult };
         })();
         reply.send({
           imported: {
             observations: results.obsResult.changes,
             sessions: results.sessionsResult.changes,
             prompts: results.promptsResult.changes,
-            file_counts: results.fileCountsResult.changes
+            file_counts: results.fileCountsResult.changes,
+            decisions: results.decisionsResult.changes
           },
           skipped: ["observation_relationships", "vec_observations", "vec_sessions"],
           note: "Run context_embed in any Claude Code session to regenerate vector embeddings"
@@ -46787,7 +46810,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.148") return "0.8.148";
+  if ("0.8.150") return "0.8.150";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;

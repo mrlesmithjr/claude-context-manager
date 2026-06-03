@@ -152,6 +152,10 @@ export class ImportPanel extends Component {
           <div class="font-semibold">${imported.sessions.toLocaleString()}</div>
           <div class="text-gray-400">Prompts</div>
           <div class="font-semibold">${imported.prompts.toLocaleString()}</div>
+          ${'decisions' in imported ? html`
+            <div class="text-gray-400">Decisions</div>
+            <div class="font-semibold">${imported.decisions.toLocaleString()}</div>
+          ` : null}
           <div class="text-gray-400">File encounter records</div>
           <div class="font-semibold">${imported.file_counts.toLocaleString()}</div>
         </div>
