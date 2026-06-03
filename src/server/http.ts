@@ -529,7 +529,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
 
       const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
 
-      await storage.save({
+      const observationPayload = {
         session_id: sessionId,
         project: normalizedProject,
         tool_name: toolName,
@@ -546,7 +546,27 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         skill,
         branch,
         package: pkg,
-      });
+      };
+
+      try {
+        await storage.save(observationPayload);
+      } catch (saveErr) {
+        // Two scenarios produce an FK violation here:
+        // 1. Sub-agent sessions (Agent tool): the sub-agent spawns its own session_id
+        //    but its SessionStart hook never fires (matcher 'startup|clear|compact'
+        //    doesn't match sub-agent initialization), so no session row exists.
+        // 2. Regular sessions where remoteCreateSession() failed at startup (network
+        //    error, server restart during hook) — the session_id is valid but the
+        //    row was never written.
+        // In both cases: create a minimal session row and retry the save once.
+        // refs #236
+        if (saveErr instanceof Error && saveErr.message.includes('FOREIGN KEY')) {
+          await storage.createSession(sessionId, normalizedProject, branch ?? null);
+          await storage.save(observationPayload);
+        } else {
+          throw saveErr;
+        }
+      }
 
       await reply.send({ status: 'ok' });
     } catch (err) {
