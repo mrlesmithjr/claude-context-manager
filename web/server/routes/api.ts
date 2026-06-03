@@ -719,6 +719,11 @@ export async function registerApiRoutes(
           return;
         }
 
+        // Check whether src has the decisions table (added in a later migration; older DBs may not have it)
+        const srcTables = (db.prepare("SELECT name FROM src.sqlite_master WHERE type='table'").all() as Array<{ name: string }>)
+          .map((r: { name: string }) => r.name);
+        const hasDecisions = srcTables.includes('decisions');
+
         // observation_relationships: skipped — integer IDs from src don't map to main IDs
         // vec_observations / vec_sessions: skipped — virtual tables, not ATTACH-copyable
         const results = db.transaction(() => {
@@ -763,7 +768,34 @@ export async function registerApiRoutes(
             SELECT * FROM src.file_encounter_counts
           `).run();
 
-          return { sessionsResult, obsResult, promptsResult, fileCountsResult };
+          // decisions: only present in DBs that have run the decisions migration.
+          // Dedup: prefer decision_number (structural key) when non-null; fall back to
+          // decision_text for rows where decision_number is null.
+          // FTS5 triggers on decisions_ai maintain the decisions_fts index automatically.
+          const decisionsResult = hasDecisions
+            ? db.prepare(`
+                INSERT INTO main.decisions
+                  (session_id, project, decision_text, context,
+                   decision_number, captured_at, importance_score, tags)
+                SELECT
+                  session_id, project, decision_text, context,
+                  decision_number, captured_at, importance_score, tags
+                FROM src.decisions
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM main.decisions d2
+                  WHERE d2.session_id = src.decisions.session_id
+                    AND (
+                      (src.decisions.decision_number IS NOT NULL
+                       AND d2.decision_number = src.decisions.decision_number)
+                      OR
+                      (src.decisions.decision_number IS NULL
+                       AND d2.decision_text = src.decisions.decision_text)
+                    )
+                )
+              `).run()
+            : { changes: 0 };
+
+          return { sessionsResult, obsResult, promptsResult, fileCountsResult, decisionsResult };
         })();
 
         reply.send({
@@ -772,6 +804,7 @@ export async function registerApiRoutes(
             sessions: results.sessionsResult.changes,
             prompts: results.promptsResult.changes,
             file_counts: results.fileCountsResult.changes,
+            decisions: results.decisionsResult.changes,
           },
           skipped: ['observation_relationships', 'vec_observations', 'vec_sessions'],
           note: 'Run context_embed in any Claude Code session to regenerate vector embeddings',
