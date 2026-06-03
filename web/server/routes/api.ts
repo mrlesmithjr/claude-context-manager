@@ -34,8 +34,14 @@ interface ObservationsQuerystring {
   importance?: 'high' | 'medium' | 'low';
   /** Filter by tag (exact match). When provided, searchByTag is used instead of normal search. */
   tag?: string;
+  /** Filter by git branch (exact match against observations.branch). refs #227 */
+  branch?: string;
   limit?: number;
   offset?: number;
+}
+
+interface ObservationsBranchesQuerystring {
+  project?: string;
 }
 
 interface StatsQuerystring {
@@ -243,6 +249,43 @@ export async function registerApiRoutes(
     }
   );
 
+  // GET /api/observations/branches - Get distinct branch names from observations (refs #227)
+  // IMPORTANT: registered BEFORE /api/observations/:id (if it existed) to prevent Fastify
+  // capturing 'branches' as a param. Mirrors the /api/sessions/branches pattern at line 116.
+  fastify.get<{ Querystring: ObservationsBranchesQuerystring }>(
+    '/api/observations/branches',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', maxLength: MAX_PROJECT_LEN },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { project } = request.query;
+
+      if (isNetworkMode && !project) {
+        reply.status(400).send({ error: 'project parameter is required in network mode' });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode)) {
+        reply.status(403).send({ error: 'Project path too broad for network mode' });
+        return;
+      }
+
+      try {
+        const branches = await storage.getDistinctObservationBranches(project || '/');
+        reply.send({ branches });
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: 'Failed to retrieve observation branches' });
+      }
+    }
+  );
+
   // GET /api/observations - Search/list observations (refs #131: added importance and tag filters)
   fastify.get<{ Querystring: ObservationsQuerystring }>(
     '/api/observations',
@@ -256,6 +299,7 @@ export async function registerApiRoutes(
             tool: { type: 'string', maxLength: MAX_TOOL_LEN },
             importance: { type: 'string', enum: ['high', 'medium', 'low'] },
             tag: { type: 'string', maxLength: 64 },
+            branch: { type: 'string', maxLength: 255 },
             limit: { type: 'integer', minimum: 1, maximum: 200 },
             offset: { type: 'integer', minimum: 0 },
           },
@@ -263,7 +307,7 @@ export async function registerApiRoutes(
       },
     },
     async (request, reply) => {
-      const { q, project, tool, importance, tag, limit = 50, offset = 0 } = request.query;
+      const { q, project, tool, importance, tag, branch, limit = 50, offset = 0 } = request.query;
 
       if (isNetworkMode && !project) {
         reply.status(400).send({ error: 'project parameter is required in network mode' });
@@ -280,9 +324,11 @@ export async function registerApiRoutes(
         let total: number;
 
         if (tag) {
-          // Tag-based search: searchByTag has no importance/tool awareness, so
+          // Tag-based search: searchByTag has no importance/tool/branch awareness, so
           // post-filter in memory. Pagination is not supported for tag queries
           // (searchByTag applies LIMIT before post-filtering).
+          // NOTE: branch post-filter here has the same LIMIT-before-filter caveat as
+          // tool and importance: the page may be under-filled when branch is active.
           observations = await storage.searchByTag(tag, project, limit);
           if (tool) {
             observations = observations.filter((obs) => obs.tool_name === tool);
@@ -290,12 +336,17 @@ export async function registerApiRoutes(
           if (importance) {
             observations = observations.filter((obs) => obs.importance === importance);
           }
+          if (branch) {
+            observations = observations.filter((obs) => obs.branch === branch);
+          }
           // Total reflects post-filtered count; no DB count available for tag queries
           total = observations.length;
-        } else if (q || importance) {
-          // Full-text search with DB-level importance and tool filters for correct pagination.
-          // Route the no-query+importance case through search() so filtering
-          // happens in SQL rather than in memory (avoids under-filled pages).
+        } else if (q || importance || branch) {
+          // Full-text search with DB-level importance, tool, and branch filters for correct
+          // pagination. Route the no-query+importance/branch case through search() so
+          // filtering happens in SQL rather than in memory (avoids under-filled pages).
+          // The empty-query guard in search() prevents FTS5 MATCH '' errors when only
+          // branch or importance is set. refs #227
           // toolName pushed into SQL so pages are dense (fixes #127).
           observations = await storage.search(q || '', {
             project,
@@ -303,10 +354,11 @@ export async function registerApiRoutes(
             offset,
             importance,
             toolName: tool,
+            branch,
           });
-          total = await storage.countObservations(project, tool, importance);
+          total = await storage.countObservations(project, tool, importance, branch);
         } else {
-          // Plain recent observations -- no search query, no importance filter.
+          // Plain recent observations -- no search query, no importance/branch filter.
           // toolName pushed into SQL so pages are dense (fixes #127).
           observations = await storage.getRecent(project || '', limit, offset, tool);
           total = await storage.countObservations(project, tool);
