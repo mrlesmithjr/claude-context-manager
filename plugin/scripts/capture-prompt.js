@@ -1306,6 +1306,21 @@ ${storedOutput}`;
     const rows = stmt.all();
     return rows;
   }
+  async getDistinctProjectPaths() {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all();
+    return rows.map((r) => r.project);
+  }
   async getSessionObservations(sessionId) {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
@@ -2991,20 +3006,61 @@ ${storedOutput}`;
 
 // src/utils/validation.ts
 import { realpathSync } from "fs";
-import { homedir as homedir2 } from "os";
+import { homedir as homedir3 } from "os";
 import path2 from "path";
+
+// src/utils/find-project-root.ts
+import { existsSync } from "fs";
+import { homedir as homedir2 } from "os";
+import { dirname, join } from "path";
+var DEFAULT_ROOT_MARKERS = [
+  ".git",
+  ".obsidian",
+  "package.json",
+  "Cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  ".claude"
+];
+function getMarkers() {
+  const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
+  if (!extra) return DEFAULT_ROOT_MARKERS;
+  const extras = extra.split(",").map((s) => s.trim()).filter(Boolean);
+  return [...DEFAULT_ROOT_MARKERS, ...extras];
+}
+function findProjectRoot(cwd) {
+  const markers = getMarkers();
+  const home = homedir2();
+  let current = cwd;
+  while (current !== home && current !== dirname(current)) {
+    for (const marker of markers) {
+      if (existsSync(join(current, marker))) {
+        return current;
+      }
+    }
+    current = dirname(current);
+  }
+  for (const marker of markers) {
+    if (existsSync(join(home, marker))) {
+      return home;
+    }
+  }
+  return cwd;
+}
+
+// src/utils/validation.ts
 var ALLOWED_PROJECT_ROOTS = [
-  path2.join(homedir2(), "Projects"),
-  path2.join(homedir2(), "projects"),
-  path2.join(homedir2(), "Dev"),
-  path2.join(homedir2(), "dev"),
-  path2.join(homedir2(), "Code"),
-  path2.join(homedir2(), "code"),
-  path2.join(homedir2(), "Workspace"),
-  path2.join(homedir2(), "workspace"),
-  path2.join(homedir2(), "Documents"),
+  path2.join(homedir3(), "Projects"),
+  path2.join(homedir3(), "projects"),
+  path2.join(homedir3(), "Dev"),
+  path2.join(homedir3(), "dev"),
+  path2.join(homedir3(), "Code"),
+  path2.join(homedir3(), "code"),
+  path2.join(homedir3(), "Workspace"),
+  path2.join(homedir3(), "workspace"),
+  path2.join(homedir3(), "Documents"),
   // Common location
-  homedir2()
+  homedir3()
   // Allow home directory as fallback
 ];
 function validateProjectPath(projectPath) {
@@ -3044,7 +3100,7 @@ function validateUserPromptSubmitInput(input) {
   if (typeof obj.prompt !== "string" || obj.prompt.length === 0) {
     throw new Error("Invalid input: prompt must be non-empty string");
   }
-  const validatedCwd = validateProjectPath(obj.cwd);
+  const validatedCwd = findProjectRoot(validateProjectPath(obj.cwd));
   return {
     session_id: obj.session_id,
     cwd: validatedCwd,
@@ -3133,9 +3189,9 @@ function sanitizeContent(content) {
 
 // src/utils/logger.ts
 import { appendFileSync, mkdirSync as mkdirSync2, statSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
-import { homedir as homedir3 } from "os";
-var LOG_DIR = join(homedir3(), ".claude-context", "logs");
+import { join as join2 } from "path";
+import { homedir as homedir4 } from "os";
+var LOG_DIR = join2(homedir4(), ".claude-context", "logs");
 var MAX_LOG_SIZE = 1 * 1024 * 1024;
 var KEEP_SIZE = 500 * 1024;
 function isDebugEnabled() {
@@ -3154,7 +3210,7 @@ function rotateIfNeeded(logFile) {
   }
 }
 function createDebugLogger(logFileName) {
-  const logFile = join(LOG_DIR, logFileName);
+  const logFile = join2(LOG_DIR, logFileName);
   return (label, data) => {
     if (!isDebugEnabled()) return;
     try {
@@ -3203,10 +3259,10 @@ async function remoteExportMemory(client, project, sessionId) {
 
 // src/utils/env.ts
 import { readFileSync as readFileSync2 } from "node:fs";
-import { join as join2 } from "node:path";
-import { homedir as homedir4 } from "node:os";
+import { join as join3 } from "node:path";
+import { homedir as homedir5 } from "node:os";
 function loadDotEnv() {
-  const envPath = join2(homedir4(), ".claude-context", ".env");
+  const envPath = join3(homedir5(), ".claude-context", ".env");
   try {
     const content = readFileSync2(envPath, "utf8");
     for (const line of content.split("\n")) {
@@ -3231,9 +3287,9 @@ function loadDotEnv() {
 }
 
 // src/export/memory.ts
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, writeFileSync as writeFileSync2, existsSync } from "fs";
-import { join as join3 } from "path";
-import { homedir as homedir5 } from "os";
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, writeFileSync as writeFileSync2, existsSync as existsSync2 } from "fs";
+import { join as join4 } from "path";
+import { homedir as homedir6 } from "os";
 
 // src/utils/transcript.ts
 function convertPathToDashed(projectPath) {
@@ -3384,7 +3440,7 @@ var DEFAULT_MAX_LINES = 150;
 var MAX_ITEMS_PER_SESSION = 6;
 function resolveMemoryDir(projectPath) {
   const dashedPath = convertPathToDashed(projectPath);
-  return join3(homedir5(), ".claude", "projects", dashedPath, "memory");
+  return join4(homedir6(), ".claude", "projects", dashedPath, "memory");
 }
 function formatObservationsForMemory(observations, sessions) {
   if (observations.length === 0) return "";
@@ -3634,7 +3690,7 @@ function rebuildFromBlocks(blocks) {
 function writeActivityToMemory(projectPath, newContent, maxLines = DEFAULT_MAX_LINES) {
   const memoryDir = resolveMemoryDir(projectPath);
   mkdirSync3(memoryDir, { recursive: true });
-  const filePath = join3(memoryDir, TOPIC_FILE);
+  const filePath = join4(memoryDir, TOPIC_FILE);
   const header = [
     "# Project Activity Log",
     "",
@@ -3643,7 +3699,7 @@ function writeActivityToMemory(projectPath, newContent, maxLines = DEFAULT_MAX_L
     ""
   ].join("\n");
   let existingBody = "";
-  if (existsSync(filePath)) {
+  if (existsSync2(filePath)) {
     const existing = readFileSync3(filePath, "utf-8");
     const bodyMatch = existing.match(/^(## .+)/m);
     if (bodyMatch?.index !== void 0) {
@@ -3703,7 +3759,7 @@ ${headingBlock}`;
 // plugin/hooks/capture-prompt.ts
 import * as fs from "fs";
 import { realpathSync as realpathSync2 } from "fs";
-import { homedir as homedir6 } from "os";
+import { homedir as homedir7 } from "os";
 import path3 from "path";
 var NO_NATIVE_ERROR = "[context-manager] No server configured and native SQLite modules are not available.\nRun 'make server-quickstart' (macOS) or 'make server-start' (Docker) to set up a server,\nthen restart Claude Code.\nFor local SQLite mode: clone the repo, run 'npm install', and install locally with\n'/plugin marketplace add /path/to/repo'.";
 var debugLog = createDebugLogger("prompt-hook-debug.log");
@@ -3740,7 +3796,7 @@ function readCheckpointIntervalMs() {
 }
 function safeResolveTranscriptPath(raw) {
   if (typeof raw !== "string" || raw.length === 0) return null;
-  const expectedRoot = path3.resolve(homedir6(), ".claude", "projects");
+  const expectedRoot = path3.resolve(homedir7(), ".claude", "projects");
   try {
     const resolved = realpathSync2(raw);
     if (resolved.startsWith(expectedRoot + path3.sep)) return resolved;

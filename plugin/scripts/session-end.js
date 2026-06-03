@@ -1306,6 +1306,21 @@ ${storedOutput}`;
     const rows = stmt.all();
     return rows;
   }
+  async getDistinctProjectPaths() {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all();
+    return rows.map((r) => r.project);
+  }
   async getSessionObservations(sessionId) {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
@@ -2991,20 +3006,61 @@ ${storedOutput}`;
 
 // src/utils/validation.ts
 import { realpathSync } from "fs";
-import { homedir as homedir2 } from "os";
+import { homedir as homedir3 } from "os";
 import path2 from "path";
+
+// src/utils/find-project-root.ts
+import { existsSync } from "fs";
+import { homedir as homedir2 } from "os";
+import { dirname, join } from "path";
+var DEFAULT_ROOT_MARKERS = [
+  ".git",
+  ".obsidian",
+  "package.json",
+  "Cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  ".claude"
+];
+function getMarkers() {
+  const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
+  if (!extra) return DEFAULT_ROOT_MARKERS;
+  const extras = extra.split(",").map((s) => s.trim()).filter(Boolean);
+  return [...DEFAULT_ROOT_MARKERS, ...extras];
+}
+function findProjectRoot(cwd) {
+  const markers = getMarkers();
+  const home = homedir2();
+  let current = cwd;
+  while (current !== home && current !== dirname(current)) {
+    for (const marker of markers) {
+      if (existsSync(join(current, marker))) {
+        return current;
+      }
+    }
+    current = dirname(current);
+  }
+  for (const marker of markers) {
+    if (existsSync(join(home, marker))) {
+      return home;
+    }
+  }
+  return cwd;
+}
+
+// src/utils/validation.ts
 var ALLOWED_PROJECT_ROOTS = [
-  path2.join(homedir2(), "Projects"),
-  path2.join(homedir2(), "projects"),
-  path2.join(homedir2(), "Dev"),
-  path2.join(homedir2(), "dev"),
-  path2.join(homedir2(), "Code"),
-  path2.join(homedir2(), "code"),
-  path2.join(homedir2(), "Workspace"),
-  path2.join(homedir2(), "workspace"),
-  path2.join(homedir2(), "Documents"),
+  path2.join(homedir3(), "Projects"),
+  path2.join(homedir3(), "projects"),
+  path2.join(homedir3(), "Dev"),
+  path2.join(homedir3(), "dev"),
+  path2.join(homedir3(), "Code"),
+  path2.join(homedir3(), "code"),
+  path2.join(homedir3(), "Workspace"),
+  path2.join(homedir3(), "workspace"),
+  path2.join(homedir3(), "Documents"),
   // Common location
-  homedir2()
+  homedir3()
   // Allow home directory as fallback
 ];
 function validateProjectPath(projectPath) {
@@ -3040,10 +3096,10 @@ function validateStopInput(input) {
   if (typeof obj.cwd !== "string" || obj.cwd.length === 0) {
     throw new Error("Invalid input: cwd must be non-empty string");
   }
-  const validatedCwd = validateProjectPath(obj.cwd);
+  const validatedCwd = findProjectRoot(validateProjectPath(obj.cwd));
   let transcriptPath;
   if (typeof obj.transcript_path === "string" && obj.transcript_path.length > 0) {
-    const expectedRoot = path2.resolve(homedir2(), ".claude", "projects");
+    const expectedRoot = path2.resolve(homedir3(), ".claude", "projects");
     try {
       const resolved = realpathSync(obj.transcript_path);
       if (resolved.startsWith(expectedRoot + path2.sep)) {
@@ -3061,9 +3117,9 @@ function validateStopInput(input) {
 
 // src/utils/logger.ts
 import { appendFileSync, mkdirSync as mkdirSync2, statSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
-import { homedir as homedir3 } from "os";
-var LOG_DIR = join(homedir3(), ".claude-context", "logs");
+import { join as join2 } from "path";
+import { homedir as homedir4 } from "os";
+var LOG_DIR = join2(homedir4(), ".claude-context", "logs");
 var MAX_LOG_SIZE = 1 * 1024 * 1024;
 var KEEP_SIZE = 500 * 1024;
 function isDebugEnabled() {
@@ -3082,7 +3138,7 @@ function rotateIfNeeded(logFile) {
   }
 }
 function createDebugLogger(logFileName) {
-  const logFile = join(LOG_DIR, logFileName);
+  const logFile = join2(LOG_DIR, logFileName);
   return (label, data) => {
     if (!isDebugEnabled()) return;
     try {
@@ -3099,9 +3155,9 @@ function createDebugLogger(logFileName) {
 }
 
 // src/export/memory.ts
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync2, writeFileSync as writeFileSync2, existsSync } from "fs";
-import { join as join2 } from "path";
-import { homedir as homedir4 } from "os";
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync2, writeFileSync as writeFileSync2, existsSync as existsSync2 } from "fs";
+import { join as join3 } from "path";
+import { homedir as homedir5 } from "os";
 
 // src/utils/transcript.ts
 function convertPathToDashed(projectPath) {
@@ -3252,7 +3308,7 @@ var DEFAULT_MAX_LINES = 150;
 var MAX_ITEMS_PER_SESSION = 6;
 function resolveMemoryDir(projectPath) {
   const dashedPath = convertPathToDashed(projectPath);
-  return join2(homedir4(), ".claude", "projects", dashedPath, "memory");
+  return join3(homedir5(), ".claude", "projects", dashedPath, "memory");
 }
 function formatObservationsForMemory(observations, sessions) {
   if (observations.length === 0) return "";
@@ -3502,7 +3558,7 @@ function rebuildFromBlocks(blocks) {
 function writeActivityToMemory(projectPath, newContent, maxLines = DEFAULT_MAX_LINES) {
   const memoryDir = resolveMemoryDir(projectPath);
   mkdirSync3(memoryDir, { recursive: true });
-  const filePath = join2(memoryDir, TOPIC_FILE);
+  const filePath = join3(memoryDir, TOPIC_FILE);
   const header = [
     "# Project Activity Log",
     "",
@@ -3511,7 +3567,7 @@ function writeActivityToMemory(projectPath, newContent, maxLines = DEFAULT_MAX_L
     ""
   ].join("\n");
   let existingBody = "";
-  if (existsSync(filePath)) {
+  if (existsSync2(filePath)) {
     const existing = readFileSync2(filePath, "utf-8");
     const bodyMatch = existing.match(/^(## .+)/m);
     if (bodyMatch?.index !== void 0) {
@@ -3647,10 +3703,10 @@ async function remoteGetNextDecisionNumber(client, project) {
 
 // src/utils/env.ts
 import { readFileSync as readFileSync3 } from "node:fs";
-import { join as join3 } from "node:path";
-import { homedir as homedir5 } from "node:os";
+import { join as join4 } from "node:path";
+import { homedir as homedir6 } from "node:os";
 function loadDotEnv() {
-  const envPath = join3(homedir5(), ".claude-context", ".env");
+  const envPath = join4(homedir6(), ".claude-context", ".env");
   try {
     const content = readFileSync3(envPath, "utf8");
     for (const line of content.split("\n")) {
@@ -3692,9 +3748,9 @@ function getCurrentBranch(cwd) {
 }
 
 // src/utils/lessons.ts
-import { existsSync as existsSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "fs";
-import { join as join4 } from "path";
-import { homedir as homedir6 } from "os";
+import { existsSync as existsSync3, mkdirSync as mkdirSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "fs";
+import { join as join5 } from "path";
+import { homedir as homedir7 } from "os";
 var SAFE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 var INVOCATION_THRESHOLD = 0.5;
 function summarizeObservation(obs) {
@@ -3716,9 +3772,9 @@ function buildLessonBullets(observations) {
 }
 function resolveLessonsPath(name, toolKind) {
   if (toolKind === "agent") {
-    return join4(homedir6(), ".dotfiles", ".claude", "agents", `${name}.lessons.md`);
+    return join5(homedir7(), ".dotfiles", ".claude", "agents", `${name}.lessons.md`);
   }
-  return join4(homedir6(), ".dotfiles", ".claude", "skills", name, ".lessons.md");
+  return join5(homedir7(), ".dotfiles", ".claude", "skills", name, ".lessons.md");
 }
 function appendLessons(filePath, name, toolKind, today, bullets) {
   const mcpTool = toolKind === "agent" ? `context_agent_lessons` : `context_skill_lessons skill:${name}`;
@@ -3728,7 +3784,7 @@ function appendLessons(filePath, name, toolKind, today, bullets) {
 `;
   const dateHeading = `## ${today}`;
   const bulletBlock = bullets.join("\n");
-  if (!existsSync2(filePath)) {
+  if (!existsSync3(filePath)) {
     const parentDir = filePath.substring(0, filePath.lastIndexOf("/"));
     mkdirSync4(parentDir, { recursive: true });
     writeFileSync3(filePath, `${header}

@@ -23658,6 +23658,21 @@ ${storedOutput}`;
     const rows = stmt.all();
     return rows;
   }
+  async getDistinctProjectPaths() {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all();
+    return rows.map((r) => r.project);
+  }
   async getSessionObservations(sessionId) {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
@@ -33539,9 +33554,9 @@ var EMPTY_COMPLETION_RESULT = {
 
 // src/mcp/create-server.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync5, readFileSync as readFileSync4 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync4 } from "fs";
 import { join as pathJoin } from "path";
-import { homedir as homedir5 } from "os";
+import { homedir as homedir6 } from "os";
 
 // src/export/memory.ts
 import { mkdirSync as mkdirSync3, readFileSync, writeFileSync as writeFileSync2, existsSync as existsSync2 } from "fs";
@@ -34642,6 +34657,45 @@ function getCurrentBranch(cwd) {
   }
 }
 
+// src/utils/find-project-root.ts
+import { existsSync as existsSync5 } from "fs";
+import { homedir as homedir5 } from "os";
+import { dirname as dirname2, join as join5 } from "path";
+var DEFAULT_ROOT_MARKERS = [
+  ".git",
+  ".obsidian",
+  "package.json",
+  "Cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  ".claude"
+];
+function getMarkers() {
+  const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
+  if (!extra) return DEFAULT_ROOT_MARKERS;
+  const extras = extra.split(",").map((s) => s.trim()).filter(Boolean);
+  return [...DEFAULT_ROOT_MARKERS, ...extras];
+}
+function findProjectRoot(cwd) {
+  const markers = getMarkers();
+  const home = homedir5();
+  let current = cwd;
+  while (current !== home && current !== dirname2(current)) {
+    for (const marker of markers) {
+      if (existsSync5(join5(current, marker))) {
+        return current;
+      }
+    }
+    current = dirname2(current);
+  }
+  for (const marker of markers) {
+    if (existsSync5(join5(home, marker))) {
+      return home;
+    }
+  }
+  return cwd;
+}
+
 // src/mcp/create-server.ts
 var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
 var ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
@@ -34701,7 +34755,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.143" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.144" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -34953,7 +35007,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.143" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.144" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -35429,7 +35483,7 @@ ${lines.join("\n")}`
       }
       const resolvedProject = np(project) ?? project ?? process.cwd();
       let pathWarning = "";
-      if (resolvedProject && !existsSync5(resolvedProject)) {
+      if (resolvedProject && !existsSync6(resolvedProject)) {
         pathWarning = `
 Note: project path '${resolvedProject}' does not exist on disk. Observations will only be visible when searching from this exact path.`;
       }
@@ -36195,8 +36249,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir5(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
-      if (!existsSync5(lessonsPath)) {
+      const lessonsPath = pathJoin(homedir6(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
+      if (!existsSync6(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -36226,8 +36280,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir5(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
-      if (!existsSync5(lessonsPath)) {
+      const lessonsPath = pathJoin(homedir6(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
+      if (!existsSync6(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -36273,6 +36327,84 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
       return { content: [{ type: "text", text }] };
     }
   );
+  server.tool(
+    "context_consolidate_projects",
+    "Find and optionally merge project keys that are subdirectories of a known root. Useful for repairing fragmented history caused by launching Claude from a subdirectory (e.g. an Obsidian DailyNotes folder) before project root normalization was active. Use dry_run: true (default) to preview what would change before committing.",
+    {
+      dry_run: external_exports.boolean().default(true).describe("Preview changes without modifying the database (default: true). Set to false to execute the merge."),
+      project: external_exports.string().optional().describe("Limit consolidation to paths under this project subtree. Omit to scan all projects.")
+    },
+    async ({ dry_run, project }) => {
+      if (isProxy) {
+        return proxyToolCall("context_consolidate_projects", { dry_run, project: np(project) }, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const allPaths = await db.getDistinctProjectPaths();
+      const pathFilter = np(project);
+      const candidatePaths = pathFilter ? allPaths.filter((p) => p === pathFilter || p.startsWith(pathFilter + "/")) : allPaths;
+      const renames = [];
+      for (const p of candidatePaths) {
+        const root = findProjectRoot(p);
+        if (root !== p) {
+          renames.push({ from: p, to: root });
+        }
+      }
+      if (renames.length === 0) {
+        return {
+          content: [{
+            type: "text",
+            text: "No fragmented project paths found. All project keys are already at their nearest root."
+          }]
+        };
+      }
+      if (dry_run) {
+        const allProjects = await db.getProjects();
+        const lines2 = [
+          `DRY RUN \u2014 ${renames.length} path(s) would be consolidated:`,
+          ""
+        ];
+        for (const { from, to } of renames) {
+          const obsEntry = allProjects.find((p) => p.path === from);
+          const obsCount = obsEntry?.observation_count ?? 0;
+          lines2.push(`  "${from}"`);
+          lines2.push(`    -> "${to}"`);
+          lines2.push(`    ${obsCount} observation(s) affected`);
+          lines2.push("");
+        }
+        lines2.push("Run with dry_run: false to apply these changes.");
+        return {
+          content: [{ type: "text", text: lines2.join("\n") }]
+        };
+      }
+      let totalObs = 0;
+      let totalSessions = 0;
+      const rawDb = db.db;
+      for (const { from, to } of renames) {
+        const obsResult = rawDb.prepare(
+          "UPDATE observations SET project = ? WHERE project = ?"
+        ).run(to, from);
+        const sesResult = rawDb.prepare(
+          "UPDATE sessions SET project = ? WHERE project = ?"
+        ).run(to, from);
+        rawDb.prepare("UPDATE user_prompts SET project = ? WHERE project = ?").run(to, from);
+        rawDb.prepare("UPDATE decisions SET project = ? WHERE project = ?").run(to, from);
+        totalObs += obsResult.changes;
+        totalSessions += sesResult.changes;
+      }
+      const lines = [
+        `Consolidated ${renames.length} fragmented path(s):`,
+        `  ${totalObs} observation(s) updated`,
+        `  ${totalSessions} session(s) updated`,
+        ""
+      ];
+      for (const { from, to } of renames) {
+        lines.push(`  "${from}" -> "${to}"`);
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }]
+      };
+    }
+  );
   const rawServer = server;
   const registeredTools = rawServer._registeredTools;
   const underlyingServer = rawServer.server;
@@ -36307,10 +36439,10 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
 
 // src/utils/env.ts
 import { readFileSync as readFileSync5 } from "node:fs";
-import { join as join5 } from "node:path";
-import { homedir as homedir6 } from "node:os";
+import { join as join6 } from "node:path";
+import { homedir as homedir7 } from "node:os";
 function loadDotEnv() {
-  const envPath = join5(homedir6(), ".claude-context", ".env");
+  const envPath = join6(homedir7(), ".claude-context", ".env");
   try {
     const content = readFileSync5(envPath, "utf8");
     for (const line of content.split("\n")) {

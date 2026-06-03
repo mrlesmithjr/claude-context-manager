@@ -1306,6 +1306,21 @@ ${storedOutput}`;
     const rows = stmt.all();
     return rows;
   }
+  async getDistinctProjectPaths() {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all();
+    return rows.map((r) => r.project);
+  }
   async getSessionObservations(sessionId) {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
@@ -2991,21 +3006,62 @@ ${storedOutput}`;
 
 // src/utils/validation.ts
 import { realpathSync } from "fs";
-import { homedir as homedir2 } from "os";
+import { homedir as homedir3 } from "os";
 import path2 from "path";
 import { randomBytes } from "crypto";
+
+// src/utils/find-project-root.ts
+import { existsSync } from "fs";
+import { homedir as homedir2 } from "os";
+import { dirname, join } from "path";
+var DEFAULT_ROOT_MARKERS = [
+  ".git",
+  ".obsidian",
+  "package.json",
+  "Cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  ".claude"
+];
+function getMarkers() {
+  const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
+  if (!extra) return DEFAULT_ROOT_MARKERS;
+  const extras = extra.split(",").map((s) => s.trim()).filter(Boolean);
+  return [...DEFAULT_ROOT_MARKERS, ...extras];
+}
+function findProjectRoot(cwd) {
+  const markers = getMarkers();
+  const home = homedir2();
+  let current = cwd;
+  while (current !== home && current !== dirname(current)) {
+    for (const marker of markers) {
+      if (existsSync(join(current, marker))) {
+        return current;
+      }
+    }
+    current = dirname(current);
+  }
+  for (const marker of markers) {
+    if (existsSync(join(home, marker))) {
+      return home;
+    }
+  }
+  return cwd;
+}
+
+// src/utils/validation.ts
 var ALLOWED_PROJECT_ROOTS = [
-  path2.join(homedir2(), "Projects"),
-  path2.join(homedir2(), "projects"),
-  path2.join(homedir2(), "Dev"),
-  path2.join(homedir2(), "dev"),
-  path2.join(homedir2(), "Code"),
-  path2.join(homedir2(), "code"),
-  path2.join(homedir2(), "Workspace"),
-  path2.join(homedir2(), "workspace"),
-  path2.join(homedir2(), "Documents"),
+  path2.join(homedir3(), "Projects"),
+  path2.join(homedir3(), "projects"),
+  path2.join(homedir3(), "Dev"),
+  path2.join(homedir3(), "dev"),
+  path2.join(homedir3(), "Code"),
+  path2.join(homedir3(), "code"),
+  path2.join(homedir3(), "Workspace"),
+  path2.join(homedir3(), "workspace"),
+  path2.join(homedir3(), "Documents"),
   // Common location
-  homedir2()
+  homedir3()
   // Allow home directory as fallback
 ];
 function validateProjectPath(projectPath) {
@@ -3045,7 +3101,7 @@ function validateSessionStartInput(input) {
     try {
       validatedCwd = validateProjectPath(process.cwd());
     } catch {
-      const fallback = homedir2();
+      const fallback = homedir3();
       const inputDescription = hookCwd ? `'${hookCwd}'` : "(none \u2014 hook sent no cwd)";
       console.error(`[context-manager] WARNING: could not validate project path ${inputDescription} or process.cwd(), falling back to home directory. Observations will be scoped to ${fallback}`);
       validatedCwd = fallback;
@@ -3053,14 +3109,14 @@ function validateSessionStartInput(input) {
   }
   return {
     session_id,
-    cwd: validatedCwd
+    cwd: findProjectRoot(validatedCwd)
   };
 }
 
 // plugin/hooks/context-inject.ts
-import { existsSync, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync } from "fs";
-import { join as join2 } from "path";
-import { homedir as homedir4 } from "os";
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync } from "fs";
+import { join as join3 } from "path";
+import { homedir as homedir5 } from "os";
 
 // src/capture/remote-client.ts
 import { randomUUID as randomUUID2 } from "crypto";
@@ -3145,10 +3201,10 @@ async function remoteMcpText(client, toolName, args) {
 
 // src/utils/env.ts
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir as homedir3 } from "node:os";
+import { join as join2 } from "node:path";
+import { homedir as homedir4 } from "node:os";
 function loadDotEnv() {
-  const envPath = join(homedir3(), ".claude-context", ".env");
+  const envPath = join2(homedir4(), ".claude-context", ".env");
   try {
     const content = readFileSync(envPath, "utf8");
     for (const line of content.split("\n")) {
@@ -3212,25 +3268,25 @@ function writeResponse(data) {
 }
 function checkVersionMismatch() {
   try {
-    const installedPluginPath = join2(
-      homedir4(),
+    const installedPluginPath = join3(
+      homedir5(),
       ".claude",
       "plugins",
       "context-manager",
       "package.json"
     );
-    if (!existsSync(installedPluginPath)) {
+    if (!existsSync2(installedPluginPath)) {
       return "";
     }
     const installedPackageJson = JSON.parse(
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.143") {
+    if (installedVersion !== "0.8.144") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.143"}
+   Source:    v${"0.8.144"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -3240,21 +3296,21 @@ function checkVersionMismatch() {
     return "";
   }
 }
-var PLUGIN_VERSION_FILE = join2(homedir4(), ".claude-context", ".plugin-version");
+var PLUGIN_VERSION_FILE = join3(homedir5(), ".claude-context", ".plugin-version");
 function checkPostUpdate() {
   try {
-    const stored = existsSync(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.143") return "";
+    const stored = existsSync2(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
+    if (stored === "0.8.144") return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.143"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.144"}. Hooks active.`;
   } catch {
     return "";
   }
 }
 function markVersionActivated() {
   try {
-    mkdirSync2(join2(homedir4(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.143", "utf-8");
+    mkdirSync2(join3(homedir5(), ".claude-context"), { recursive: true });
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.144", "utf-8");
   } catch {
   }
 }
@@ -3335,7 +3391,7 @@ async function main() {
       const statsText = await remoteMcpText(client, "context_stats", { project: input.cwd });
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1]) remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.143"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.144"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3434,7 +3490,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.143"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.144"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

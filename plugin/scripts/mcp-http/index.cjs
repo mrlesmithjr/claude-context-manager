@@ -5446,7 +5446,7 @@ var require_thread_stream = __commonJS({
     var { version: version2 } = require_package();
     var { EventEmitter } = require("events");
     var { Worker } = require("worker_threads");
-    var { join: join6 } = require("path");
+    var { join: join7 } = require("path");
     var { pathToFileURL } = require("url");
     var { wait } = require_wait();
     var {
@@ -5482,7 +5482,7 @@ var require_thread_stream = __commonJS({
     function createWorker(stream, opts) {
       const { filename, workerData } = opts;
       const bundlerOverrides = "__bundlerPathsOverrides" in globalThis ? globalThis.__bundlerPathsOverrides : {};
-      const toExecute = bundlerOverrides["thread-stream-worker"] || join6(__dirname, "lib", "worker.js");
+      const toExecute = bundlerOverrides["thread-stream-worker"] || join7(__dirname, "lib", "worker.js");
       const worker = new Worker(toExecute, {
         ...opts.workerOpts,
         trackUnmanagedFds: false,
@@ -5868,7 +5868,7 @@ var require_transport = __commonJS({
     "use strict";
     var { createRequire: createRequire2 } = require("module");
     var getCallers = require_caller();
-    var { join: join6, isAbsolute, sep } = require("node:path");
+    var { join: join7, isAbsolute, sep } = require("node:path");
     var sleep = require_atomic_sleep();
     var onExit = require_on_exit_leak_free();
     var ThreadStream = require_thread_stream();
@@ -5931,7 +5931,7 @@ var require_transport = __commonJS({
         throw new Error("only one of target or targets can be specified");
       }
       if (targets) {
-        target = bundlerOverrides["pino-worker"] || join6(__dirname, "worker.js");
+        target = bundlerOverrides["pino-worker"] || join7(__dirname, "worker.js");
         options.targets = targets.filter((dest) => dest.target).map((dest) => {
           return {
             ...dest,
@@ -5949,7 +5949,7 @@ var require_transport = __commonJS({
           });
         });
       } else if (pipeline) {
-        target = bundlerOverrides["pino-worker"] || join6(__dirname, "worker.js");
+        target = bundlerOverrides["pino-worker"] || join7(__dirname, "worker.js");
         options.pipelines = [pipeline.map((dest) => {
           return {
             ...dest,
@@ -5971,7 +5971,7 @@ var require_transport = __commonJS({
           return origin;
         }
         if (origin === "pino/file") {
-          return join6(__dirname, "..", "file.js");
+          return join7(__dirname, "..", "file.js");
         }
         let fixTarget2;
         for (const filePath of callers) {
@@ -6949,7 +6949,7 @@ var require_safe_stable_stringify = __commonJS({
               return circularValue;
             }
             let res = "";
-            let join6 = ",";
+            let join7 = ",";
             const originalIndentation = indentation;
             if (Array.isArray(value)) {
               if (value.length === 0) {
@@ -6963,7 +6963,7 @@ var require_safe_stable_stringify = __commonJS({
                 indentation += spacer;
                 res += `
 ${indentation}`;
-                join6 = `,
+                join7 = `,
 ${indentation}`;
               }
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
@@ -6971,13 +6971,13 @@ ${indentation}`;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyFnReplacer(String(i), value, stack, replacer, spacer, indentation);
                 res += tmp2 !== void 0 ? tmp2 : "null";
-                res += join6;
+                res += join7;
               }
               const tmp = stringifyFnReplacer(String(i), value, stack, replacer, spacer, indentation);
               res += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res += `${join6}"... ${getItemCount(removedKeys)} not stringified"`;
+                res += `${join7}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               if (spacer !== "") {
                 res += `
@@ -6998,7 +6998,7 @@ ${originalIndentation}`;
             let separator = "";
             if (spacer !== "") {
               indentation += spacer;
-              join6 = `,
+              join7 = `,
 ${indentation}`;
               whitespace = " ";
             }
@@ -7012,13 +7012,13 @@ ${indentation}`;
               const tmp = stringifyFnReplacer(key2, value, stack, replacer, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}:${whitespace}${tmp}`;
-                separator = join6;
+                separator = join7;
               }
             }
             if (keyLength > maximumBreadth) {
               const removedKeys = keyLength - maximumBreadth;
               res += `${separator}"...":${whitespace}"${getItemCount(removedKeys)} not stringified"`;
-              separator = join6;
+              separator = join7;
             }
             if (spacer !== "" && separator.length > 1) {
               res = `
@@ -7059,7 +7059,7 @@ ${originalIndentation}`;
             }
             const originalIndentation = indentation;
             let res = "";
-            let join6 = ",";
+            let join7 = ",";
             if (Array.isArray(value)) {
               if (value.length === 0) {
                 return "[]";
@@ -7072,7 +7072,7 @@ ${originalIndentation}`;
                 indentation += spacer;
                 res += `
 ${indentation}`;
-                join6 = `,
+                join7 = `,
 ${indentation}`;
               }
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
@@ -7080,13 +7080,13 @@ ${indentation}`;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyArrayReplacer(String(i), value[i], stack, replacer, spacer, indentation);
                 res += tmp2 !== void 0 ? tmp2 : "null";
-                res += join6;
+                res += join7;
               }
               const tmp = stringifyArrayReplacer(String(i), value[i], stack, replacer, spacer, indentation);
               res += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res += `${join6}"... ${getItemCount(removedKeys)} not stringified"`;
+                res += `${join7}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               if (spacer !== "") {
                 res += `
@@ -7099,7 +7099,7 @@ ${originalIndentation}`;
             let whitespace = "";
             if (spacer !== "") {
               indentation += spacer;
-              join6 = `,
+              join7 = `,
 ${indentation}`;
               whitespace = " ";
             }
@@ -7108,7 +7108,7 @@ ${indentation}`;
               const tmp = stringifyArrayReplacer(key2, value[key2], stack, replacer, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}:${whitespace}${tmp}`;
-                separator = join6;
+                separator = join7;
               }
             }
             if (spacer !== "" && separator.length > 1) {
@@ -7166,20 +7166,20 @@ ${originalIndentation}`;
               indentation += spacer;
               let res2 = `
 ${indentation}`;
-              const join7 = `,
+              const join8 = `,
 ${indentation}`;
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
               let i = 0;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyIndent(String(i), value[i], stack, spacer, indentation);
                 res2 += tmp2 !== void 0 ? tmp2 : "null";
-                res2 += join7;
+                res2 += join8;
               }
               const tmp = stringifyIndent(String(i), value[i], stack, spacer, indentation);
               res2 += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res2 += `${join7}"... ${getItemCount(removedKeys)} not stringified"`;
+                res2 += `${join8}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               res2 += `
 ${originalIndentation}`;
@@ -7195,16 +7195,16 @@ ${originalIndentation}`;
               return '"[Object]"';
             }
             indentation += spacer;
-            const join6 = `,
+            const join7 = `,
 ${indentation}`;
             let res = "";
             let separator = "";
             let maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth);
             if (isTypedArrayWithEntries(value)) {
-              res += stringifyTypedArray(value, join6, maximumBreadth);
+              res += stringifyTypedArray(value, join7, maximumBreadth);
               keys = keys.slice(value.length);
               maximumPropertiesToStringify -= value.length;
-              separator = join6;
+              separator = join7;
             }
             if (deterministic) {
               keys = sort(keys, comparator);
@@ -7215,13 +7215,13 @@ ${indentation}`;
               const tmp = stringifyIndent(key2, value[key2], stack, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}: ${tmp}`;
-                separator = join6;
+                separator = join7;
               }
             }
             if (keyLength > maximumBreadth) {
               const removedKeys = keyLength - maximumBreadth;
               res += `${separator}"...": "${getItemCount(removedKeys)} not stringified"`;
-              separator = join6;
+              separator = join7;
             }
             if (separator !== "") {
               res = `
@@ -51394,9 +51394,9 @@ var StreamableHTTPServerTransport = class {
 
 // src/server/http.ts
 var import_crypto6 = require("crypto");
-var import_os6 = require("os");
-var import_path7 = require("path");
-var import_fs7 = require("fs");
+var import_os7 = require("os");
+var import_path8 = require("path");
+var import_fs8 = require("fs");
 var import_url2 = require("url");
 
 // node_modules/zod/v3/helpers/util.js
@@ -59325,9 +59325,9 @@ var EMPTY_COMPLETION_RESULT = {
 
 // src/mcp/create-server.ts
 var import_crypto3 = require("crypto");
-var import_fs5 = require("fs");
-var import_path5 = require("path");
-var import_os4 = require("os");
+var import_fs6 = require("fs");
+var import_path6 = require("path");
+var import_os5 = require("os");
 
 // src/export/memory.ts
 var import_fs = require("fs");
@@ -60694,6 +60694,45 @@ function getCurrentBranch(cwd) {
   }
 }
 
+// src/utils/find-project-root.ts
+var import_fs5 = require("fs");
+var import_os4 = require("os");
+var import_path5 = require("path");
+var DEFAULT_ROOT_MARKERS = [
+  ".git",
+  ".obsidian",
+  "package.json",
+  "Cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  ".claude"
+];
+function getMarkers() {
+  const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
+  if (!extra) return DEFAULT_ROOT_MARKERS;
+  const extras = extra.split(",").map((s) => s.trim()).filter(Boolean);
+  return [...DEFAULT_ROOT_MARKERS, ...extras];
+}
+function findProjectRoot(cwd) {
+  const markers = getMarkers();
+  const home = (0, import_os4.homedir)();
+  let current = cwd;
+  while (current !== home && current !== (0, import_path5.dirname)(current)) {
+    for (const marker of markers) {
+      if ((0, import_fs5.existsSync)((0, import_path5.join)(current, marker))) {
+        return current;
+      }
+    }
+    current = (0, import_path5.dirname)(current);
+  }
+  for (const marker of markers) {
+    if ((0, import_fs5.existsSync)((0, import_path5.join)(home, marker))) {
+      return home;
+    }
+  }
+  return cwd;
+}
+
 // src/mcp/create-server.ts
 var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
 var ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
@@ -60753,7 +60792,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.143" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.144" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -61005,7 +61044,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.143" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.144" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -61481,7 +61520,7 @@ ${lines.join("\n")}`
       }
       const resolvedProject = np(project) ?? project ?? process.cwd();
       let pathWarning = "";
-      if (resolvedProject && !(0, import_fs5.existsSync)(resolvedProject)) {
+      if (resolvedProject && !(0, import_fs6.existsSync)(resolvedProject)) {
         pathWarning = `
 Note: project path '${resolvedProject}' does not exist on disk. Observations will only be visible when searching from this exact path.`;
       }
@@ -62247,8 +62286,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = (0, import_path5.join)((0, import_os4.homedir)(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
-      if (!(0, import_fs5.existsSync)(lessonsPath)) {
+      const lessonsPath = (0, import_path6.join)((0, import_os5.homedir)(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
+      if (!(0, import_fs6.existsSync)(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -62256,7 +62295,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const content = (0, import_fs5.readFileSync)(lessonsPath, "utf8");
+      const content = (0, import_fs6.readFileSync)(lessonsPath, "utf8");
       return { content: [{ type: "text", text: content }] };
     }
   );
@@ -62278,8 +62317,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = (0, import_path5.join)((0, import_os4.homedir)(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
-      if (!(0, import_fs5.existsSync)(lessonsPath)) {
+      const lessonsPath = (0, import_path6.join)((0, import_os5.homedir)(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
+      if (!(0, import_fs6.existsSync)(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -62287,7 +62326,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const content = (0, import_fs5.readFileSync)(lessonsPath, "utf8");
+      const content = (0, import_fs6.readFileSync)(lessonsPath, "utf8");
       return { content: [{ type: "text", text: content }] };
     }
   );
@@ -62323,6 +62362,84 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
         await db.setLastReflectionDate(normalizedProject, (/* @__PURE__ */ new Date()).toISOString());
       }
       return { content: [{ type: "text", text }] };
+    }
+  );
+  server.tool(
+    "context_consolidate_projects",
+    "Find and optionally merge project keys that are subdirectories of a known root. Useful for repairing fragmented history caused by launching Claude from a subdirectory (e.g. an Obsidian DailyNotes folder) before project root normalization was active. Use dry_run: true (default) to preview what would change before committing.",
+    {
+      dry_run: external_exports.boolean().default(true).describe("Preview changes without modifying the database (default: true). Set to false to execute the merge."),
+      project: external_exports.string().optional().describe("Limit consolidation to paths under this project subtree. Omit to scan all projects.")
+    },
+    async ({ dry_run, project }) => {
+      if (isProxy) {
+        return proxyToolCall("context_consolidate_projects", { dry_run, project: np(project) }, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const allPaths = await db.getDistinctProjectPaths();
+      const pathFilter = np(project);
+      const candidatePaths = pathFilter ? allPaths.filter((p) => p === pathFilter || p.startsWith(pathFilter + "/")) : allPaths;
+      const renames = [];
+      for (const p of candidatePaths) {
+        const root = findProjectRoot(p);
+        if (root !== p) {
+          renames.push({ from: p, to: root });
+        }
+      }
+      if (renames.length === 0) {
+        return {
+          content: [{
+            type: "text",
+            text: "No fragmented project paths found. All project keys are already at their nearest root."
+          }]
+        };
+      }
+      if (dry_run) {
+        const allProjects = await db.getProjects();
+        const lines2 = [
+          `DRY RUN \u2014 ${renames.length} path(s) would be consolidated:`,
+          ""
+        ];
+        for (const { from, to } of renames) {
+          const obsEntry = allProjects.find((p) => p.path === from);
+          const obsCount = obsEntry?.observation_count ?? 0;
+          lines2.push(`  "${from}"`);
+          lines2.push(`    -> "${to}"`);
+          lines2.push(`    ${obsCount} observation(s) affected`);
+          lines2.push("");
+        }
+        lines2.push("Run with dry_run: false to apply these changes.");
+        return {
+          content: [{ type: "text", text: lines2.join("\n") }]
+        };
+      }
+      let totalObs = 0;
+      let totalSessions = 0;
+      const rawDb = db.db;
+      for (const { from, to } of renames) {
+        const obsResult = rawDb.prepare(
+          "UPDATE observations SET project = ? WHERE project = ?"
+        ).run(to, from);
+        const sesResult = rawDb.prepare(
+          "UPDATE sessions SET project = ? WHERE project = ?"
+        ).run(to, from);
+        rawDb.prepare("UPDATE user_prompts SET project = ? WHERE project = ?").run(to, from);
+        rawDb.prepare("UPDATE decisions SET project = ? WHERE project = ?").run(to, from);
+        totalObs += obsResult.changes;
+        totalSessions += sesResult.changes;
+      }
+      const lines = [
+        `Consolidated ${renames.length} fragmented path(s):`,
+        `  ${totalObs} observation(s) updated`,
+        `  ${totalSessions} session(s) updated`,
+        ""
+      ];
+      for (const { from, to } of renames) {
+        lines.push(`  "${from}" -> "${to}"`);
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }]
+      };
     }
   );
   const rawServer = server;
@@ -62361,10 +62478,10 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
 var better_sqlite3_default = __betterSqlite3;
 
 // src/storage/sqlite.ts
-var import_os5 = require("os");
+var import_os6 = require("os");
 var import_crypto5 = require("crypto");
-var import_path6 = __toESM(require("path"), 1);
-var import_fs6 = require("fs");
+var import_path7 = __toESM(require("path"), 1);
+var import_fs7 = require("fs");
 
 // shim:sqlite-vec
 var load = __sqliteVec?.load;
@@ -62431,7 +62548,7 @@ function detectFactType(summary) {
 }
 
 // src/storage/sqlite.ts
-var DEFAULT_DB_PATH = import_path6.default.join((0, import_os5.homedir)(), ".claude-context", "context.db");
+var DEFAULT_DB_PATH = import_path7.default.join((0, import_os6.homedir)(), ".claude-context", "context.db");
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
 var _rawHalflife = parseFloat(process.env.CONTEXT_MANAGER_DECAY_HALFLIFE ?? "");
 var DECAY_HALFLIFE_DAYS = Number.isFinite(_rawHalflife) && _rawHalflife >= 1 && _rawHalflife <= 3650 ? _rawHalflife : 60;
@@ -62492,8 +62609,8 @@ var SQLiteStorage = class {
   db;
   vecEnabled = false;
   constructor(dbPath = DEFAULT_DB_PATH) {
-    const dir = import_path6.default.dirname(dbPath);
-    (0, import_fs6.mkdirSync)(dir, { recursive: true });
+    const dir = import_path7.default.dirname(dbPath);
+    (0, import_fs7.mkdirSync)(dir, { recursive: true });
     this.db = new better_sqlite3_default(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
@@ -63652,6 +63769,21 @@ ${storedOutput}`;
     const stmt = this.db.prepare(sql);
     const rows = stmt.all();
     return rows;
+  }
+  async getDistinctProjectPaths() {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all();
+    return rows.map((r) => r.project);
   }
   async getSessionObservations(sessionId) {
     const stmt = this.db.prepare(`
@@ -65416,11 +65548,11 @@ function sanitizeContent(content) {
 
 // src/server/http.ts
 var import_meta2 = {};
-var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path7.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
+var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path8.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.143") return "0.8.143";
+  if ("0.8.144") return "0.8.144";
   try {
-    const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path7.join)(__serverDir, "../../package.json"), "utf-8"));
+    const pkg = JSON.parse((0, import_fs8.readFileSync)((0, import_path8.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;
     throw new Error("version missing");
   } catch {
@@ -65604,7 +65736,7 @@ async function startHttpServer(options = {}) {
   const port = options.port ?? parseInt(process.env.CONTEXT_MANAGER_PORT || "4666", 10);
   const host = options.host ?? (process.env.CONTEXT_MANAGER_HOST || "0.0.0.0");
   const token = options.token ?? (process.env.CONTEXT_MANAGER_TOKEN || "");
-  const dbPath = options.dbPath ?? (process.env.CONTEXT_MANAGER_DB || (0, import_path7.join)((0, import_os6.homedir)(), ".claude-context", "context.db"));
+  const dbPath = options.dbPath ?? (process.env.CONTEXT_MANAGER_DB || (0, import_path8.join)((0, import_os7.homedir)(), ".claude-context", "context.db"));
   if (!token) {
     console.error("[context-manager-http] CONTEXT_MANAGER_TOKEN is required for HTTP server mode");
     console.error("  Generate one: openssl rand -hex 32");
@@ -65669,7 +65801,7 @@ async function startHttpServer(options = {}) {
         const sessionId = strBound(body["session_id"], SESSION_ID_MAX, "session_id");
         const project = strBound(body["project"], PROJECT_MAX, "project");
         const branch = typeof body["branch"] === "string" && body["branch"].length > 0 ? body["branch"].substring(0, 256) : null;
-        const normalizedProject = normalizePath(project, pathMap);
+        const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
         await storage.createSession(sessionId, normalizedProject, branch);
         await reply.send({ status: "ok" });
       } else if (action === "end") {
@@ -65721,7 +65853,7 @@ async function startHttpServer(options = {}) {
       const pkg = typeof body["package"] === "string" && body["package"].length > 0 ? body["package"].substring(0, 256) : void 0;
       const rawCreatedAt = body["created_at"];
       const createdAt = typeof rawCreatedAt === "string" && !isNaN(Date.parse(rawCreatedAt)) ? rawCreatedAt : (/* @__PURE__ */ new Date()).toISOString();
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       await storage.save({
         session_id: sessionId,
         project: normalizedProject,
@@ -65755,7 +65887,7 @@ async function startHttpServer(options = {}) {
       const promptNumber = typeof body["prompt_number"] === "number" ? Math.max(0, Math.floor(body["prompt_number"])) : 0;
       const rawPromptCreatedAt = body["created_at"];
       const createdAt = typeof rawPromptCreatedAt === "string" && !isNaN(Date.parse(rawPromptCreatedAt)) ? rawPromptCreatedAt : (/* @__PURE__ */ new Date()).toISOString();
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       await storage.saveUserPrompt({
         session_id: sessionId,
         project: normalizedProject,
@@ -65780,7 +65912,7 @@ async function startHttpServer(options = {}) {
       const tags = typeof rawTags === "string" && rawTags.trim().length > 0 ? rawTags.substring(0, 256) : void 0;
       const rawClient = body["client"];
       const client = typeof rawClient === "string" && rawClient.trim().length > 0 ? rawClient.trim().substring(0, 50) : void 0;
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       const sessionId = await storage.getOrCreateManualSession(normalizedProject);
       const obsId = await storage.addManualObservation({
         text,
@@ -65809,7 +65941,7 @@ async function startHttpServer(options = {}) {
       const importanceScore = typeof body["importance_score"] === "number" ? Math.max(0, Math.min(1, body["importance_score"])) : 0.7;
       const rawTags = body["tags"];
       const tags = typeof rawTags === "string" && rawTags.trim().length > 0 ? rawTags.substring(0, 256) : null;
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       await storage.saveDecision({
         session_id: sessionId,
         project: normalizedProject,
@@ -65834,9 +65966,9 @@ async function startHttpServer(options = {}) {
       const normalizedProject = normalizePath(project, pathMap);
       const result = await exportToAutoMemory(storage, normalizedProject, sessionId);
       let content = "";
-      const memFile = (0, import_path7.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
+      const memFile = (0, import_path8.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       try {
-        content = (0, import_fs7.readFileSync)(memFile, "utf-8");
+        content = (0, import_fs8.readFileSync)(memFile, "utf-8");
       } catch {
       }
       await reply.send({ status: "ok", exported: result.exported, content });
@@ -65853,7 +65985,7 @@ async function startHttpServer(options = {}) {
         await reply.status(400).send({ error: "project query parameter is required" });
         return;
       }
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       const nextNumber = await storage.getNextDecisionNumber(normalizedProject);
       await reply.send({ nextNumber });
     } catch (err) {
@@ -65870,10 +66002,10 @@ async function startHttpServer(options = {}) {
         return;
       }
       const normalizedProject = normalizePath(project, pathMap);
-      const memFile = (0, import_path7.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
+      const memFile = (0, import_path8.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       let content = "";
       try {
-        content = (0, import_fs7.readFileSync)(memFile, "utf-8");
+        content = (0, import_fs8.readFileSync)(memFile, "utf-8");
       } catch {
       }
       await reply.send({ content });

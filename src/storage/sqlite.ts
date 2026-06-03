@@ -1896,6 +1896,22 @@ export class SQLiteStorage implements ContextStorage {
     return rows;
   }
 
+  async getDistinctProjectPaths(): Promise<string[]> {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all() as Array<{ project: string }>;
+    return rows.map(r => r.project);
+  }
+
   async getSessionObservations(sessionId: string): Promise<Observation[]> {
     const stmt = this.db.prepare(`
       SELECT * FROM observations

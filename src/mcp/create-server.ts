@@ -37,6 +37,7 @@ import { correctTokens } from '../utils/correct-tokens.js';
 import { normalizePath, type PathPrefixEntry } from '../utils/path-map.js';
 import { buildReflection, formatReflection } from '../utils/reflect.js';
 import { getCurrentBranch } from '../utils/git.js';
+import { findProjectRoot } from '../utils/find-project-root.js';
 
 // Minimum cosine similarity score for semantic/hybrid search results.
 // Results below this threshold are suppressed to avoid returning low-signal noise.
@@ -2244,6 +2245,106 @@ export function createContextManagerServer(
       }
 
       return { content: [{ type: 'text' as const, text }] };
+    }
+  );
+
+  server.tool(
+    'context_consolidate_projects',
+    'Find and optionally merge project keys that are subdirectories of a known root. Useful for repairing fragmented history caused by launching Claude from a subdirectory (e.g. an Obsidian DailyNotes folder) before project root normalization was active. Use dry_run: true (default) to preview what would change before committing.',
+    {
+      dry_run: z
+        .boolean()
+        .default(true)
+        .describe('Preview changes without modifying the database (default: true). Set to false to execute the merge.'),
+      project: z
+        .string()
+        .optional()
+        .describe('Limit consolidation to paths under this project subtree. Omit to scan all projects.'),
+    },
+    async ({ dry_run, project }) => {
+      if (isProxy) {
+        return proxyToolCall('context_consolidate_projects', { dry_run, project: np(project) }, remoteUrl, remoteToken);
+      }
+
+      const db = await getDb();
+      const allPaths = await db.getDistinctProjectPaths();
+
+      // Filter to the requested subtree if provided
+      const pathFilter = np(project);
+      const candidatePaths = pathFilter
+        ? allPaths.filter(p => p === pathFilter || p.startsWith(pathFilter + '/'))
+        : allPaths;
+
+      // Find paths where findProjectRoot would normalize them to a different path
+      const renames: Array<{ from: string; to: string }> = [];
+      for (const p of candidatePaths) {
+        const root = findProjectRoot(p);
+        if (root !== p) {
+          renames.push({ from: p, to: root });
+        }
+      }
+
+      if (renames.length === 0) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: 'No fragmented project paths found. All project keys are already at their nearest root.',
+          }],
+        };
+      }
+
+      if (dry_run) {
+        // Count observations and sessions affected per rename
+        const allProjects = await db.getProjects();
+        const lines: string[] = [
+          `DRY RUN — ${renames.length} path(s) would be consolidated:`,
+          '',
+        ];
+        for (const { from, to } of renames) {
+          const obsEntry = allProjects.find(p => p.path === from);
+          const obsCount = obsEntry?.observation_count ?? 0;
+          lines.push(`  "${from}"`);
+          lines.push(`    -> "${to}"`);
+          lines.push(`    ${obsCount} observation(s) affected`);
+          lines.push('');
+        }
+        lines.push('Run with dry_run: false to apply these changes.');
+        return {
+          content: [{ type: 'text' as const, text: lines.join('\n') }],
+        };
+      }
+
+      // Live mode: apply the renames
+      let totalObs = 0;
+      let totalSessions = 0;
+      const rawDb = (db as unknown as { db: import('better-sqlite3').Database }).db;
+
+      for (const { from, to } of renames) {
+        const obsResult = rawDb.prepare(
+          'UPDATE observations SET project = ? WHERE project = ?'
+        ).run(to, from);
+        const sesResult = rawDb.prepare(
+          'UPDATE sessions SET project = ? WHERE project = ?'
+        ).run(to, from);
+        rawDb.prepare('UPDATE user_prompts SET project = ? WHERE project = ?').run(to, from);
+        rawDb.prepare('UPDATE decisions SET project = ? WHERE project = ?').run(to, from);
+        totalObs += obsResult.changes;
+        totalSessions += sesResult.changes;
+      }
+
+      const lines: string[] = [
+        `Consolidated ${renames.length} fragmented path(s):`,
+        `  ${totalObs} observation(s) updated`,
+        `  ${totalSessions} session(s) updated`,
+        '',
+      ];
+      for (const { from, to } of renames) {
+        lines.push(`  "${from}" -> "${to}"`);
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: lines.join('\n') }],
+      };
     }
   );
 

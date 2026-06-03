@@ -1306,6 +1306,21 @@ ${storedOutput}`;
     const rows = stmt.all();
     return rows;
   }
+  async getDistinctProjectPaths() {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all();
+    return rows.map((r) => r.project);
+  }
   async getSessionObservations(sessionId) {
     const stmt = this.db.prepare(`
       SELECT * FROM observations
@@ -2991,20 +3006,61 @@ ${storedOutput}`;
 
 // src/utils/validation.ts
 import { realpathSync } from "fs";
-import { homedir as homedir2 } from "os";
+import { homedir as homedir3 } from "os";
 import path2 from "path";
+
+// src/utils/find-project-root.ts
+import { existsSync } from "fs";
+import { homedir as homedir2 } from "os";
+import { dirname, join } from "path";
+var DEFAULT_ROOT_MARKERS = [
+  ".git",
+  ".obsidian",
+  "package.json",
+  "Cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  ".claude"
+];
+function getMarkers() {
+  const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
+  if (!extra) return DEFAULT_ROOT_MARKERS;
+  const extras = extra.split(",").map((s) => s.trim()).filter(Boolean);
+  return [...DEFAULT_ROOT_MARKERS, ...extras];
+}
+function findProjectRoot(cwd) {
+  const markers = getMarkers();
+  const home = homedir2();
+  let current = cwd;
+  while (current !== home && current !== dirname(current)) {
+    for (const marker of markers) {
+      if (existsSync(join(current, marker))) {
+        return current;
+      }
+    }
+    current = dirname(current);
+  }
+  for (const marker of markers) {
+    if (existsSync(join(home, marker))) {
+      return home;
+    }
+  }
+  return cwd;
+}
+
+// src/utils/validation.ts
 var ALLOWED_PROJECT_ROOTS = [
-  path2.join(homedir2(), "Projects"),
-  path2.join(homedir2(), "projects"),
-  path2.join(homedir2(), "Dev"),
-  path2.join(homedir2(), "dev"),
-  path2.join(homedir2(), "Code"),
-  path2.join(homedir2(), "code"),
-  path2.join(homedir2(), "Workspace"),
-  path2.join(homedir2(), "workspace"),
-  path2.join(homedir2(), "Documents"),
+  path2.join(homedir3(), "Projects"),
+  path2.join(homedir3(), "projects"),
+  path2.join(homedir3(), "Dev"),
+  path2.join(homedir3(), "dev"),
+  path2.join(homedir3(), "Code"),
+  path2.join(homedir3(), "code"),
+  path2.join(homedir3(), "Workspace"),
+  path2.join(homedir3(), "workspace"),
+  path2.join(homedir3(), "Documents"),
   // Common location
-  homedir2()
+  homedir3()
   // Allow home directory as fallback
 ];
 function validateProjectPath(projectPath) {
@@ -3043,7 +3099,7 @@ function validatePostToolUseInput(input) {
   if (typeof obj.tool_name !== "string" || obj.tool_name.length === 0) {
     throw new Error("Invalid input: tool_name must be non-empty string");
   }
-  const validatedCwd = validateProjectPath(obj.cwd);
+  const validatedCwd = findProjectRoot(validateProjectPath(obj.cwd));
   let toolResponse;
   if (typeof obj.tool_response === "string") {
     toolResponse = obj.tool_response;
@@ -3974,10 +4030,10 @@ async function remoteSaveObservation(client, observation) {
 
 // src/utils/env.ts
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir as homedir3 } from "node:os";
+import { join as join2 } from "node:path";
+import { homedir as homedir4 } from "node:os";
 function loadDotEnv() {
-  const envPath = join(homedir3(), ".claude-context", ".env");
+  const envPath = join2(homedir4(), ".claude-context", ".env");
   try {
     const content = readFileSync(envPath, "utf8");
     for (const line of content.split("\n")) {
@@ -4064,7 +4120,8 @@ async function main() {
       }
       const obj = typeof rawInput === "object" && rawInput !== null ? rawInput : {};
       const sessionId = typeof obj.session_id === "string" ? obj.session_id.slice(0, 256) : "";
-      const cwd = typeof obj.cwd === "string" ? obj.cwd.slice(0, 1024) : "";
+      const rawCwd = typeof obj.cwd === "string" ? obj.cwd.slice(0, 1024) : "";
+      const cwd = rawCwd ? findProjectRoot(rawCwd) : "";
       const toolName = typeof obj.tool_name === "string" ? obj.tool_name.slice(0, 128) : "";
       if (!sessionId || !cwd || !toolName) {
         await writeResponse({ status: "skipped" });

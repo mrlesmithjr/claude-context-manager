@@ -433,6 +433,14 @@ export interface ContextStorage {
   getProjects(): Promise<ProjectEntry[]>;
 
   /**
+   * Get all distinct project path strings from both observations and sessions tables.
+   * Used by context_consolidate_projects to find paths that can be normalized.
+   *
+   * @returns Array of unique project path strings across both tables
+   */
+  getDistinctProjectPaths(): Promise<string[]>;
+
+  /**
    * Get observations for a specific session
    * @param sessionId - Session ID
    */

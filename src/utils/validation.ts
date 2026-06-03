@@ -8,6 +8,7 @@ import { realpathSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { randomBytes } from 'crypto';
+import { findProjectRoot } from './find-project-root.js';
 
 /**
  * Allowed project root directories
@@ -156,7 +157,7 @@ export function validateSessionStartInput(input: unknown): SessionStartInput {
 
   return {
     session_id,
-    cwd: validatedCwd,
+    cwd: findProjectRoot(validatedCwd),
   };
 }
 
@@ -182,8 +183,8 @@ export function validatePostToolUseInput(input: unknown): PostToolUseInput {
     throw new Error('Invalid input: tool_name must be non-empty string');
   }
 
-  // Validate project path
-  const validatedCwd = validateProjectPath(obj.cwd);
+  // Validate project path and normalize to nearest project root
+  const validatedCwd = findProjectRoot(validateProjectPath(obj.cwd));
 
   // Extract tool_response - can be string or object with stdout/stderr
   let toolResponse: string | undefined;
@@ -224,8 +225,8 @@ export function validateStopInput(input: unknown): StopInput {
     throw new Error('Invalid input: cwd must be non-empty string');
   }
 
-  // Validate project path
-  const validatedCwd = validateProjectPath(obj.cwd);
+  // Validate project path and normalize to nearest project root
+  const validatedCwd = findProjectRoot(validateProjectPath(obj.cwd));
 
   // Validate transcript_path is within the expected Claude projects directory.
   // Use realpathSync (not path.resolve) to follow symlinks before comparing —
@@ -281,8 +282,8 @@ export function validateUserPromptSubmitInput(input: unknown): UserPromptSubmitI
     throw new Error('Invalid input: prompt must be non-empty string');
   }
 
-  // Validate project path
-  const validatedCwd = validateProjectPath(obj.cwd);
+  // Validate project path and normalize to nearest project root
+  const validatedCwd = findProjectRoot(validateProjectPath(obj.cwd));
 
   return {
     session_id: obj.session_id,

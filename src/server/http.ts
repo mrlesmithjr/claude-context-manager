@@ -22,6 +22,7 @@ import { fileURLToPath } from 'url';
 import { createContextManagerServer } from '../mcp/create-server.js';
 import { SQLiteStorage } from '../storage/sqlite.js';
 import { loadPathPrefixMap, normalizePath } from '../utils/path-map.js';
+import { findProjectRoot } from '../utils/find-project-root.js';
 import { sanitizeContent } from '../utils/sanitize.js';
 import { exportToAutoMemory, resolveMemoryDir } from '../export/memory.js';
 import { getEmbeddingService } from '../embedding/service.js';
@@ -415,7 +416,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           typeof body['branch'] === 'string' && body['branch'].length > 0
             ? body['branch'].substring(0, 256)
             : null;
-        const normalizedProject = normalizePath(project, pathMap);
+        const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
         await storage.createSession(sessionId, normalizedProject, branch);
         await reply.send({ status: 'ok' });
       } else if (action === 'end') {
@@ -526,7 +527,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           ? rawCreatedAt
           : new Date().toISOString();
 
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
 
       await storage.save({
         session_id: sessionId,
@@ -574,7 +575,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           ? rawPromptCreatedAt
           : new Date().toISOString();
 
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
 
       await storage.saveUserPrompt({
         session_id: sessionId,
@@ -618,7 +619,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           ? rawClient.trim().substring(0, 50)
           : undefined;
 
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       const sessionId = await storage.getOrCreateManualSession(normalizedProject);
       const obsId = await storage.addManualObservation({
         text,
@@ -673,7 +674,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
           ? rawTags.substring(0, 256)
           : null;
 
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
 
       await storage.saveDecision({
         session_id: sessionId,
@@ -737,7 +738,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         return;
       }
 
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       const nextNumber = await storage.getNextDecisionNumber(normalizedProject);
       await reply.send({ nextNumber });
     } catch (err) {
