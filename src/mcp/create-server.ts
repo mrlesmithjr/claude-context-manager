@@ -1574,7 +1574,7 @@ export function createContextManagerServer(
 
   server.tool(
     'context_prune',
-    'Targeted pruning of observations by tool name, importance, and/or age. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.',
+    'Targeted pruning of observations by tool name, importance, age, and/or access count. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.',
     {
       tool_name: z
         .string()
@@ -1601,21 +1601,40 @@ export function createContextManagerServer(
         .describe(
           'When true, bypass the protection guard and also delete high-importance (score >= 0.65), pinned, and lesson observations. Default: false.'
         ),
+      max_access_count: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .nullable()
+        .describe(
+          'Only prune observations where access_count <= this value. ' +
+          'Pre-migration rows with sentinel access_count=-1 are excluded by default. ' +
+          'Pass include_untracked: true to include them.'
+        ),
+      include_untracked: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'When true, observations with access_count=-1 (pre-migration, tracking unavailable) ' +
+          'are included when max_access_count filter is active. Default: false.'
+        ),
     },
-    async ({ tool_name, importance, older_than_days, dry_run, include_high }) => {
-      if (!tool_name && !importance && older_than_days === undefined) {
+    async ({ tool_name, importance, older_than_days, dry_run, include_high, max_access_count, include_untracked }) => {
+      if (!tool_name && !importance && older_than_days === undefined && (max_access_count === undefined || max_access_count === null)) {
         return {
           content: [
             {
               type: 'text' as const,
-              text: 'At least one filter (tool_name, importance, or older_than_days) is required.',
+              text: 'At least one filter (tool_name, importance, older_than_days, or max_access_count) is required.',
             },
           ],
         };
       }
 
       if (isProxy) {
-        return proxyToolCall('context_prune', { tool_name, importance, older_than_days, dry_run, include_high }, remoteUrl, remoteToken);
+        return proxyToolCall('context_prune', { tool_name, importance, older_than_days, dry_run, include_high, max_access_count, include_untracked }, remoteUrl, remoteToken);
       }
 
       const db = await getDb();
@@ -1625,12 +1644,15 @@ export function createContextManagerServer(
         olderThanDays: older_than_days,
         dryRun: dry_run,
         include_high,
+        maxAccessCount: max_access_count,
+        includeUntracked: include_untracked,
       });
 
       const filters = [
         tool_name && `tool="${tool_name}"`,
         importance && `importance="${importance}"`,
         older_than_days !== undefined && `older_than=${older_than_days}d`,
+        max_access_count !== undefined && max_access_count !== null && `max_access_count=${max_access_count}${include_untracked ? '+untracked' : ''}`,
       ]
         .filter(Boolean)
         .join(', ');

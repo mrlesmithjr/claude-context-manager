@@ -154,7 +154,7 @@ function applyDecay(obs) {
   const ageMs = Date.now() - new Date(obs.created_at).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
   const recencyScore = Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
-  const accessCount = obs.access_count ?? 0;
+  const accessCount = Math.max(0, obs.access_count ?? 0);
   const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1);
   return base * 0.6 + recencyScore * 0.25 + frequencyScore * 0.15;
 }
@@ -371,6 +371,7 @@ var init_sqlite = __esm({
         this.migrateAddDecisionsTable();
         this.migrateAddPinnedAndAccessCount();
         this.migrateAddMetaTable();
+        this.migrateBackfillAccessCountSentinel();
         this.migrateAddBranchColumn();
         this.migrateAddSupersededBy();
         this.migrateAddTokenIndex();
@@ -699,7 +700,7 @@ ${storedOutput}`;
           if (ids.length > 0) {
             const placeholders = ids.map(() => "?").join(", ");
             this.db.prepare(
-              `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${placeholders})`
+              `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${placeholders})`
             ).run(...ids);
           }
         }
@@ -1106,7 +1107,7 @@ ${storedOutput}`;
         };
       }
       async prune(options) {
-        const { toolName, importance, olderThanDays, dryRun = false, include_high = false } = options;
+        const { toolName, importance, olderThanDays, dryRun = false, include_high = false, maxAccessCount, includeUntracked = false } = options;
         const conditions = [];
         const params = [];
         if (!include_high) {
@@ -1128,7 +1129,15 @@ ${storedOutput}`;
           conditions.push("importance = ?");
           params.push(importance);
         }
-        const userFilterCount = (olderThanDays !== void 0 ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0);
+        if (maxAccessCount !== null && maxAccessCount !== void 0) {
+          if (includeUntracked) {
+            conditions.push("(access_count = -1 OR access_count <= ?)");
+          } else {
+            conditions.push("(access_count >= 0 AND access_count <= ?)");
+          }
+          params.push(maxAccessCount);
+        }
+        const userFilterCount = (olderThanDays !== void 0 ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0) + (maxAccessCount !== null && maxAccessCount !== void 0 ? 1 : 0);
         if (userFilterCount === 0) {
           return { deleted: 0 };
         }
@@ -2374,7 +2383,7 @@ ${storedOutput}`;
           if (foundIds.length > 0) {
             const idPlaceholders = foundIds.map(() => "?").join(", ");
             this.db.prepare(
-              `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`
+              `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${idPlaceholders})`
             ).run(...foundIds);
           }
         }
@@ -2930,6 +2939,38 @@ ${storedOutput}`;
           }
         });
         repair();
+      }
+      /**
+       * One-time idempotent migration: backfill access_count sentinel (-1) for rows
+       * that received DEFAULT 0 via ALTER TABLE and were never actually tracked.
+       *
+       * Background: access_count was added via ALTER TABLE ... DEFAULT 0, which set
+       * all ~6,500 pre-migration rows to 0. This is indistinguishable from rows
+       * genuinely accessed zero times after tracking began, making never-accessed
+       * pruning unreliable. Sentinel -1 means "tracking unavailable (pre-migration)".
+       *
+       * applyDecay() guards against the sentinel with Math.max(0, access_count ?? 0)
+       * so sentinel rows are treated as frequency=0 for decay purposes, not penalized.
+       *
+       * Idempotency: the marker key in the meta table ensures this runs exactly once.
+       * New rows are inserted with access_count = 0 (the schema DEFAULT), so future
+       * rows are correctly interpreted as "tracked, never accessed" and are not backfilled.
+       */
+      migrateBackfillAccessCountSentinel() {
+        const marker = "migration:access_count_sentinel_backfilled";
+        const alreadyRun = this.db.prepare(
+          `SELECT 1 FROM meta WHERE key = ?`
+        ).get(marker);
+        if (alreadyRun) return;
+        const backfill = this.db.transaction(() => {
+          this.db.prepare(
+            `UPDATE observations SET access_count = -1 WHERE access_count = 0`
+          ).run();
+          this.db.prepare(
+            `INSERT INTO meta (key, value) VALUES (?, ?)`
+          ).run(marker, (/* @__PURE__ */ new Date()).toISOString());
+        });
+        backfill();
       }
       /**
        * Add tokens to the token_index, incrementing frequency on conflict.
@@ -65916,7 +65957,7 @@ Topic file: ${result.filePath}` : ""}`
   );
   server.tool(
     "context_prune",
-    "Targeted pruning of observations by tool name, importance, and/or age. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.",
+    "Targeted pruning of observations by tool name, importance, age, and/or access count. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.",
     {
       tool_name: external_exports.string().optional().describe('Delete observations from this tool (e.g., "Bash", "Read", "Grep")'),
       importance: external_exports.enum(["high", "medium", "low"]).optional().describe('Delete observations at this importance level (e.g., "low")'),
@@ -65926,21 +65967,27 @@ Topic file: ${result.filePath}` : ""}`
       ),
       include_high: external_exports.boolean().optional().default(false).describe(
         "When true, bypass the protection guard and also delete high-importance (score >= 0.65), pinned, and lesson observations. Default: false."
+      ),
+      max_access_count: external_exports.number().int().min(0).optional().nullable().describe(
+        "Only prune observations where access_count <= this value. Pre-migration rows with sentinel access_count=-1 are excluded by default. Pass include_untracked: true to include them."
+      ),
+      include_untracked: external_exports.boolean().optional().default(false).describe(
+        "When true, observations with access_count=-1 (pre-migration, tracking unavailable) are included when max_access_count filter is active. Default: false."
       )
     },
-    async ({ tool_name, importance, older_than_days, dry_run, include_high }) => {
-      if (!tool_name && !importance && older_than_days === void 0) {
+    async ({ tool_name, importance, older_than_days, dry_run, include_high, max_access_count, include_untracked }) => {
+      if (!tool_name && !importance && older_than_days === void 0 && (max_access_count === void 0 || max_access_count === null)) {
         return {
           content: [
             {
               type: "text",
-              text: "At least one filter (tool_name, importance, or older_than_days) is required."
+              text: "At least one filter (tool_name, importance, older_than_days, or max_access_count) is required."
             }
           ]
         };
       }
       if (isProxy) {
-        return proxyToolCall("context_prune", { tool_name, importance, older_than_days, dry_run, include_high }, remoteUrl, remoteToken);
+        return proxyToolCall("context_prune", { tool_name, importance, older_than_days, dry_run, include_high, max_access_count, include_untracked }, remoteUrl, remoteToken);
       }
       const db = await getDb();
       const result = await db.prune({
@@ -65948,12 +65995,15 @@ Topic file: ${result.filePath}` : ""}`
         importance,
         olderThanDays: older_than_days,
         dryRun: dry_run,
-        include_high
+        include_high,
+        maxAccessCount: max_access_count,
+        includeUntracked: include_untracked
       });
       const filters = [
         tool_name && `tool="${tool_name}"`,
         importance && `importance="${importance}"`,
-        older_than_days !== void 0 && `older_than=${older_than_days}d`
+        older_than_days !== void 0 && `older_than=${older_than_days}d`,
+        max_access_count !== void 0 && max_access_count !== null && `max_access_count=${max_access_count}${include_untracked ? "+untracked" : ""}`
       ].filter(Boolean).join(", ");
       if (dry_run) {
         const sampleLines = result.preview?.map((p) => `  * ${p}`).join("\n") ?? "";

@@ -116,8 +116,10 @@ function applyDecay(obs: Observation): number {
   const recencyScore = Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
 
   // Frequency score: log2(access_count + 1), normalized to [0, 1]
-  // Cap at log2(101) for normalization ceiling
-  const accessCount = obs.access_count ?? 0;
+  // Cap at log2(101) for normalization ceiling.
+  // access_count = -1 is a sentinel for pre-migration rows ("tracking unavailable").
+  // Math.max(0, ...) treats sentinel rows as frequency=0 so they are not penalized.
+  const accessCount = Math.max(0, obs.access_count ?? 0);
   const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1.0);
 
   // Weighted combination
@@ -412,6 +414,10 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add meta table for lightweight key-value persistence (e.g. last reflection date)
     this.migrateAddMetaTable();
+
+    // Migration: backfill access_count sentinel for pre-migration rows.
+    // Must run after migrateAddMetaTable() because it uses the meta table to record completion.
+    this.migrateBackfillAccessCountSentinel();
 
     // Migration: add branch column to observations and sessions for git branch-aware capture
     this.migrateAddBranchColumn();
@@ -899,7 +905,7 @@ export class SQLiteStorage implements ContextStorage {
       if (ids.length > 0) {
         const placeholders = ids.map(() => '?').join(', ');
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${placeholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${placeholders})`
         ).run(...ids);
       }
     }
@@ -1515,8 +1521,10 @@ export class SQLiteStorage implements ContextStorage {
     olderThanDays?: number;
     dryRun?: boolean;
     include_high?: boolean;
+    maxAccessCount?: number | null;
+    includeUntracked?: boolean;
   }): Promise<{ deleted: number; preview?: string[] }> {
-    const { toolName, importance, olderThanDays, dryRun = false, include_high = false } = options;
+    const { toolName, importance, olderThanDays, dryRun = false, include_high = false, maxAccessCount, includeUntracked = false } = options;
 
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -1545,10 +1553,24 @@ export class SQLiteStorage implements ContextStorage {
       conditions.push('importance = ?');
       params.push(importance);
     }
+    if (maxAccessCount !== null && maxAccessCount !== undefined) {
+      if (includeUntracked) {
+        // Include sentinel rows (access_count = -1) AND rows with access_count <= maxAccessCount
+        conditions.push('(access_count = -1 OR access_count <= ?)');
+      } else {
+        // Exclude sentinel rows (access_count = -1); only rows with known tracking
+        conditions.push('(access_count >= 0 AND access_count <= ?)');
+      }
+      params.push(maxAccessCount);
+    }
 
     // Require at least one user-supplied filter — prevent accidental full wipe.
     // The high-importance guard conditions do not count toward this requirement.
-    const userFilterCount = (olderThanDays !== undefined ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0);
+    const userFilterCount =
+      (olderThanDays !== undefined ? 1 : 0) +
+      (toolName ? 1 : 0) +
+      (importance ? 1 : 0) +
+      (maxAccessCount !== null && maxAccessCount !== undefined ? 1 : 0);
     if (userFilterCount === 0) {
       return { deleted: 0 };
     }
@@ -3196,7 +3218,7 @@ export class SQLiteStorage implements ContextStorage {
       if (foundIds.length > 0) {
         const idPlaceholders = foundIds.map(() => '?').join(', ');
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${idPlaceholders})`
         ).run(...foundIds);
       }
     }
@@ -3876,6 +3898,43 @@ export class SQLiteStorage implements ContextStorage {
       }
     });
     repair();
+  }
+
+  /**
+   * One-time idempotent migration: backfill access_count sentinel (-1) for rows
+   * that received DEFAULT 0 via ALTER TABLE and were never actually tracked.
+   *
+   * Background: access_count was added via ALTER TABLE ... DEFAULT 0, which set
+   * all ~6,500 pre-migration rows to 0. This is indistinguishable from rows
+   * genuinely accessed zero times after tracking began, making never-accessed
+   * pruning unreliable. Sentinel -1 means "tracking unavailable (pre-migration)".
+   *
+   * applyDecay() guards against the sentinel with Math.max(0, access_count ?? 0)
+   * so sentinel rows are treated as frequency=0 for decay purposes, not penalized.
+   *
+   * Idempotency: the marker key in the meta table ensures this runs exactly once.
+   * New rows are inserted with access_count = 0 (the schema DEFAULT), so future
+   * rows are correctly interpreted as "tracked, never accessed" and are not backfilled.
+   */
+  private migrateBackfillAccessCountSentinel(): void {
+    const marker = 'migration:access_count_sentinel_backfilled';
+    const alreadyRun = this.db.prepare(
+      `SELECT 1 FROM meta WHERE key = ?`
+    ).get(marker);
+    if (alreadyRun) return;
+
+    // Rows with access_count = 0 at this point were assigned DEFAULT 0 via ALTER TABLE
+    // and were never actually tracked. Mark them as sentinel -1 ("tracking unavailable")
+    // to distinguish from rows genuinely accessed zero times since tracking began.
+    const backfill = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE observations SET access_count = -1 WHERE access_count = 0`
+      ).run();
+      this.db.prepare(
+        `INSERT INTO meta (key, value) VALUES (?, ?)`
+      ).run(marker, new Date().toISOString());
+    });
+    backfill();
   }
 
   /**
