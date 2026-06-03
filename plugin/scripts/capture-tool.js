@@ -4218,7 +4218,7 @@ async function main() {
       }
       const obj = typeof rawInput === "object" && rawInput !== null ? rawInput : {};
       const sessionId = typeof obj.session_id === "string" ? obj.session_id.slice(0, 256) : "";
-      const rawCwd = typeof obj.cwd === "string" ? obj.cwd.slice(0, 1024) : "";
+      const rawCwd = typeof obj.cwd === "string" ? obj.cwd.slice(0, 1024) : process.cwd();
       const cwd = rawCwd ? findProjectRoot(rawCwd) : "";
       const toolName = typeof obj.tool_name === "string" ? obj.tool_name.slice(0, 128) : "";
       if (!sessionId || !cwd || !toolName) {
