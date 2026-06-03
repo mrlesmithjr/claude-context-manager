@@ -63063,6 +63063,67 @@ ${storedOutput}`;
       typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50
     ))));
     const paginationClause = searchOffset > 0 ? `LIMIT ${limitParam} OFFSET ${searchOffset}` : `LIMIT ${limitParam}`;
+    if (ftsQuery === "") {
+      const plainConditions = ["o.superseded_by IS NULL"];
+      const plainParams = [];
+      if (project) {
+        plainConditions.push("o.project LIKE ?");
+        plainParams.push(project + "%");
+      }
+      if (hasBranchFilter) {
+        plainConditions.push("o.branch = ?");
+        plainParams.push(branchFilter);
+      }
+      if (importance) {
+        plainConditions.push("o.importance = ?");
+        plainParams.push(importance);
+      }
+      if (toolName) {
+        plainConditions.push("o.tool_name = ?");
+        plainParams.push(toolName);
+      }
+      if (includeSuperseded) {
+        plainConditions.shift();
+      }
+      const whereClause = plainConditions.length > 0 ? `WHERE ${plainConditions.join(" AND ")}` : "";
+      const plainSql = `
+        SELECT o.* FROM observations o
+        ${whereClause}
+        ORDER BY o.created_at DESC
+        ${paginationClause}
+      `;
+      const plainStmt = this.db.prepare(plainSql);
+      const plainRows = plainStmt.all(...plainParams);
+      let plainResults = plainRows.map((row) => this.mapRow(row));
+      if (plainResults.length > 0) {
+        const ids = plainResults.map((o) => o.id).filter((id) => id != null);
+        if (ids.length > 0) {
+          const placeholders = ids.map(() => "?").join(", ");
+          this.db.prepare(
+            `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${placeholders})`
+          ).run(...ids);
+        }
+      }
+      if (temporalMode === "current") {
+        return plainResults.map((obs) => ({
+          ...obs,
+          importance_score: (obs.importance_score ?? 0.5) * recencyFactor(obs.created_at)
+        })).sort((a, b) => b.importance_score - a.importance_score);
+      }
+      if (temporalMode === "historical") {
+        return plainResults.sort(
+          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+      }
+      if (!skipDecay) {
+        plainResults = plainResults.map((obs) => ({
+          ...obs,
+          importance_score: applyDecay(obs)
+        }));
+        plainResults.sort((a, b) => b.importance_score - a.importance_score);
+      }
+      return plainResults;
+    }
     if (project && hasBranchFilter) {
       sql = `
         SELECT o.* FROM observations o
@@ -63369,6 +63430,14 @@ ${storedOutput}`;
   async getDistinctBranches(project) {
     const rows = this.db.prepare(`
       SELECT DISTINCT branch FROM sessions
+      WHERE project LIKE ? || '%' AND branch IS NOT NULL AND branch != ''
+      ORDER BY branch ASC
+    `).all(project);
+    return rows.map((r) => r.branch);
+  }
+  async getDistinctObservationBranches(project) {
+    const rows = this.db.prepare(`
+      SELECT DISTINCT branch FROM observations
       WHERE project LIKE ? || '%' AND branch IS NOT NULL AND branch != ''
       ORDER BY branch ASC
     `).all(project);
@@ -63854,7 +63923,7 @@ ${storedOutput}`;
       created_at: row.created_at
     }));
   }
-  async countObservations(project, tool, importance) {
+  async countObservations(project, tool, importance, branch) {
     const conditions = [];
     const params = [];
     if (project) {
@@ -63868,6 +63937,10 @@ ${storedOutput}`;
     if (importance) {
       conditions.push("importance = ?");
       params.push(importance);
+    }
+    if (branch) {
+      conditions.push("branch = ?");
+      params.push(branch);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     const sql = `SELECT COUNT(*) as count FROM observations ${where}`;

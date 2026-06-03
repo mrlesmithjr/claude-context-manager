@@ -54,8 +54,10 @@ export class ObservationSearch extends Component {
       selectedTool: '',
       selectedImportance: '',
       selectedTag: '',
+      selectedBranch: '',
       observations: [],
       tools: [], // Will be dynamically populated
+      branches: [], // Will be dynamically populated from /api/observations/branches
       total: 0,
       limit: 50,
       offset: 0,
@@ -69,11 +71,12 @@ export class ObservationSearch extends Component {
   }
 
   componentDidMount() {
-    // In network mode, skip fetching tools (requires /api/stats scoped to a project)
-    // until a project is selected. loadTools will be called from componentDidUpdate
+    // In network mode, skip fetching tools/branches (requires a project) until one
+    // is selected. loadTools and loadBranches will be called from componentDidUpdate
     // when the first project is selected.
     if (this.props.projectRequired && !this.props.project) return;
     this.loadTools();
+    this.loadBranches();
   }
 
   componentDidUpdate(prevProps) {
@@ -82,14 +85,19 @@ export class ObservationSearch extends Component {
       // In network mode, skip re-fetch if no project is selected
       if (this.props.projectRequired && !this.props.project) return;
 
-      // Load tools list when a project becomes available for the first time
+      // Load tools and branches when a project becomes available for the first time
       if (this.props.projectRequired && !prevProps.project && this.props.project) {
         this.loadTools();
+        this.loadBranches();
       }
 
-      if (this.state.hasSearched) {
-        this.performSearch();
-      }
+      // Reset branch selection and reload branch list when project changes
+      this.setState({ selectedBranch: '', branches: [] }, () => {
+        this.loadBranches();
+        if (this.state.hasSearched) {
+          this.performSearch();
+        }
+      });
     }
   }
 
@@ -110,6 +118,29 @@ export class ObservationSearch extends Component {
       this.setState({ tools });
     } catch (error) {
       console.error('Failed to load tools:', error);
+    }
+  }
+
+  /**
+   * Load distinct branch names from observations for the current project.
+   * Uses /api/observations/branches (not /api/sessions/branches) so branches
+   * that only appear on individual observations are included. refs #227
+   */
+  async loadBranches() {
+    // Guard: do not fetch without a project in network mode
+    if (this.props.projectRequired && !this.props.project) return;
+
+    try {
+      const params = new URLSearchParams();
+      if (this.props.project) params.append('project', this.props.project);
+
+      const response = await apiFetch(`/api/observations/branches?${params}`);
+      if (!response.ok) return; // silently ignore -- branch filter is optional
+
+      const data = await response.json();
+      this.setState({ branches: data.branches || [] });
+    } catch (error) {
+      console.error('Failed to load observation branches:', error);
     }
   }
 
@@ -160,8 +191,15 @@ export class ObservationSearch extends Component {
     }
   };
 
+  handleBranchChange = (e) => {
+    const selectedBranch = e.target.value;
+    // Branch selection triggers a search unconditionally: a user picking a branch
+    // without a query wants to browse by branch, so we must show results immediately.
+    this.setState({ selectedBranch, offset: 0, hasSearched: true }, () => this.performSearch());
+  };
+
   async performSearch() {
-    const { query, selectedTool, selectedImportance, selectedTag, limit, offset } = this.state;
+    const { query, selectedTool, selectedImportance, selectedTag, selectedBranch, limit, offset } = this.state;
     const { project } = this.props;
 
     this.setState({ loading: true, error: null, hasSearched: true });
@@ -173,6 +211,7 @@ export class ObservationSearch extends Component {
       if (selectedTool) params.append('tool', selectedTool);
       if (selectedImportance) params.append('importance', selectedImportance);
       if (selectedTag) params.append('tag', selectedTag);
+      if (selectedBranch) params.append('branch', selectedBranch);
 
       const response = await apiFetch(`/api/observations?${params}`);
       if (!response.ok) throw new Error('Failed to search observations');
@@ -214,11 +253,11 @@ export class ObservationSearch extends Component {
   };
 
   renderSearchControls() {
-    const { query, selectedTool, selectedImportance, selectedTag, tools } = this.state;
+    const { query, selectedTool, selectedImportance, selectedTag, selectedBranch, tools, branches } = this.state;
 
     return html`
       <div class="bg-gray-800 rounded-lg p-4 mb-6">
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           <!-- Search Input -->
           <div>
             <label for="search-query" class="block text-sm font-medium text-gray-400 mb-2">
@@ -318,6 +357,35 @@ export class ObservationSearch extends Component {
               value=${selectedTag}
               onInput=${this.handleTagChange}
             />
+          </div>
+
+          <!-- Branch Filter -->
+          <div>
+            <label for="branch-filter" class="block text-sm font-medium text-gray-400 mb-2">
+              Filter by Branch
+            </label>
+            <div class="relative">
+              <select
+                id="branch-filter"
+                class="w-full bg-gray-700 text-white border border-gray-600 rounded px-4 py-2
+                       focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                onChange=${this.handleBranchChange}
+                value=${selectedBranch}
+              >
+                <option value="">All Branches</option>
+                ${branches.map(
+                  (b) => html`
+                    <option value=${b}>${b}</option>
+                  `
+                )}
+              </select>
+              <!-- Dropdown icon -->
+              <div class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+              </div>
+            </div>
           </div>
         </div>
       </div>
