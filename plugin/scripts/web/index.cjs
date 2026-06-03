@@ -46748,6 +46748,72 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
       }
     }
   );
+  fastify.get(
+    "/api/skills",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
+            days: { type: "number", minimum: 1, maximum: 365 },
+            limit: { type: "number", minimum: 1, maximum: 100 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { project, days, limit = 50 } = request.query;
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
+      try {
+        const result = await storage.getSkillStats({ project, days, limit });
+        reply.send(result);
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Failed to retrieve skill stats" });
+      }
+    }
+  );
+  fastify.get(
+    "/api/skills/:name",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            project: { type: "string", maxLength: MAX_PROJECT_LEN },
+            days: { type: "number", minimum: 1, maximum: 365 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { project, days } = request.query;
+      const skillName = decodeURIComponent(request.params.name);
+      if (isNetworkMode2 && !project) {
+        reply.status(400).send({ error: "project parameter is required in network mode" });
+        return;
+      }
+      if (project && isProjectTooBroad(project, isNetworkMode2)) {
+        reply.status(403).send({ error: "Project path too broad for network mode" });
+        return;
+      }
+      try {
+        const result = await storage.getSkillStats({ project, days, skill: skillName });
+        reply.send(result);
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({ error: "Failed to retrieve skill detail" });
+      }
+    }
+  );
   fastify.post(
     "/api/admin/prune",
     {
@@ -46933,7 +46999,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.154") return "0.8.154";
+  if ("0.8.155") return "0.8.155";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;
