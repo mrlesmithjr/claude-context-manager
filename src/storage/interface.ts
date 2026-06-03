@@ -318,6 +318,18 @@ export interface ContextStorage {
   getDistinctBranches(project: string): Promise<string[]>;
 
   /**
+   * Get distinct git branch names that appear on observations for a project.
+   * Unlike getDistinctBranches (which queries sessions.branch), this queries
+   * observations.branch directly so branches that only exist on observations
+   * (e.g. the branch at capture time before the session ended on a different branch)
+   * are included.
+   * Returns empty array when no branches are found.
+   * refs #227
+   * @param project - Project path prefix
+   */
+  getDistinctObservationBranches(project: string): Promise<string[]>;
+
+  /**
    * Get paginated sessions with observation count and token total in one query.
    * Replaces the N+1 pattern of getRecentSessions + per-session getSessionObservations.
    * @param project - Project path prefix (use '/' for all projects)
@@ -507,8 +519,9 @@ export interface ContextStorage {
    * @param project - Project path (optional)
    * @param tool - Tool name filter (optional)
    * @param importance - Importance level filter: 'high' | 'medium' | 'low' (optional)
+   * @param branch - Git branch filter: exact match (optional)
    */
-  countObservations(project?: string, tool?: string, importance?: ImportanceLevel): Promise<number>;
+  countObservations(project?: string, tool?: string, importance?: ImportanceLevel, branch?: string): Promise<number>;
 
   /**
    * Count sessions with optional filters
