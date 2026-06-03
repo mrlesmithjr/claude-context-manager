@@ -5446,7 +5446,7 @@ var require_thread_stream = __commonJS({
     var { version: version2 } = require_package();
     var { EventEmitter } = require("events");
     var { Worker } = require("worker_threads");
-    var { join: join6 } = require("path");
+    var { join: join7 } = require("path");
     var { pathToFileURL } = require("url");
     var { wait } = require_wait();
     var {
@@ -5482,7 +5482,7 @@ var require_thread_stream = __commonJS({
     function createWorker(stream, opts) {
       const { filename, workerData } = opts;
       const bundlerOverrides = "__bundlerPathsOverrides" in globalThis ? globalThis.__bundlerPathsOverrides : {};
-      const toExecute = bundlerOverrides["thread-stream-worker"] || join6(__dirname, "lib", "worker.js");
+      const toExecute = bundlerOverrides["thread-stream-worker"] || join7(__dirname, "lib", "worker.js");
       const worker = new Worker(toExecute, {
         ...opts.workerOpts,
         trackUnmanagedFds: false,
@@ -5868,7 +5868,7 @@ var require_transport = __commonJS({
     "use strict";
     var { createRequire: createRequire2 } = require("module");
     var getCallers = require_caller();
-    var { join: join6, isAbsolute, sep } = require("node:path");
+    var { join: join7, isAbsolute, sep } = require("node:path");
     var sleep = require_atomic_sleep();
     var onExit = require_on_exit_leak_free();
     var ThreadStream = require_thread_stream();
@@ -5931,7 +5931,7 @@ var require_transport = __commonJS({
         throw new Error("only one of target or targets can be specified");
       }
       if (targets) {
-        target = bundlerOverrides["pino-worker"] || join6(__dirname, "worker.js");
+        target = bundlerOverrides["pino-worker"] || join7(__dirname, "worker.js");
         options.targets = targets.filter((dest) => dest.target).map((dest) => {
           return {
             ...dest,
@@ -5949,7 +5949,7 @@ var require_transport = __commonJS({
           });
         });
       } else if (pipeline) {
-        target = bundlerOverrides["pino-worker"] || join6(__dirname, "worker.js");
+        target = bundlerOverrides["pino-worker"] || join7(__dirname, "worker.js");
         options.pipelines = [pipeline.map((dest) => {
           return {
             ...dest,
@@ -5971,7 +5971,7 @@ var require_transport = __commonJS({
           return origin;
         }
         if (origin === "pino/file") {
-          return join6(__dirname, "..", "file.js");
+          return join7(__dirname, "..", "file.js");
         }
         let fixTarget2;
         for (const filePath of callers) {
@@ -6949,7 +6949,7 @@ var require_safe_stable_stringify = __commonJS({
               return circularValue;
             }
             let res = "";
-            let join6 = ",";
+            let join7 = ",";
             const originalIndentation = indentation;
             if (Array.isArray(value)) {
               if (value.length === 0) {
@@ -6963,7 +6963,7 @@ var require_safe_stable_stringify = __commonJS({
                 indentation += spacer;
                 res += `
 ${indentation}`;
-                join6 = `,
+                join7 = `,
 ${indentation}`;
               }
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
@@ -6971,13 +6971,13 @@ ${indentation}`;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyFnReplacer(String(i), value, stack, replacer, spacer, indentation);
                 res += tmp2 !== void 0 ? tmp2 : "null";
-                res += join6;
+                res += join7;
               }
               const tmp = stringifyFnReplacer(String(i), value, stack, replacer, spacer, indentation);
               res += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res += `${join6}"... ${getItemCount(removedKeys)} not stringified"`;
+                res += `${join7}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               if (spacer !== "") {
                 res += `
@@ -6998,7 +6998,7 @@ ${originalIndentation}`;
             let separator = "";
             if (spacer !== "") {
               indentation += spacer;
-              join6 = `,
+              join7 = `,
 ${indentation}`;
               whitespace = " ";
             }
@@ -7012,13 +7012,13 @@ ${indentation}`;
               const tmp = stringifyFnReplacer(key2, value, stack, replacer, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}:${whitespace}${tmp}`;
-                separator = join6;
+                separator = join7;
               }
             }
             if (keyLength > maximumBreadth) {
               const removedKeys = keyLength - maximumBreadth;
               res += `${separator}"...":${whitespace}"${getItemCount(removedKeys)} not stringified"`;
-              separator = join6;
+              separator = join7;
             }
             if (spacer !== "" && separator.length > 1) {
               res = `
@@ -7059,7 +7059,7 @@ ${originalIndentation}`;
             }
             const originalIndentation = indentation;
             let res = "";
-            let join6 = ",";
+            let join7 = ",";
             if (Array.isArray(value)) {
               if (value.length === 0) {
                 return "[]";
@@ -7072,7 +7072,7 @@ ${originalIndentation}`;
                 indentation += spacer;
                 res += `
 ${indentation}`;
-                join6 = `,
+                join7 = `,
 ${indentation}`;
               }
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
@@ -7080,13 +7080,13 @@ ${indentation}`;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyArrayReplacer(String(i), value[i], stack, replacer, spacer, indentation);
                 res += tmp2 !== void 0 ? tmp2 : "null";
-                res += join6;
+                res += join7;
               }
               const tmp = stringifyArrayReplacer(String(i), value[i], stack, replacer, spacer, indentation);
               res += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res += `${join6}"... ${getItemCount(removedKeys)} not stringified"`;
+                res += `${join7}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               if (spacer !== "") {
                 res += `
@@ -7099,7 +7099,7 @@ ${originalIndentation}`;
             let whitespace = "";
             if (spacer !== "") {
               indentation += spacer;
-              join6 = `,
+              join7 = `,
 ${indentation}`;
               whitespace = " ";
             }
@@ -7108,7 +7108,7 @@ ${indentation}`;
               const tmp = stringifyArrayReplacer(key2, value[key2], stack, replacer, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}:${whitespace}${tmp}`;
-                separator = join6;
+                separator = join7;
               }
             }
             if (spacer !== "" && separator.length > 1) {
@@ -7166,20 +7166,20 @@ ${originalIndentation}`;
               indentation += spacer;
               let res2 = `
 ${indentation}`;
-              const join7 = `,
+              const join8 = `,
 ${indentation}`;
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
               let i = 0;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyIndent(String(i), value[i], stack, spacer, indentation);
                 res2 += tmp2 !== void 0 ? tmp2 : "null";
-                res2 += join7;
+                res2 += join8;
               }
               const tmp = stringifyIndent(String(i), value[i], stack, spacer, indentation);
               res2 += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res2 += `${join7}"... ${getItemCount(removedKeys)} not stringified"`;
+                res2 += `${join8}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               res2 += `
 ${originalIndentation}`;
@@ -7195,16 +7195,16 @@ ${originalIndentation}`;
               return '"[Object]"';
             }
             indentation += spacer;
-            const join6 = `,
+            const join7 = `,
 ${indentation}`;
             let res = "";
             let separator = "";
             let maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth);
             if (isTypedArrayWithEntries(value)) {
-              res += stringifyTypedArray(value, join6, maximumBreadth);
+              res += stringifyTypedArray(value, join7, maximumBreadth);
               keys = keys.slice(value.length);
               maximumPropertiesToStringify -= value.length;
-              separator = join6;
+              separator = join7;
             }
             if (deterministic) {
               keys = sort(keys, comparator);
@@ -7215,13 +7215,13 @@ ${indentation}`;
               const tmp = stringifyIndent(key2, value[key2], stack, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}: ${tmp}`;
-                separator = join6;
+                separator = join7;
               }
             }
             if (keyLength > maximumBreadth) {
               const removedKeys = keyLength - maximumBreadth;
               res += `${separator}"...": "${getItemCount(removedKeys)} not stringified"`;
-              separator = join6;
+              separator = join7;
             }
             if (separator !== "") {
               res = `
@@ -51394,9 +51394,9 @@ var StreamableHTTPServerTransport = class {
 
 // src/server/http.ts
 var import_crypto6 = require("crypto");
-var import_os6 = require("os");
-var import_path7 = require("path");
-var import_fs7 = require("fs");
+var import_os7 = require("os");
+var import_path8 = require("path");
+var import_fs8 = require("fs");
 var import_url2 = require("url");
 
 // node_modules/zod/v3/helpers/util.js
@@ -59325,9 +59325,9 @@ var EMPTY_COMPLETION_RESULT = {
 
 // src/mcp/create-server.ts
 var import_crypto3 = require("crypto");
-var import_fs5 = require("fs");
-var import_path5 = require("path");
-var import_os4 = require("os");
+var import_fs6 = require("fs");
+var import_path6 = require("path");
+var import_os5 = require("os");
 
 // src/export/memory.ts
 var import_fs = require("fs");
@@ -59679,10 +59679,9 @@ async function exportToAutoMemory(storage, projectPath, sessionId) {
     if (!sessionId) {
       return { exported: 0, filePath: null };
     }
-    const sessions2 = await storage.getRecentSessions(projectPath, 50);
-    const session = sessions2.find((s) => s.id === sessionId);
+    const session = await storage.getSession(sessionId);
     if (!session) {
-      console.error(`[context-manager] exportToAutoMemory: session ${sessionId.substring(0, 8)} not found in recent sessions; heading update skipped`);
+      console.warn(`[context-manager] exportToAutoMemory: session ${sessionId.substring(0, 8)} not found in DB; heading update skipped`);
       return { exported: 0, filePath: null };
     }
     if (session.status !== "complete") {
@@ -60695,6 +60694,45 @@ function getCurrentBranch(cwd) {
   }
 }
 
+// src/utils/find-project-root.ts
+var import_fs5 = require("fs");
+var import_os4 = require("os");
+var import_path5 = require("path");
+var DEFAULT_ROOT_MARKERS = [
+  ".git",
+  ".obsidian",
+  "package.json",
+  "Cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  ".claude"
+];
+function getMarkers() {
+  const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
+  if (!extra) return DEFAULT_ROOT_MARKERS;
+  const extras = extra.split(",").map((s) => s.trim()).filter(Boolean);
+  return [...DEFAULT_ROOT_MARKERS, ...extras];
+}
+function findProjectRoot(cwd) {
+  const markers = getMarkers();
+  const home = (0, import_os4.homedir)();
+  let current = cwd;
+  while (current !== home && current !== (0, import_path5.dirname)(current)) {
+    for (const marker of markers) {
+      if ((0, import_fs5.existsSync)((0, import_path5.join)(current, marker))) {
+        return current;
+      }
+    }
+    current = (0, import_path5.dirname)(current);
+  }
+  for (const marker of markers) {
+    if ((0, import_fs5.existsSync)((0, import_path5.join)(home, marker))) {
+      return home;
+    }
+  }
+  return cwd;
+}
+
 // src/mcp/create-server.ts
 var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
 var ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
@@ -60754,7 +60792,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.142" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.148" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -61006,7 +61044,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.142" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.148" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -61482,7 +61520,7 @@ ${lines.join("\n")}`
       }
       const resolvedProject = np(project) ?? project ?? process.cwd();
       let pathWarning = "";
-      if (resolvedProject && !(0, import_fs5.existsSync)(resolvedProject)) {
+      if (resolvedProject && !(0, import_fs6.existsSync)(resolvedProject)) {
         pathWarning = `
 Note: project path '${resolvedProject}' does not exist on disk. Observations will only be visible when searching from this exact path.`;
       }
@@ -61802,7 +61840,7 @@ Topic file: ${result.filePath}` : ""}`
   );
   server.tool(
     "context_prune",
-    "Targeted pruning of observations by tool name, importance, and/or age. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.",
+    "Targeted pruning of observations by tool name, importance, age, and/or access count. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.",
     {
       tool_name: external_exports.string().optional().describe('Delete observations from this tool (e.g., "Bash", "Read", "Grep")'),
       importance: external_exports.enum(["high", "medium", "low"]).optional().describe('Delete observations at this importance level (e.g., "low")'),
@@ -61812,21 +61850,27 @@ Topic file: ${result.filePath}` : ""}`
       ),
       include_high: external_exports.boolean().optional().default(false).describe(
         "When true, bypass the protection guard and also delete high-importance (score >= 0.65), pinned, and lesson observations. Default: false."
+      ),
+      max_access_count: external_exports.number().int().min(0).optional().nullable().describe(
+        "Only prune observations where access_count <= this value. Pre-migration rows with sentinel access_count=-1 are excluded by default. Pass include_untracked: true to include them."
+      ),
+      include_untracked: external_exports.boolean().optional().default(false).describe(
+        "When true, observations with access_count=-1 (pre-migration, tracking unavailable) are included when max_access_count filter is active. Default: false."
       )
     },
-    async ({ tool_name, importance, older_than_days, dry_run, include_high }) => {
-      if (!tool_name && !importance && older_than_days === void 0) {
+    async ({ tool_name, importance, older_than_days, dry_run, include_high, max_access_count, include_untracked }) => {
+      if (!tool_name && !importance && older_than_days === void 0 && (max_access_count === void 0 || max_access_count === null)) {
         return {
           content: [
             {
               type: "text",
-              text: "At least one filter (tool_name, importance, or older_than_days) is required."
+              text: "At least one filter (tool_name, importance, older_than_days, or max_access_count) is required."
             }
           ]
         };
       }
       if (isProxy) {
-        return proxyToolCall("context_prune", { tool_name, importance, older_than_days, dry_run, include_high }, remoteUrl, remoteToken);
+        return proxyToolCall("context_prune", { tool_name, importance, older_than_days, dry_run, include_high, max_access_count, include_untracked }, remoteUrl, remoteToken);
       }
       const db = await getDb();
       const result = await db.prune({
@@ -61834,12 +61878,15 @@ Topic file: ${result.filePath}` : ""}`
         importance,
         olderThanDays: older_than_days,
         dryRun: dry_run,
-        include_high
+        include_high,
+        maxAccessCount: max_access_count,
+        includeUntracked: include_untracked
       });
       const filters = [
         tool_name && `tool="${tool_name}"`,
         importance && `importance="${importance}"`,
-        older_than_days !== void 0 && `older_than=${older_than_days}d`
+        older_than_days !== void 0 && `older_than=${older_than_days}d`,
+        max_access_count !== void 0 && max_access_count !== null && `max_access_count=${max_access_count}${include_untracked ? "+untracked" : ""}`
       ].filter(Boolean).join(", ");
       if (dry_run) {
         const sampleLines = result.preview?.map((p) => `  * ${p}`).join("\n") ?? "";
@@ -62239,8 +62286,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = (0, import_path5.join)((0, import_os4.homedir)(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
-      if (!(0, import_fs5.existsSync)(lessonsPath)) {
+      const lessonsPath = (0, import_path6.join)((0, import_os5.homedir)(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
+      if (!(0, import_fs6.existsSync)(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -62248,7 +62295,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const content = (0, import_fs5.readFileSync)(lessonsPath, "utf8");
+      const content = (0, import_fs6.readFileSync)(lessonsPath, "utf8");
       return { content: [{ type: "text", text: content }] };
     }
   );
@@ -62270,8 +62317,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = (0, import_path5.join)((0, import_os4.homedir)(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
-      if (!(0, import_fs5.existsSync)(lessonsPath)) {
+      const lessonsPath = (0, import_path6.join)((0, import_os5.homedir)(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
+      if (!(0, import_fs6.existsSync)(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -62279,7 +62326,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const content = (0, import_fs5.readFileSync)(lessonsPath, "utf8");
+      const content = (0, import_fs6.readFileSync)(lessonsPath, "utf8");
       return { content: [{ type: "text", text: content }] };
     }
   );
@@ -62315,6 +62362,84 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
         await db.setLastReflectionDate(normalizedProject, (/* @__PURE__ */ new Date()).toISOString());
       }
       return { content: [{ type: "text", text }] };
+    }
+  );
+  server.tool(
+    "context_consolidate_projects",
+    "Find and optionally merge project keys that are subdirectories of a known root. Useful for repairing fragmented history caused by launching Claude from a subdirectory (e.g. an Obsidian DailyNotes folder) before project root normalization was active. Use dry_run: true (default) to preview what would change before committing.",
+    {
+      dry_run: external_exports.boolean().default(true).describe("Preview changes without modifying the database (default: true). Set to false to execute the merge."),
+      project: external_exports.string().optional().describe("Limit consolidation to paths under this project subtree. Omit to scan all projects.")
+    },
+    async ({ dry_run, project }) => {
+      if (isProxy) {
+        return proxyToolCall("context_consolidate_projects", { dry_run, project: np(project) }, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const allPaths = await db.getDistinctProjectPaths();
+      const pathFilter = np(project);
+      const candidatePaths = pathFilter ? allPaths.filter((p) => p === pathFilter || p.startsWith(pathFilter + "/")) : allPaths;
+      const renames = [];
+      for (const p of candidatePaths) {
+        const root = findProjectRoot(p);
+        if (root !== p) {
+          renames.push({ from: p, to: root });
+        }
+      }
+      if (renames.length === 0) {
+        return {
+          content: [{
+            type: "text",
+            text: "No fragmented project paths found. All project keys are already at their nearest root."
+          }]
+        };
+      }
+      if (dry_run) {
+        const allProjects = await db.getProjects();
+        const lines2 = [
+          `DRY RUN \u2014 ${renames.length} path(s) would be consolidated:`,
+          ""
+        ];
+        for (const { from, to } of renames) {
+          const obsEntry = allProjects.find((p) => p.path === from);
+          const obsCount = obsEntry?.observation_count ?? 0;
+          lines2.push(`  "${from}"`);
+          lines2.push(`    -> "${to}"`);
+          lines2.push(`    ${obsCount} observation(s) affected`);
+          lines2.push("");
+        }
+        lines2.push("Run with dry_run: false to apply these changes.");
+        return {
+          content: [{ type: "text", text: lines2.join("\n") }]
+        };
+      }
+      let totalObs = 0;
+      let totalSessions = 0;
+      const rawDb = db.db;
+      for (const { from, to } of renames) {
+        const obsResult = rawDb.prepare(
+          "UPDATE observations SET project = ? WHERE project = ?"
+        ).run(to, from);
+        const sesResult = rawDb.prepare(
+          "UPDATE sessions SET project = ? WHERE project = ?"
+        ).run(to, from);
+        rawDb.prepare("UPDATE user_prompts SET project = ? WHERE project = ?").run(to, from);
+        rawDb.prepare("UPDATE decisions SET project = ? WHERE project = ?").run(to, from);
+        totalObs += obsResult.changes;
+        totalSessions += sesResult.changes;
+      }
+      const lines = [
+        `Consolidated ${renames.length} fragmented path(s):`,
+        `  ${totalObs} observation(s) updated`,
+        `  ${totalSessions} session(s) updated`,
+        ""
+      ];
+      for (const { from, to } of renames) {
+        lines.push(`  "${from}" -> "${to}"`);
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }]
+      };
     }
   );
   const rawServer = server;
@@ -62353,10 +62478,10 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
 var better_sqlite3_default = __betterSqlite3;
 
 // src/storage/sqlite.ts
-var import_os5 = require("os");
+var import_os6 = require("os");
 var import_crypto5 = require("crypto");
-var import_path6 = __toESM(require("path"), 1);
-var import_fs6 = require("fs");
+var import_path7 = __toESM(require("path"), 1);
+var import_fs7 = require("fs");
 
 // shim:sqlite-vec
 var load = __sqliteVec?.load;
@@ -62423,10 +62548,12 @@ function detectFactType(summary) {
 }
 
 // src/storage/sqlite.ts
-var DEFAULT_DB_PATH = import_path6.default.join((0, import_os5.homedir)(), ".claude-context", "context.db");
+var DEFAULT_DB_PATH = import_path7.default.join((0, import_os6.homedir)(), ".claude-context", "context.db");
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
 var _rawHalflife = parseFloat(process.env.CONTEXT_MANAGER_DECAY_HALFLIFE ?? "");
 var DECAY_HALFLIFE_DAYS = Number.isFinite(_rawHalflife) && _rawHalflife >= 1 && _rawHalflife <= 3650 ? _rawHalflife : 60;
+var _rawPriorityReserve = parseFloat(process.env["CONTEXT_MANAGER_PRIORITY_RESERVE"] ?? "");
+var PRIORITY_RESERVE_FRACTION = Number.isFinite(_rawPriorityReserve) && _rawPriorityReserve >= 0 && _rawPriorityReserve <= 0.5 ? _rawPriorityReserve : 0.25;
 function recencyFactor(capturedAt) {
   const ageMs = Date.now() - new Date(capturedAt).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
@@ -62441,7 +62568,7 @@ function applyDecay(obs) {
   const ageMs = Date.now() - new Date(obs.created_at).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
   const recencyScore = Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
-  const accessCount = obs.access_count ?? 0;
+  const accessCount = Math.max(0, obs.access_count ?? 0);
   const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1);
   return base * 0.6 + recencyScore * 0.25 + frequencyScore * 0.15;
 }
@@ -62484,8 +62611,8 @@ var SQLiteStorage = class {
   db;
   vecEnabled = false;
   constructor(dbPath = DEFAULT_DB_PATH) {
-    const dir = import_path6.default.dirname(dbPath);
-    (0, import_fs6.mkdirSync)(dir, { recursive: true });
+    const dir = import_path7.default.dirname(dbPath);
+    (0, import_fs7.mkdirSync)(dir, { recursive: true });
     this.db = new better_sqlite3_default(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
@@ -62646,6 +62773,7 @@ var SQLiteStorage = class {
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
     this.migrateAddMetaTable();
+    this.migrateBackfillAccessCountSentinel();
     this.migrateAddBranchColumn();
     this.migrateAddSupersededBy();
     this.migrateAddTokenIndex();
@@ -62877,18 +63005,32 @@ ${storedOutput}`;
       return { obs, score: applyDecay(obs) };
     });
     scoredRows.sort((a, b) => b.score - a.score);
-    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * effectiveBudget);
-    const highResults = [];
     const includedIds = /* @__PURE__ */ new Set();
+    const priorityBudget = Math.floor(PRIORITY_RESERVE_FRACTION * effectiveBudget);
+    const priorityResults = [];
+    let priorityTokens = 0;
+    if (priorityBudget > 0) {
+      for (const { obs } of scoredRows) {
+        const isPriority = obs.pinned === 1 || obs.tool_name === "Conversation" || obs.tool_name.startsWith("Manual");
+        if (!isPriority) continue;
+        if (priorityTokens + obs.token_estimate > priorityBudget) continue;
+        priorityResults.push(obs);
+        if (obs.id !== void 0) includedIds.add(obs.id);
+        priorityTokens += obs.token_estimate;
+      }
+    }
+    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * Math.max(0, effectiveBudget - priorityTokens));
+    const highResults = [];
     let highTokens = 0;
     for (const { obs, score } of scoredRows) {
       if (score < 0.65) continue;
+      if (obs.id !== void 0 && includedIds.has(obs.id)) continue;
       if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
       if (obs.id !== void 0) includedIds.add(obs.id);
       highTokens += obs.token_estimate;
     }
-    const remainingBudget = effectiveBudget - highTokens;
+    const remainingBudget = Math.max(0, effectiveBudget - priorityTokens - highTokens);
     const lowResults = [];
     let lowTokens = 0;
     for (const { obs } of scoredRows) {
@@ -62897,7 +63039,7 @@ ${storedOutput}`;
       lowResults.push(obs);
       lowTokens += obs.token_estimate;
     }
-    return [...highResults, ...lowResults];
+    return [...priorityResults, ...highResults, ...lowResults];
   }
   async search(query, projectOrOptions) {
     const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
@@ -62974,7 +63116,7 @@ ${storedOutput}`;
       if (ids.length > 0) {
         const placeholders = ids.map(() => "?").join(", ");
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${placeholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${placeholders})`
         ).run(...ids);
       }
     }
@@ -63381,7 +63523,7 @@ ${storedOutput}`;
     };
   }
   async prune(options) {
-    const { toolName, importance, olderThanDays, dryRun = false, include_high = false } = options;
+    const { toolName, importance, olderThanDays, dryRun = false, include_high = false, maxAccessCount, includeUntracked = false } = options;
     const conditions = [];
     const params = [];
     if (!include_high) {
@@ -63403,7 +63545,15 @@ ${storedOutput}`;
       conditions.push("importance = ?");
       params.push(importance);
     }
-    const userFilterCount = (olderThanDays !== void 0 ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0);
+    if (maxAccessCount !== null && maxAccessCount !== void 0) {
+      if (includeUntracked) {
+        conditions.push("(access_count = -1 OR access_count <= ?)");
+      } else {
+        conditions.push("(access_count >= 0 AND access_count <= ?)");
+      }
+      params.push(maxAccessCount);
+    }
+    const userFilterCount = (olderThanDays !== void 0 ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0) + (maxAccessCount !== null && maxAccessCount !== void 0 ? 1 : 0);
     if (userFilterCount === 0) {
       return { deleted: 0 };
     }
@@ -63635,6 +63785,21 @@ ${storedOutput}`;
     const stmt = this.db.prepare(sql);
     const rows = stmt.all();
     return rows;
+  }
+  async getDistinctProjectPaths() {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all();
+    return rows.map((r) => r.project);
   }
   async getSessionObservations(sessionId) {
     const stmt = this.db.prepare(`
@@ -64649,7 +64814,7 @@ ${storedOutput}`;
       if (foundIds.length > 0) {
         const idPlaceholders = foundIds.map(() => "?").join(", ");
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${idPlaceholders})`
         ).run(...foundIds);
       }
     }
@@ -65207,6 +65372,38 @@ ${storedOutput}`;
     repair();
   }
   /**
+   * One-time idempotent migration: backfill access_count sentinel (-1) for rows
+   * that received DEFAULT 0 via ALTER TABLE and were never actually tracked.
+   *
+   * Background: access_count was added via ALTER TABLE ... DEFAULT 0, which set
+   * all ~6,500 pre-migration rows to 0. This is indistinguishable from rows
+   * genuinely accessed zero times after tracking began, making never-accessed
+   * pruning unreliable. Sentinel -1 means "tracking unavailable (pre-migration)".
+   *
+   * applyDecay() guards against the sentinel with Math.max(0, access_count ?? 0)
+   * so sentinel rows are treated as frequency=0 for decay purposes, not penalized.
+   *
+   * Idempotency: the marker key in the meta table ensures this runs exactly once.
+   * New rows are inserted with access_count = 0 (the schema DEFAULT), so future
+   * rows are correctly interpreted as "tracked, never accessed" and are not backfilled.
+   */
+  migrateBackfillAccessCountSentinel() {
+    const marker = "migration:access_count_sentinel_backfilled";
+    const alreadyRun = this.db.prepare(
+      `SELECT 1 FROM meta WHERE key = ?`
+    ).get(marker);
+    if (alreadyRun) return;
+    const backfill = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE observations SET access_count = -1 WHERE access_count = 0`
+      ).run();
+      this.db.prepare(
+        `INSERT INTO meta (key, value) VALUES (?, ?)`
+      ).run(marker, (/* @__PURE__ */ new Date()).toISOString());
+    });
+    backfill();
+  }
+  /**
    * Add tokens to the token_index, incrementing frequency on conflict.
    * Runs as a transaction for efficiency. Tokens are already normalized.
    */
@@ -65367,11 +65564,11 @@ function sanitizeContent(content) {
 
 // src/server/http.ts
 var import_meta2 = {};
-var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path7.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
+var __serverDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path8.dirname)((0, import_url2.fileURLToPath)(import_meta2.url));
 var SERVER_VERSION = (() => {
-  if ("0.8.142") return "0.8.142";
+  if ("0.8.148") return "0.8.148";
   try {
-    const pkg = JSON.parse((0, import_fs7.readFileSync)((0, import_path7.join)(__serverDir, "../../package.json"), "utf-8"));
+    const pkg = JSON.parse((0, import_fs8.readFileSync)((0, import_path8.join)(__serverDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;
     throw new Error("version missing");
   } catch {
@@ -65555,7 +65752,7 @@ async function startHttpServer(options = {}) {
   const port = options.port ?? parseInt(process.env.CONTEXT_MANAGER_PORT || "4666", 10);
   const host = options.host ?? (process.env.CONTEXT_MANAGER_HOST || "0.0.0.0");
   const token = options.token ?? (process.env.CONTEXT_MANAGER_TOKEN || "");
-  const dbPath = options.dbPath ?? (process.env.CONTEXT_MANAGER_DB || (0, import_path7.join)((0, import_os6.homedir)(), ".claude-context", "context.db"));
+  const dbPath = options.dbPath ?? (process.env.CONTEXT_MANAGER_DB || (0, import_path8.join)((0, import_os7.homedir)(), ".claude-context", "context.db"));
   if (!token) {
     console.error("[context-manager-http] CONTEXT_MANAGER_TOKEN is required for HTTP server mode");
     console.error("  Generate one: openssl rand -hex 32");
@@ -65620,7 +65817,7 @@ async function startHttpServer(options = {}) {
         const sessionId = strBound(body["session_id"], SESSION_ID_MAX, "session_id");
         const project = strBound(body["project"], PROJECT_MAX, "project");
         const branch = typeof body["branch"] === "string" && body["branch"].length > 0 ? body["branch"].substring(0, 256) : null;
-        const normalizedProject = normalizePath(project, pathMap);
+        const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
         await storage.createSession(sessionId, normalizedProject, branch);
         await reply.send({ status: "ok" });
       } else if (action === "end") {
@@ -65672,7 +65869,7 @@ async function startHttpServer(options = {}) {
       const pkg = typeof body["package"] === "string" && body["package"].length > 0 ? body["package"].substring(0, 256) : void 0;
       const rawCreatedAt = body["created_at"];
       const createdAt = typeof rawCreatedAt === "string" && !isNaN(Date.parse(rawCreatedAt)) ? rawCreatedAt : (/* @__PURE__ */ new Date()).toISOString();
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       await storage.save({
         session_id: sessionId,
         project: normalizedProject,
@@ -65706,7 +65903,7 @@ async function startHttpServer(options = {}) {
       const promptNumber = typeof body["prompt_number"] === "number" ? Math.max(0, Math.floor(body["prompt_number"])) : 0;
       const rawPromptCreatedAt = body["created_at"];
       const createdAt = typeof rawPromptCreatedAt === "string" && !isNaN(Date.parse(rawPromptCreatedAt)) ? rawPromptCreatedAt : (/* @__PURE__ */ new Date()).toISOString();
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       await storage.saveUserPrompt({
         session_id: sessionId,
         project: normalizedProject,
@@ -65731,7 +65928,7 @@ async function startHttpServer(options = {}) {
       const tags = typeof rawTags === "string" && rawTags.trim().length > 0 ? rawTags.substring(0, 256) : void 0;
       const rawClient = body["client"];
       const client = typeof rawClient === "string" && rawClient.trim().length > 0 ? rawClient.trim().substring(0, 50) : void 0;
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       const sessionId = await storage.getOrCreateManualSession(normalizedProject);
       const obsId = await storage.addManualObservation({
         text,
@@ -65760,7 +65957,7 @@ async function startHttpServer(options = {}) {
       const importanceScore = typeof body["importance_score"] === "number" ? Math.max(0, Math.min(1, body["importance_score"])) : 0.7;
       const rawTags = body["tags"];
       const tags = typeof rawTags === "string" && rawTags.trim().length > 0 ? rawTags.substring(0, 256) : null;
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       await storage.saveDecision({
         session_id: sessionId,
         project: normalizedProject,
@@ -65785,9 +65982,9 @@ async function startHttpServer(options = {}) {
       const normalizedProject = normalizePath(project, pathMap);
       const result = await exportToAutoMemory(storage, normalizedProject, sessionId);
       let content = "";
-      const memFile = (0, import_path7.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
+      const memFile = (0, import_path8.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       try {
-        content = (0, import_fs7.readFileSync)(memFile, "utf-8");
+        content = (0, import_fs8.readFileSync)(memFile, "utf-8");
       } catch {
       }
       await reply.send({ status: "ok", exported: result.exported, content });
@@ -65804,7 +66001,7 @@ async function startHttpServer(options = {}) {
         await reply.status(400).send({ error: "project query parameter is required" });
         return;
       }
-      const normalizedProject = normalizePath(project, pathMap);
+      const normalizedProject = findProjectRoot(normalizePath(project, pathMap));
       const nextNumber = await storage.getNextDecisionNumber(normalizedProject);
       await reply.send({ nextNumber });
     } catch (err) {
@@ -65821,10 +66018,10 @@ async function startHttpServer(options = {}) {
         return;
       }
       const normalizedProject = normalizePath(project, pathMap);
-      const memFile = (0, import_path7.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
+      const memFile = (0, import_path8.join)(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       let content = "";
       try {
-        content = (0, import_fs7.readFileSync)(memFile, "utf-8");
+        content = (0, import_fs8.readFileSync)(memFile, "utf-8");
       } catch {
       }
       await reply.send({ content });

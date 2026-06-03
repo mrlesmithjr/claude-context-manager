@@ -37,6 +37,7 @@ import { correctTokens } from '../utils/correct-tokens.js';
 import { normalizePath, type PathPrefixEntry } from '../utils/path-map.js';
 import { buildReflection, formatReflection } from '../utils/reflect.js';
 import { getCurrentBranch } from '../utils/git.js';
+import { findProjectRoot } from '../utils/find-project-root.js';
 
 // Minimum cosine similarity score for semantic/hybrid search results.
 // Results below this threshold are suppressed to avoid returning low-signal noise.
@@ -1574,7 +1575,7 @@ export function createContextManagerServer(
 
   server.tool(
     'context_prune',
-    'Targeted pruning of observations by tool name, importance, and/or age. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.',
+    'Targeted pruning of observations by tool name, importance, age, and/or access count. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.',
     {
       tool_name: z
         .string()
@@ -1601,21 +1602,40 @@ export function createContextManagerServer(
         .describe(
           'When true, bypass the protection guard and also delete high-importance (score >= 0.65), pinned, and lesson observations. Default: false.'
         ),
+      max_access_count: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .nullable()
+        .describe(
+          'Only prune observations where access_count <= this value. ' +
+          'Pre-migration rows with sentinel access_count=-1 are excluded by default. ' +
+          'Pass include_untracked: true to include them.'
+        ),
+      include_untracked: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'When true, observations with access_count=-1 (pre-migration, tracking unavailable) ' +
+          'are included when max_access_count filter is active. Default: false.'
+        ),
     },
-    async ({ tool_name, importance, older_than_days, dry_run, include_high }) => {
-      if (!tool_name && !importance && older_than_days === undefined) {
+    async ({ tool_name, importance, older_than_days, dry_run, include_high, max_access_count, include_untracked }) => {
+      if (!tool_name && !importance && older_than_days === undefined && (max_access_count === undefined || max_access_count === null)) {
         return {
           content: [
             {
               type: 'text' as const,
-              text: 'At least one filter (tool_name, importance, or older_than_days) is required.',
+              text: 'At least one filter (tool_name, importance, older_than_days, or max_access_count) is required.',
             },
           ],
         };
       }
 
       if (isProxy) {
-        return proxyToolCall('context_prune', { tool_name, importance, older_than_days, dry_run, include_high }, remoteUrl, remoteToken);
+        return proxyToolCall('context_prune', { tool_name, importance, older_than_days, dry_run, include_high, max_access_count, include_untracked }, remoteUrl, remoteToken);
       }
 
       const db = await getDb();
@@ -1625,12 +1645,15 @@ export function createContextManagerServer(
         olderThanDays: older_than_days,
         dryRun: dry_run,
         include_high,
+        maxAccessCount: max_access_count,
+        includeUntracked: include_untracked,
       });
 
       const filters = [
         tool_name && `tool="${tool_name}"`,
         importance && `importance="${importance}"`,
         older_than_days !== undefined && `older_than=${older_than_days}d`,
+        max_access_count !== undefined && max_access_count !== null && `max_access_count=${max_access_count}${include_untracked ? '+untracked' : ''}`,
       ]
         .filter(Boolean)
         .join(', ');
@@ -2222,6 +2245,106 @@ export function createContextManagerServer(
       }
 
       return { content: [{ type: 'text' as const, text }] };
+    }
+  );
+
+  server.tool(
+    'context_consolidate_projects',
+    'Find and optionally merge project keys that are subdirectories of a known root. Useful for repairing fragmented history caused by launching Claude from a subdirectory (e.g. an Obsidian DailyNotes folder) before project root normalization was active. Use dry_run: true (default) to preview what would change before committing.',
+    {
+      dry_run: z
+        .boolean()
+        .default(true)
+        .describe('Preview changes without modifying the database (default: true). Set to false to execute the merge.'),
+      project: z
+        .string()
+        .optional()
+        .describe('Limit consolidation to paths under this project subtree. Omit to scan all projects.'),
+    },
+    async ({ dry_run, project }) => {
+      if (isProxy) {
+        return proxyToolCall('context_consolidate_projects', { dry_run, project: np(project) }, remoteUrl, remoteToken);
+      }
+
+      const db = await getDb();
+      const allPaths = await db.getDistinctProjectPaths();
+
+      // Filter to the requested subtree if provided
+      const pathFilter = np(project);
+      const candidatePaths = pathFilter
+        ? allPaths.filter(p => p === pathFilter || p.startsWith(pathFilter + '/'))
+        : allPaths;
+
+      // Find paths where findProjectRoot would normalize them to a different path
+      const renames: Array<{ from: string; to: string }> = [];
+      for (const p of candidatePaths) {
+        const root = findProjectRoot(p);
+        if (root !== p) {
+          renames.push({ from: p, to: root });
+        }
+      }
+
+      if (renames.length === 0) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: 'No fragmented project paths found. All project keys are already at their nearest root.',
+          }],
+        };
+      }
+
+      if (dry_run) {
+        // Count observations and sessions affected per rename
+        const allProjects = await db.getProjects();
+        const lines: string[] = [
+          `DRY RUN — ${renames.length} path(s) would be consolidated:`,
+          '',
+        ];
+        for (const { from, to } of renames) {
+          const obsEntry = allProjects.find(p => p.path === from);
+          const obsCount = obsEntry?.observation_count ?? 0;
+          lines.push(`  "${from}"`);
+          lines.push(`    -> "${to}"`);
+          lines.push(`    ${obsCount} observation(s) affected`);
+          lines.push('');
+        }
+        lines.push('Run with dry_run: false to apply these changes.');
+        return {
+          content: [{ type: 'text' as const, text: lines.join('\n') }],
+        };
+      }
+
+      // Live mode: apply the renames
+      let totalObs = 0;
+      let totalSessions = 0;
+      const rawDb = (db as unknown as { db: import('better-sqlite3').Database }).db;
+
+      for (const { from, to } of renames) {
+        const obsResult = rawDb.prepare(
+          'UPDATE observations SET project = ? WHERE project = ?'
+        ).run(to, from);
+        const sesResult = rawDb.prepare(
+          'UPDATE sessions SET project = ? WHERE project = ?'
+        ).run(to, from);
+        rawDb.prepare('UPDATE user_prompts SET project = ? WHERE project = ?').run(to, from);
+        rawDb.prepare('UPDATE decisions SET project = ? WHERE project = ?').run(to, from);
+        totalObs += obsResult.changes;
+        totalSessions += sesResult.changes;
+      }
+
+      const lines: string[] = [
+        `Consolidated ${renames.length} fragmented path(s):`,
+        `  ${totalObs} observation(s) updated`,
+        `  ${totalSessions} session(s) updated`,
+        '',
+      ];
+      for (const { from, to } of renames) {
+        lines.push(`  "${from}" -> "${to}"`);
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: lines.join('\n') }],
+      };
     }
   );
 

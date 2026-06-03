@@ -103,7 +103,7 @@ export interface Observation {
   lesson_type?: string | null; // Lesson classification: 'error' | 'build_failure' | 'test_failure' | 'permission_denied' | null
   skill?: string | null;  // Skill/Agent/Task name extracted from tool_input at capture time; null for other tools
   pinned?: number;        // 1 = exempt from decay, 0 = normal (default)
-  access_count?: number;  // incremented each time observation is returned in search results
+  access_count?: number;  // -1 = pre-migration sentinel ("tracking unavailable"); 0 = tracked, never accessed; >0 = retrieval count
   branch?: string | null; // Git branch at capture time; null for pre-migration or non-git observations
   superseded_by?: number | null; // ID of the newer observation that supersedes this one; null = authoritative
   created_at: string; // ISO 8601 timestamp
@@ -225,9 +225,16 @@ export interface ContextStorage {
 
   /**
    * Get observations within a token budget using tiered allocation.
-   * Applies time-weighted decay before ranking. First pass fills 60% of the
-   * effective budget (tokenBudget * 0.8) from observations with importance_score >= 0.65.
-   * Second pass fills the remainder from all other observations sorted by decayed score.
+   * Applies time-weighted decay before ranking. Effective budget = tokenBudget * 0.8.
+   *
+   * Allocation uses three passes:
+   * - Pass 0 (priority reserve): PRIORITY_RESERVE_FRACTION * effectiveBudget reserved for
+   *   Conversation, pinned, and Manual observations (configurable via CONTEXT_MANAGER_PRIORITY_RESERVE,
+   *   default 0.25, clamped [0.0, 0.5], 0.0 disables).
+   * - Pass 1 (high importance): 60% of effectiveBudget for observations with applyDecay() >= 0.65.
+   * - Pass 2 (general): remaining budget for all other observations sorted by decayed score.
+   * All passes share an includedIds Set to prevent double-counting.
+   * Results are returned in order: priority, high, general.
    */
   getWithinBudget(project: string, tokenBudget: number): Promise<Observation[]>;
 
@@ -354,7 +361,7 @@ export interface ContextStorage {
   }>;
 
   /**
-   * Targeted pruning of observations by tool name, importance, and/or age.
+   * Targeted pruning of observations by tool name, importance, age, and/or access count.
    * Safer than vacuum — filters precisely rather than deleting by age alone.
    * Requires at least one filter; returns 0 if none are provided.
    *
@@ -363,6 +370,10 @@ export interface ContextStorage {
    * @param options.olderThanDays - Only prune observations older than this many days
    * @param options.dryRun - Preview count and samples without deleting (default: false)
    * @param options.include_high - When true, bypass the high-importance protection guard (default: false)
+   * @param options.maxAccessCount - Only prune observations where access_count <= this value.
+   *   Pre-migration rows with sentinel access_count=-1 are excluded unless includeUntracked is true.
+   * @param options.includeUntracked - When true and maxAccessCount is set, also include
+   *   observations with access_count=-1 (pre-migration, tracking unavailable). Default: false.
    * @returns Count of deleted (or matching, if dry run) observations and optional samples
    */
   prune(options: {
@@ -371,6 +382,8 @@ export interface ContextStorage {
     olderThanDays?: number;
     dryRun?: boolean;
     include_high?: boolean;
+    maxAccessCount?: number | null;
+    includeUntracked?: boolean;
   }): Promise<{ deleted: number; preview?: string[] }>;
 
   /**
@@ -425,6 +438,14 @@ export interface ContextStorage {
    * Get list of unique projects with activity stats
    */
   getProjects(): Promise<ProjectEntry[]>;
+
+  /**
+   * Get all distinct project path strings from both observations and sessions tables.
+   * Used by context_consolidate_projects to find paths that can be normalized.
+   *
+   * @returns Array of unique project path strings across both tables
+   */
+  getDistinctProjectPaths(): Promise<string[]>;
 
   /**
    * Get observations for a specific session

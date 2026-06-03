@@ -501,10 +501,11 @@ export async function exportToAutoMemory(
 
     // Stop hook path: fetch the session and write a heading-only block so
     // mergeSessionBlocks can update the frozen "37m, 14 actions" heading in place.
-    const sessions = await storage.getRecentSessions(projectPath, 50);
-    const session = sessions.find(s => s.id === sessionId);
+    // Direct lookup bypasses the summary/content filters in getRecentSessions
+    // that can exclude sessions that haven't written their summary yet.
+    const session = await storage.getSession(sessionId);
     if (!session) {
-      console.error(`[context-manager] exportToAutoMemory: session ${sessionId.substring(0, 8)} not found in recent sessions; heading update skipped`);
+      console.warn(`[context-manager] exportToAutoMemory: session ${sessionId.substring(0, 8)} not found in DB; heading update skipped`);
       return { exported: 0, filePath: null };
     }
 

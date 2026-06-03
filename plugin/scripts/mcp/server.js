@@ -22440,6 +22440,8 @@ var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
 var _rawHalflife = parseFloat(process.env.CONTEXT_MANAGER_DECAY_HALFLIFE ?? "");
 var DECAY_HALFLIFE_DAYS = Number.isFinite(_rawHalflife) && _rawHalflife >= 1 && _rawHalflife <= 3650 ? _rawHalflife : 60;
+var _rawPriorityReserve = parseFloat(process.env["CONTEXT_MANAGER_PRIORITY_RESERVE"] ?? "");
+var PRIORITY_RESERVE_FRACTION = Number.isFinite(_rawPriorityReserve) && _rawPriorityReserve >= 0 && _rawPriorityReserve <= 0.5 ? _rawPriorityReserve : 0.25;
 function recencyFactor(capturedAt) {
   const ageMs = Date.now() - new Date(capturedAt).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
@@ -22454,7 +22456,7 @@ function applyDecay(obs) {
   const ageMs = Date.now() - new Date(obs.created_at).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
   const recencyScore = Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
-  const accessCount = obs.access_count ?? 0;
+  const accessCount = Math.max(0, obs.access_count ?? 0);
   const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1);
   return base * 0.6 + recencyScore * 0.25 + frequencyScore * 0.15;
 }
@@ -22659,6 +22661,7 @@ var SQLiteStorage = class {
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
     this.migrateAddMetaTable();
+    this.migrateBackfillAccessCountSentinel();
     this.migrateAddBranchColumn();
     this.migrateAddSupersededBy();
     this.migrateAddTokenIndex();
@@ -22890,18 +22893,32 @@ ${storedOutput}`;
       return { obs, score: applyDecay(obs) };
     });
     scoredRows.sort((a, b) => b.score - a.score);
-    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * effectiveBudget);
-    const highResults = [];
     const includedIds = /* @__PURE__ */ new Set();
+    const priorityBudget = Math.floor(PRIORITY_RESERVE_FRACTION * effectiveBudget);
+    const priorityResults = [];
+    let priorityTokens = 0;
+    if (priorityBudget > 0) {
+      for (const { obs } of scoredRows) {
+        const isPriority = obs.pinned === 1 || obs.tool_name === "Conversation" || obs.tool_name.startsWith("Manual");
+        if (!isPriority) continue;
+        if (priorityTokens + obs.token_estimate > priorityBudget) continue;
+        priorityResults.push(obs);
+        if (obs.id !== void 0) includedIds.add(obs.id);
+        priorityTokens += obs.token_estimate;
+      }
+    }
+    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * Math.max(0, effectiveBudget - priorityTokens));
+    const highResults = [];
     let highTokens = 0;
     for (const { obs, score } of scoredRows) {
       if (score < 0.65) continue;
+      if (obs.id !== void 0 && includedIds.has(obs.id)) continue;
       if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
       if (obs.id !== void 0) includedIds.add(obs.id);
       highTokens += obs.token_estimate;
     }
-    const remainingBudget = effectiveBudget - highTokens;
+    const remainingBudget = Math.max(0, effectiveBudget - priorityTokens - highTokens);
     const lowResults = [];
     let lowTokens = 0;
     for (const { obs } of scoredRows) {
@@ -22910,7 +22927,7 @@ ${storedOutput}`;
       lowResults.push(obs);
       lowTokens += obs.token_estimate;
     }
-    return [...highResults, ...lowResults];
+    return [...priorityResults, ...highResults, ...lowResults];
   }
   async search(query, projectOrOptions) {
     const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
@@ -22987,7 +23004,7 @@ ${storedOutput}`;
       if (ids.length > 0) {
         const placeholders = ids.map(() => "?").join(", ");
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${placeholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${placeholders})`
         ).run(...ids);
       }
     }
@@ -23394,7 +23411,7 @@ ${storedOutput}`;
     };
   }
   async prune(options) {
-    const { toolName, importance, olderThanDays, dryRun = false, include_high = false } = options;
+    const { toolName, importance, olderThanDays, dryRun = false, include_high = false, maxAccessCount, includeUntracked = false } = options;
     const conditions = [];
     const params = [];
     if (!include_high) {
@@ -23416,7 +23433,15 @@ ${storedOutput}`;
       conditions.push("importance = ?");
       params.push(importance);
     }
-    const userFilterCount = (olderThanDays !== void 0 ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0);
+    if (maxAccessCount !== null && maxAccessCount !== void 0) {
+      if (includeUntracked) {
+        conditions.push("(access_count = -1 OR access_count <= ?)");
+      } else {
+        conditions.push("(access_count >= 0 AND access_count <= ?)");
+      }
+      params.push(maxAccessCount);
+    }
+    const userFilterCount = (olderThanDays !== void 0 ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0) + (maxAccessCount !== null && maxAccessCount !== void 0 ? 1 : 0);
     if (userFilterCount === 0) {
       return { deleted: 0 };
     }
@@ -23648,6 +23673,21 @@ ${storedOutput}`;
     const stmt = this.db.prepare(sql);
     const rows = stmt.all();
     return rows;
+  }
+  async getDistinctProjectPaths() {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all();
+    return rows.map((r) => r.project);
   }
   async getSessionObservations(sessionId) {
     const stmt = this.db.prepare(`
@@ -24662,7 +24702,7 @@ ${storedOutput}`;
       if (foundIds.length > 0) {
         const idPlaceholders = foundIds.map(() => "?").join(", ");
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${idPlaceholders})`
         ).run(...foundIds);
       }
     }
@@ -25218,6 +25258,38 @@ ${storedOutput}`;
       }
     });
     repair();
+  }
+  /**
+   * One-time idempotent migration: backfill access_count sentinel (-1) for rows
+   * that received DEFAULT 0 via ALTER TABLE and were never actually tracked.
+   *
+   * Background: access_count was added via ALTER TABLE ... DEFAULT 0, which set
+   * all ~6,500 pre-migration rows to 0. This is indistinguishable from rows
+   * genuinely accessed zero times after tracking began, making never-accessed
+   * pruning unreliable. Sentinel -1 means "tracking unavailable (pre-migration)".
+   *
+   * applyDecay() guards against the sentinel with Math.max(0, access_count ?? 0)
+   * so sentinel rows are treated as frequency=0 for decay purposes, not penalized.
+   *
+   * Idempotency: the marker key in the meta table ensures this runs exactly once.
+   * New rows are inserted with access_count = 0 (the schema DEFAULT), so future
+   * rows are correctly interpreted as "tracked, never accessed" and are not backfilled.
+   */
+  migrateBackfillAccessCountSentinel() {
+    const marker = "migration:access_count_sentinel_backfilled";
+    const alreadyRun = this.db.prepare(
+      `SELECT 1 FROM meta WHERE key = ?`
+    ).get(marker);
+    if (alreadyRun) return;
+    const backfill = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE observations SET access_count = -1 WHERE access_count = 0`
+      ).run();
+      this.db.prepare(
+        `INSERT INTO meta (key, value) VALUES (?, ?)`
+      ).run(marker, (/* @__PURE__ */ new Date()).toISOString());
+    });
+    backfill();
   }
   /**
    * Add tokens to the token_index, incrementing frequency on conflict.
@@ -33498,9 +33570,9 @@ var EMPTY_COMPLETION_RESULT = {
 
 // src/mcp/create-server.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync5, readFileSync as readFileSync4 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync4 } from "fs";
 import { join as pathJoin } from "path";
-import { homedir as homedir5 } from "os";
+import { homedir as homedir6 } from "os";
 
 // src/export/memory.ts
 import { mkdirSync as mkdirSync3, readFileSync, writeFileSync as writeFileSync2, existsSync as existsSync2 } from "fs";
@@ -33852,10 +33924,9 @@ async function exportToAutoMemory(storage2, projectPath, sessionId) {
     if (!sessionId) {
       return { exported: 0, filePath: null };
     }
-    const sessions2 = await storage2.getRecentSessions(projectPath, 50);
-    const session = sessions2.find((s) => s.id === sessionId);
+    const session = await storage2.getSession(sessionId);
     if (!session) {
-      console.error(`[context-manager] exportToAutoMemory: session ${sessionId.substring(0, 8)} not found in recent sessions; heading update skipped`);
+      console.warn(`[context-manager] exportToAutoMemory: session ${sessionId.substring(0, 8)} not found in DB; heading update skipped`);
       return { exported: 0, filePath: null };
     }
     if (session.status !== "complete") {
@@ -34602,6 +34673,45 @@ function getCurrentBranch(cwd) {
   }
 }
 
+// src/utils/find-project-root.ts
+import { existsSync as existsSync5 } from "fs";
+import { homedir as homedir5 } from "os";
+import { dirname as dirname2, join as join5 } from "path";
+var DEFAULT_ROOT_MARKERS = [
+  ".git",
+  ".obsidian",
+  "package.json",
+  "Cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  ".claude"
+];
+function getMarkers() {
+  const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
+  if (!extra) return DEFAULT_ROOT_MARKERS;
+  const extras = extra.split(",").map((s) => s.trim()).filter(Boolean);
+  return [...DEFAULT_ROOT_MARKERS, ...extras];
+}
+function findProjectRoot(cwd) {
+  const markers = getMarkers();
+  const home = homedir5();
+  let current = cwd;
+  while (current !== home && current !== dirname2(current)) {
+    for (const marker of markers) {
+      if (existsSync5(join5(current, marker))) {
+        return current;
+      }
+    }
+    current = dirname2(current);
+  }
+  for (const marker of markers) {
+    if (existsSync5(join5(home, marker))) {
+      return home;
+    }
+  }
+  return cwd;
+}
+
 // src/mcp/create-server.ts
 var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
 var ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
@@ -34661,7 +34771,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.142" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.148" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -34913,7 +35023,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.142" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.148" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -35389,7 +35499,7 @@ ${lines.join("\n")}`
       }
       const resolvedProject = np(project) ?? project ?? process.cwd();
       let pathWarning = "";
-      if (resolvedProject && !existsSync5(resolvedProject)) {
+      if (resolvedProject && !existsSync6(resolvedProject)) {
         pathWarning = `
 Note: project path '${resolvedProject}' does not exist on disk. Observations will only be visible when searching from this exact path.`;
       }
@@ -35709,7 +35819,7 @@ Topic file: ${result.filePath}` : ""}`
   );
   server.tool(
     "context_prune",
-    "Targeted pruning of observations by tool name, importance, and/or age. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.",
+    "Targeted pruning of observations by tool name, importance, age, and/or access count. Safer than context_vacuum: filters precisely rather than deleting by age alone. Use dry_run=true first to preview what would be deleted. At least one filter is required. High-importance (score >= 0.65), pinned, and lesson observations are protected by default. Pass include_high: true to override.",
     {
       tool_name: external_exports.string().optional().describe('Delete observations from this tool (e.g., "Bash", "Read", "Grep")'),
       importance: external_exports.enum(["high", "medium", "low"]).optional().describe('Delete observations at this importance level (e.g., "low")'),
@@ -35719,21 +35829,27 @@ Topic file: ${result.filePath}` : ""}`
       ),
       include_high: external_exports.boolean().optional().default(false).describe(
         "When true, bypass the protection guard and also delete high-importance (score >= 0.65), pinned, and lesson observations. Default: false."
+      ),
+      max_access_count: external_exports.number().int().min(0).optional().nullable().describe(
+        "Only prune observations where access_count <= this value. Pre-migration rows with sentinel access_count=-1 are excluded by default. Pass include_untracked: true to include them."
+      ),
+      include_untracked: external_exports.boolean().optional().default(false).describe(
+        "When true, observations with access_count=-1 (pre-migration, tracking unavailable) are included when max_access_count filter is active. Default: false."
       )
     },
-    async ({ tool_name, importance, older_than_days, dry_run, include_high }) => {
-      if (!tool_name && !importance && older_than_days === void 0) {
+    async ({ tool_name, importance, older_than_days, dry_run, include_high, max_access_count, include_untracked }) => {
+      if (!tool_name && !importance && older_than_days === void 0 && (max_access_count === void 0 || max_access_count === null)) {
         return {
           content: [
             {
               type: "text",
-              text: "At least one filter (tool_name, importance, or older_than_days) is required."
+              text: "At least one filter (tool_name, importance, older_than_days, or max_access_count) is required."
             }
           ]
         };
       }
       if (isProxy) {
-        return proxyToolCall("context_prune", { tool_name, importance, older_than_days, dry_run, include_high }, remoteUrl, remoteToken);
+        return proxyToolCall("context_prune", { tool_name, importance, older_than_days, dry_run, include_high, max_access_count, include_untracked }, remoteUrl, remoteToken);
       }
       const db = await getDb();
       const result = await db.prune({
@@ -35741,12 +35857,15 @@ Topic file: ${result.filePath}` : ""}`
         importance,
         olderThanDays: older_than_days,
         dryRun: dry_run,
-        include_high
+        include_high,
+        maxAccessCount: max_access_count,
+        includeUntracked: include_untracked
       });
       const filters = [
         tool_name && `tool="${tool_name}"`,
         importance && `importance="${importance}"`,
-        older_than_days !== void 0 && `older_than=${older_than_days}d`
+        older_than_days !== void 0 && `older_than=${older_than_days}d`,
+        max_access_count !== void 0 && max_access_count !== null && `max_access_count=${max_access_count}${include_untracked ? "+untracked" : ""}`
       ].filter(Boolean).join(", ");
       if (dry_run) {
         const sampleLines = result.preview?.map((p) => `  * ${p}`).join("\n") ?? "";
@@ -36146,8 +36265,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir5(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
-      if (!existsSync5(lessonsPath)) {
+      const lessonsPath = pathJoin(homedir6(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
+      if (!existsSync6(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -36177,8 +36296,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir5(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
-      if (!existsSync5(lessonsPath)) {
+      const lessonsPath = pathJoin(homedir6(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
+      if (!existsSync6(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -36224,6 +36343,84 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
       return { content: [{ type: "text", text }] };
     }
   );
+  server.tool(
+    "context_consolidate_projects",
+    "Find and optionally merge project keys that are subdirectories of a known root. Useful for repairing fragmented history caused by launching Claude from a subdirectory (e.g. an Obsidian DailyNotes folder) before project root normalization was active. Use dry_run: true (default) to preview what would change before committing.",
+    {
+      dry_run: external_exports.boolean().default(true).describe("Preview changes without modifying the database (default: true). Set to false to execute the merge."),
+      project: external_exports.string().optional().describe("Limit consolidation to paths under this project subtree. Omit to scan all projects.")
+    },
+    async ({ dry_run, project }) => {
+      if (isProxy) {
+        return proxyToolCall("context_consolidate_projects", { dry_run, project: np(project) }, remoteUrl, remoteToken);
+      }
+      const db = await getDb();
+      const allPaths = await db.getDistinctProjectPaths();
+      const pathFilter = np(project);
+      const candidatePaths = pathFilter ? allPaths.filter((p) => p === pathFilter || p.startsWith(pathFilter + "/")) : allPaths;
+      const renames = [];
+      for (const p of candidatePaths) {
+        const root = findProjectRoot(p);
+        if (root !== p) {
+          renames.push({ from: p, to: root });
+        }
+      }
+      if (renames.length === 0) {
+        return {
+          content: [{
+            type: "text",
+            text: "No fragmented project paths found. All project keys are already at their nearest root."
+          }]
+        };
+      }
+      if (dry_run) {
+        const allProjects = await db.getProjects();
+        const lines2 = [
+          `DRY RUN \u2014 ${renames.length} path(s) would be consolidated:`,
+          ""
+        ];
+        for (const { from, to } of renames) {
+          const obsEntry = allProjects.find((p) => p.path === from);
+          const obsCount = obsEntry?.observation_count ?? 0;
+          lines2.push(`  "${from}"`);
+          lines2.push(`    -> "${to}"`);
+          lines2.push(`    ${obsCount} observation(s) affected`);
+          lines2.push("");
+        }
+        lines2.push("Run with dry_run: false to apply these changes.");
+        return {
+          content: [{ type: "text", text: lines2.join("\n") }]
+        };
+      }
+      let totalObs = 0;
+      let totalSessions = 0;
+      const rawDb = db.db;
+      for (const { from, to } of renames) {
+        const obsResult = rawDb.prepare(
+          "UPDATE observations SET project = ? WHERE project = ?"
+        ).run(to, from);
+        const sesResult = rawDb.prepare(
+          "UPDATE sessions SET project = ? WHERE project = ?"
+        ).run(to, from);
+        rawDb.prepare("UPDATE user_prompts SET project = ? WHERE project = ?").run(to, from);
+        rawDb.prepare("UPDATE decisions SET project = ? WHERE project = ?").run(to, from);
+        totalObs += obsResult.changes;
+        totalSessions += sesResult.changes;
+      }
+      const lines = [
+        `Consolidated ${renames.length} fragmented path(s):`,
+        `  ${totalObs} observation(s) updated`,
+        `  ${totalSessions} session(s) updated`,
+        ""
+      ];
+      for (const { from, to } of renames) {
+        lines.push(`  "${from}" -> "${to}"`);
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }]
+      };
+    }
+  );
   const rawServer = server;
   const registeredTools = rawServer._registeredTools;
   const underlyingServer = rawServer.server;
@@ -36258,10 +36455,10 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
 
 // src/utils/env.ts
 import { readFileSync as readFileSync5 } from "node:fs";
-import { join as join5 } from "node:path";
-import { homedir as homedir6 } from "node:os";
+import { join as join6 } from "node:path";
+import { homedir as homedir7 } from "node:os";
 function loadDotEnv() {
-  const envPath = join5(homedir6(), ".claude-context", ".env");
+  const envPath = join6(homedir7(), ".claude-context", ".env");
   try {
     const content = readFileSync5(envPath, "utf8");
     for (const line of content.split("\n")) {

@@ -88,6 +88,8 @@ var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
 var _rawHalflife = parseFloat(process.env.CONTEXT_MANAGER_DECAY_HALFLIFE ?? "");
 var DECAY_HALFLIFE_DAYS = Number.isFinite(_rawHalflife) && _rawHalflife >= 1 && _rawHalflife <= 3650 ? _rawHalflife : 60;
+var _rawPriorityReserve = parseFloat(process.env["CONTEXT_MANAGER_PRIORITY_RESERVE"] ?? "");
+var PRIORITY_RESERVE_FRACTION = Number.isFinite(_rawPriorityReserve) && _rawPriorityReserve >= 0 && _rawPriorityReserve <= 0.5 ? _rawPriorityReserve : 0.25;
 function recencyFactor(capturedAt) {
   const ageMs = Date.now() - new Date(capturedAt).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
@@ -102,7 +104,7 @@ function applyDecay(obs) {
   const ageMs = Date.now() - new Date(obs.created_at).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
   const recencyScore = Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
-  const accessCount = obs.access_count ?? 0;
+  const accessCount = Math.max(0, obs.access_count ?? 0);
   const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1);
   return base * 0.6 + recencyScore * 0.25 + frequencyScore * 0.15;
 }
@@ -307,6 +309,7 @@ var SQLiteStorage = class {
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
     this.migrateAddMetaTable();
+    this.migrateBackfillAccessCountSentinel();
     this.migrateAddBranchColumn();
     this.migrateAddSupersededBy();
     this.migrateAddTokenIndex();
@@ -538,18 +541,32 @@ ${storedOutput}`;
       return { obs, score: applyDecay(obs) };
     });
     scoredRows.sort((a, b) => b.score - a.score);
-    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * effectiveBudget);
-    const highResults = [];
     const includedIds = /* @__PURE__ */ new Set();
+    const priorityBudget = Math.floor(PRIORITY_RESERVE_FRACTION * effectiveBudget);
+    const priorityResults = [];
+    let priorityTokens = 0;
+    if (priorityBudget > 0) {
+      for (const { obs } of scoredRows) {
+        const isPriority = obs.pinned === 1 || obs.tool_name === "Conversation" || obs.tool_name.startsWith("Manual");
+        if (!isPriority) continue;
+        if (priorityTokens + obs.token_estimate > priorityBudget) continue;
+        priorityResults.push(obs);
+        if (obs.id !== void 0) includedIds.add(obs.id);
+        priorityTokens += obs.token_estimate;
+      }
+    }
+    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * Math.max(0, effectiveBudget - priorityTokens));
+    const highResults = [];
     let highTokens = 0;
     for (const { obs, score } of scoredRows) {
       if (score < 0.65) continue;
+      if (obs.id !== void 0 && includedIds.has(obs.id)) continue;
       if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
       if (obs.id !== void 0) includedIds.add(obs.id);
       highTokens += obs.token_estimate;
     }
-    const remainingBudget = effectiveBudget - highTokens;
+    const remainingBudget = Math.max(0, effectiveBudget - priorityTokens - highTokens);
     const lowResults = [];
     let lowTokens = 0;
     for (const { obs } of scoredRows) {
@@ -558,7 +575,7 @@ ${storedOutput}`;
       lowResults.push(obs);
       lowTokens += obs.token_estimate;
     }
-    return [...highResults, ...lowResults];
+    return [...priorityResults, ...highResults, ...lowResults];
   }
   async search(query, projectOrOptions) {
     const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
@@ -635,7 +652,7 @@ ${storedOutput}`;
       if (ids.length > 0) {
         const placeholders = ids.map(() => "?").join(", ");
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${placeholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${placeholders})`
         ).run(...ids);
       }
     }
@@ -1042,7 +1059,7 @@ ${storedOutput}`;
     };
   }
   async prune(options) {
-    const { toolName, importance, olderThanDays, dryRun = false, include_high = false } = options;
+    const { toolName, importance, olderThanDays, dryRun = false, include_high = false, maxAccessCount, includeUntracked = false } = options;
     const conditions = [];
     const params = [];
     if (!include_high) {
@@ -1064,7 +1081,15 @@ ${storedOutput}`;
       conditions.push("importance = ?");
       params.push(importance);
     }
-    const userFilterCount = (olderThanDays !== void 0 ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0);
+    if (maxAccessCount !== null && maxAccessCount !== void 0) {
+      if (includeUntracked) {
+        conditions.push("(access_count = -1 OR access_count <= ?)");
+      } else {
+        conditions.push("(access_count >= 0 AND access_count <= ?)");
+      }
+      params.push(maxAccessCount);
+    }
+    const userFilterCount = (olderThanDays !== void 0 ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0) + (maxAccessCount !== null && maxAccessCount !== void 0 ? 1 : 0);
     if (userFilterCount === 0) {
       return { deleted: 0 };
     }
@@ -1296,6 +1321,21 @@ ${storedOutput}`;
     const stmt = this.db.prepare(sql);
     const rows = stmt.all();
     return rows;
+  }
+  async getDistinctProjectPaths() {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all();
+    return rows.map((r) => r.project);
   }
   async getSessionObservations(sessionId) {
     const stmt = this.db.prepare(`
@@ -2310,7 +2350,7 @@ ${storedOutput}`;
       if (foundIds.length > 0) {
         const idPlaceholders = foundIds.map(() => "?").join(", ");
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${idPlaceholders})`
         ).run(...foundIds);
       }
     }
@@ -2866,6 +2906,38 @@ ${storedOutput}`;
       }
     });
     repair();
+  }
+  /**
+   * One-time idempotent migration: backfill access_count sentinel (-1) for rows
+   * that received DEFAULT 0 via ALTER TABLE and were never actually tracked.
+   *
+   * Background: access_count was added via ALTER TABLE ... DEFAULT 0, which set
+   * all ~6,500 pre-migration rows to 0. This is indistinguishable from rows
+   * genuinely accessed zero times after tracking began, making never-accessed
+   * pruning unreliable. Sentinel -1 means "tracking unavailable (pre-migration)".
+   *
+   * applyDecay() guards against the sentinel with Math.max(0, access_count ?? 0)
+   * so sentinel rows are treated as frequency=0 for decay purposes, not penalized.
+   *
+   * Idempotency: the marker key in the meta table ensures this runs exactly once.
+   * New rows are inserted with access_count = 0 (the schema DEFAULT), so future
+   * rows are correctly interpreted as "tracked, never accessed" and are not backfilled.
+   */
+  migrateBackfillAccessCountSentinel() {
+    const marker = "migration:access_count_sentinel_backfilled";
+    const alreadyRun = this.db.prepare(
+      `SELECT 1 FROM meta WHERE key = ?`
+    ).get(marker);
+    if (alreadyRun) return;
+    const backfill = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE observations SET access_count = -1 WHERE access_count = 0`
+      ).run();
+      this.db.prepare(
+        `INSERT INTO meta (key, value) VALUES (?, ?)`
+      ).run(marker, (/* @__PURE__ */ new Date()).toISOString());
+    });
+    backfill();
   }
   /**
    * Add tokens to the token_index, incrementing frequency on conflict.

@@ -30,6 +30,7 @@ import type { ProcessResult } from '../../src/capture/processor.js';
 import { remoteSaveObservation } from '../../src/capture/remote-client.js';
 import { loadDotEnv } from '../../src/utils/env.js';
 import { getCurrentBranch } from '../../src/utils/git.js';
+import { findProjectRoot } from '../../src/utils/find-project-root.js';
 
 // Injected by esbuild banner. True when plugin/node_modules/ native binaries are present.
 declare const __nativeModulesAvailable: boolean;
@@ -110,7 +111,8 @@ async function main() {
         : {};
 
       const sessionId = typeof obj.session_id === 'string' ? obj.session_id.slice(0, 256) : '';
-      const cwd = typeof obj.cwd === 'string' ? obj.cwd.slice(0, 1024) : '';
+      const rawCwd = typeof obj.cwd === 'string' ? obj.cwd.slice(0, 1024) : '';
+      const cwd = rawCwd ? findProjectRoot(rawCwd) : '';
       const toolName = typeof obj.tool_name === 'string' ? obj.tool_name.slice(0, 128) : '';
 
       if (!sessionId || !cwd || !toolName) {

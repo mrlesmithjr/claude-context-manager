@@ -71,6 +71,14 @@ const DECAY_HALFLIFE_DAYS = (Number.isFinite(_rawHalflife) && _rawHalflife >= 1 
   ? _rawHalflife
   : 60;
 
+// Fraction of the effective budget reserved by Pass 0 for Conversation, pinned, and Manual observations.
+// Configurable via CONTEXT_MANAGER_PRIORITY_RESERVE. Default 0.25, range [0.0, 0.5].
+// Set to 0.0 to disable the priority reserve entirely.
+const _rawPriorityReserve = parseFloat(process.env['CONTEXT_MANAGER_PRIORITY_RESERVE'] ?? '');
+const PRIORITY_RESERVE_FRACTION = (Number.isFinite(_rawPriorityReserve) && _rawPriorityReserve >= 0 && _rawPriorityReserve <= 0.5)
+  ? _rawPriorityReserve
+  : 0.25;
+
 /**
  * Compute a recency multiplier for temporal 'current' mode scoring.
  *
@@ -116,8 +124,10 @@ function applyDecay(obs: Observation): number {
   const recencyScore = Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
 
   // Frequency score: log2(access_count + 1), normalized to [0, 1]
-  // Cap at log2(101) for normalization ceiling
-  const accessCount = obs.access_count ?? 0;
+  // Cap at log2(101) for normalization ceiling.
+  // access_count = -1 is a sentinel for pre-migration rows ("tracking unavailable").
+  // Math.max(0, ...) treats sentinel rows as frequency=0 so they are not penalized.
+  const accessCount = Math.max(0, obs.access_count ?? 0);
   const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1.0);
 
   // Weighted combination
@@ -412,6 +422,10 @@ export class SQLiteStorage implements ContextStorage {
 
     // Migration: add meta table for lightweight key-value persistence (e.g. last reflection date)
     this.migrateAddMetaTable();
+
+    // Migration: backfill access_count sentinel for pre-migration rows.
+    // Must run after migrateAddMetaTable() because it uses the meta table to record completion.
+    this.migrateBackfillAccessCountSentinel();
 
     // Migration: add branch column to observations and sessions for git branch-aware capture
     this.migrateAddBranchColumn();
@@ -740,24 +754,49 @@ export class SQLiteStorage implements ContextStorage {
     });
     scoredRows.sort((a, b) => b.score - a.score);
 
-    // Pass 1: fill up to 60% of budget from high-importance observations (decayed score >= 0.65)
+    // Shared dedup set — all three passes check and register here to prevent double-counting.
+    const includedIds = new Set<number>();
+
+    // Pass 0: priority reserve — Conversation, pinned, and Manual observations get a guaranteed
+    // share of the budget (PRIORITY_RESERVE_FRACTION * effectiveBudget) before Pass 1 and 2 run.
+    // This prevents Edit/Write rows (importance 0.80) from flooding the recall tier and crowding
+    // out Decision/Conversation/Manual observations.
+    const priorityBudget = Math.floor(PRIORITY_RESERVE_FRACTION * effectiveBudget);
+    const priorityResults: Observation[] = [];
+    let priorityTokens = 0;
+
+    if (priorityBudget > 0) {
+      for (const { obs } of scoredRows) {
+        const isPriority = obs.pinned === 1
+          || obs.tool_name === 'Conversation'
+          || obs.tool_name.startsWith('Manual');
+        if (!isPriority) continue;
+        if (priorityTokens + obs.token_estimate > priorityBudget) continue;
+        priorityResults.push(obs);
+        if (obs.id !== undefined) includedIds.add(obs.id);
+        priorityTokens += obs.token_estimate;
+      }
+    }
+
+    // Pass 1: fill up to 60% of effectiveBudget from high-importance observations (decayed score >= 0.65).
     // Uses the already-computed decayed score from scoredRows — not the raw base importance_score.
     // Aged observations that decay below 0.65 fall through to Pass 2 (general pool, no floor).
-    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * effectiveBudget);
+    // includedIds guard prevents double-counting Pass 0 items that also qualify here.
+    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * Math.max(0, effectiveBudget - priorityTokens));
     const highResults: Observation[] = [];
-    const includedIds = new Set<number>();
     let highTokens = 0;
 
     for (const { obs, score } of scoredRows) {
       if (score < 0.65) continue;
+      if (obs.id !== undefined && includedIds.has(obs.id)) continue;
       if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
       if (obs.id !== undefined) includedIds.add(obs.id);
       highTokens += obs.token_estimate;
     }
 
-    // Pass 2: fill remaining budget from everything else (sorted by decayed score)
-    const remainingBudget = effectiveBudget - highTokens;
+    // Pass 2: fill remaining budget from all other observations (sorted by decayed score).
+    const remainingBudget = Math.max(0, effectiveBudget - priorityTokens - highTokens);
     const lowResults: Observation[] = [];
     let lowTokens = 0;
 
@@ -768,7 +807,7 @@ export class SQLiteStorage implements ContextStorage {
       lowTokens += obs.token_estimate;
     }
 
-    return [...highResults, ...lowResults];
+    return [...priorityResults, ...highResults, ...lowResults];
   }
 
   async search(query: string, projectOrOptions?: string | SearchOptions): Promise<Observation[]> {
@@ -899,7 +938,7 @@ export class SQLiteStorage implements ContextStorage {
       if (ids.length > 0) {
         const placeholders = ids.map(() => '?').join(', ');
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${placeholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${placeholders})`
         ).run(...ids);
       }
     }
@@ -1515,8 +1554,10 @@ export class SQLiteStorage implements ContextStorage {
     olderThanDays?: number;
     dryRun?: boolean;
     include_high?: boolean;
+    maxAccessCount?: number | null;
+    includeUntracked?: boolean;
   }): Promise<{ deleted: number; preview?: string[] }> {
-    const { toolName, importance, olderThanDays, dryRun = false, include_high = false } = options;
+    const { toolName, importance, olderThanDays, dryRun = false, include_high = false, maxAccessCount, includeUntracked = false } = options;
 
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -1545,10 +1586,24 @@ export class SQLiteStorage implements ContextStorage {
       conditions.push('importance = ?');
       params.push(importance);
     }
+    if (maxAccessCount !== null && maxAccessCount !== undefined) {
+      if (includeUntracked) {
+        // Include sentinel rows (access_count = -1) AND rows with access_count <= maxAccessCount
+        conditions.push('(access_count = -1 OR access_count <= ?)');
+      } else {
+        // Exclude sentinel rows (access_count = -1); only rows with known tracking
+        conditions.push('(access_count >= 0 AND access_count <= ?)');
+      }
+      params.push(maxAccessCount);
+    }
 
     // Require at least one user-supplied filter — prevent accidental full wipe.
     // The high-importance guard conditions do not count toward this requirement.
-    const userFilterCount = (olderThanDays !== undefined ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0);
+    const userFilterCount =
+      (olderThanDays !== undefined ? 1 : 0) +
+      (toolName ? 1 : 0) +
+      (importance ? 1 : 0) +
+      (maxAccessCount !== null && maxAccessCount !== undefined ? 1 : 0);
     if (userFilterCount === 0) {
       return { deleted: 0 };
     }
@@ -1872,6 +1927,22 @@ export class SQLiteStorage implements ContextStorage {
     }>;
 
     return rows;
+  }
+
+  async getDistinctProjectPaths(): Promise<string[]> {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all() as Array<{ project: string }>;
+    return rows.map(r => r.project);
   }
 
   async getSessionObservations(sessionId: string): Promise<Observation[]> {
@@ -3196,7 +3267,7 @@ export class SQLiteStorage implements ContextStorage {
       if (foundIds.length > 0) {
         const idPlaceholders = foundIds.map(() => '?').join(', ');
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${idPlaceholders})`
         ).run(...foundIds);
       }
     }
@@ -3876,6 +3947,43 @@ export class SQLiteStorage implements ContextStorage {
       }
     });
     repair();
+  }
+
+  /**
+   * One-time idempotent migration: backfill access_count sentinel (-1) for rows
+   * that received DEFAULT 0 via ALTER TABLE and were never actually tracked.
+   *
+   * Background: access_count was added via ALTER TABLE ... DEFAULT 0, which set
+   * all ~6,500 pre-migration rows to 0. This is indistinguishable from rows
+   * genuinely accessed zero times after tracking began, making never-accessed
+   * pruning unreliable. Sentinel -1 means "tracking unavailable (pre-migration)".
+   *
+   * applyDecay() guards against the sentinel with Math.max(0, access_count ?? 0)
+   * so sentinel rows are treated as frequency=0 for decay purposes, not penalized.
+   *
+   * Idempotency: the marker key in the meta table ensures this runs exactly once.
+   * New rows are inserted with access_count = 0 (the schema DEFAULT), so future
+   * rows are correctly interpreted as "tracked, never accessed" and are not backfilled.
+   */
+  private migrateBackfillAccessCountSentinel(): void {
+    const marker = 'migration:access_count_sentinel_backfilled';
+    const alreadyRun = this.db.prepare(
+      `SELECT 1 FROM meta WHERE key = ?`
+    ).get(marker);
+    if (alreadyRun) return;
+
+    // Rows with access_count = 0 at this point were assigned DEFAULT 0 via ALTER TABLE
+    // and were never actually tracked. Mark them as sentinel -1 ("tracking unavailable")
+    // to distinguish from rows genuinely accessed zero times since tracking began.
+    const backfill = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE observations SET access_count = -1 WHERE access_count = 0`
+      ).run();
+      this.db.prepare(
+        `INSERT INTO meta (key, value) VALUES (?, ?)`
+      ).run(marker, new Date().toISOString());
+    });
+    backfill();
   }
 
   /**

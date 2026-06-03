@@ -88,6 +88,8 @@ var DEFAULT_DB_PATH = path.join(homedir(), ".claude-context", "context.db");
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
 var _rawHalflife = parseFloat(process.env.CONTEXT_MANAGER_DECAY_HALFLIFE ?? "");
 var DECAY_HALFLIFE_DAYS = Number.isFinite(_rawHalflife) && _rawHalflife >= 1 && _rawHalflife <= 3650 ? _rawHalflife : 60;
+var _rawPriorityReserve = parseFloat(process.env["CONTEXT_MANAGER_PRIORITY_RESERVE"] ?? "");
+var PRIORITY_RESERVE_FRACTION = Number.isFinite(_rawPriorityReserve) && _rawPriorityReserve >= 0 && _rawPriorityReserve <= 0.5 ? _rawPriorityReserve : 0.25;
 function recencyFactor(capturedAt) {
   const ageMs = Date.now() - new Date(capturedAt).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
@@ -102,7 +104,7 @@ function applyDecay(obs) {
   const ageMs = Date.now() - new Date(obs.created_at).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
   const recencyScore = Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
-  const accessCount = obs.access_count ?? 0;
+  const accessCount = Math.max(0, obs.access_count ?? 0);
   const frequencyScore = Math.min(Math.log2(accessCount + 1) / Math.log2(101), 1);
   return base * 0.6 + recencyScore * 0.25 + frequencyScore * 0.15;
 }
@@ -307,6 +309,7 @@ var SQLiteStorage = class {
     this.migrateAddDecisionsTable();
     this.migrateAddPinnedAndAccessCount();
     this.migrateAddMetaTable();
+    this.migrateBackfillAccessCountSentinel();
     this.migrateAddBranchColumn();
     this.migrateAddSupersededBy();
     this.migrateAddTokenIndex();
@@ -538,18 +541,32 @@ ${storedOutput}`;
       return { obs, score: applyDecay(obs) };
     });
     scoredRows.sort((a, b) => b.score - a.score);
-    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * effectiveBudget);
-    const highResults = [];
     const includedIds = /* @__PURE__ */ new Set();
+    const priorityBudget = Math.floor(PRIORITY_RESERVE_FRACTION * effectiveBudget);
+    const priorityResults = [];
+    let priorityTokens = 0;
+    if (priorityBudget > 0) {
+      for (const { obs } of scoredRows) {
+        const isPriority = obs.pinned === 1 || obs.tool_name === "Conversation" || obs.tool_name.startsWith("Manual");
+        if (!isPriority) continue;
+        if (priorityTokens + obs.token_estimate > priorityBudget) continue;
+        priorityResults.push(obs);
+        if (obs.id !== void 0) includedIds.add(obs.id);
+        priorityTokens += obs.token_estimate;
+      }
+    }
+    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * Math.max(0, effectiveBudget - priorityTokens));
+    const highResults = [];
     let highTokens = 0;
     for (const { obs, score } of scoredRows) {
       if (score < 0.65) continue;
+      if (obs.id !== void 0 && includedIds.has(obs.id)) continue;
       if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
       if (obs.id !== void 0) includedIds.add(obs.id);
       highTokens += obs.token_estimate;
     }
-    const remainingBudget = effectiveBudget - highTokens;
+    const remainingBudget = Math.max(0, effectiveBudget - priorityTokens - highTokens);
     const lowResults = [];
     let lowTokens = 0;
     for (const { obs } of scoredRows) {
@@ -558,7 +575,7 @@ ${storedOutput}`;
       lowResults.push(obs);
       lowTokens += obs.token_estimate;
     }
-    return [...highResults, ...lowResults];
+    return [...priorityResults, ...highResults, ...lowResults];
   }
   async search(query, projectOrOptions) {
     const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
@@ -635,7 +652,7 @@ ${storedOutput}`;
       if (ids.length > 0) {
         const placeholders = ids.map(() => "?").join(", ");
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${placeholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${placeholders})`
         ).run(...ids);
       }
     }
@@ -1042,7 +1059,7 @@ ${storedOutput}`;
     };
   }
   async prune(options) {
-    const { toolName, importance, olderThanDays, dryRun = false, include_high = false } = options;
+    const { toolName, importance, olderThanDays, dryRun = false, include_high = false, maxAccessCount, includeUntracked = false } = options;
     const conditions = [];
     const params = [];
     if (!include_high) {
@@ -1064,7 +1081,15 @@ ${storedOutput}`;
       conditions.push("importance = ?");
       params.push(importance);
     }
-    const userFilterCount = (olderThanDays !== void 0 ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0);
+    if (maxAccessCount !== null && maxAccessCount !== void 0) {
+      if (includeUntracked) {
+        conditions.push("(access_count = -1 OR access_count <= ?)");
+      } else {
+        conditions.push("(access_count >= 0 AND access_count <= ?)");
+      }
+      params.push(maxAccessCount);
+    }
+    const userFilterCount = (olderThanDays !== void 0 ? 1 : 0) + (toolName ? 1 : 0) + (importance ? 1 : 0) + (maxAccessCount !== null && maxAccessCount !== void 0 ? 1 : 0);
     if (userFilterCount === 0) {
       return { deleted: 0 };
     }
@@ -1296,6 +1321,21 @@ ${storedOutput}`;
     const stmt = this.db.prepare(sql);
     const rows = stmt.all();
     return rows;
+  }
+  async getDistinctProjectPaths() {
+    const sql = `
+      SELECT DISTINCT project FROM observations
+      UNION
+      SELECT DISTINCT project FROM sessions
+      UNION
+      SELECT DISTINCT project FROM user_prompts
+      UNION
+      SELECT DISTINCT project FROM decisions
+      ORDER BY project
+    `;
+    const stmt = this.db.prepare(sql);
+    const rows = stmt.all();
+    return rows.map((r) => r.project);
   }
   async getSessionObservations(sessionId) {
     const stmt = this.db.prepare(`
@@ -2310,7 +2350,7 @@ ${storedOutput}`;
       if (foundIds.length > 0) {
         const idPlaceholders = foundIds.map(() => "?").join(", ");
         this.db.prepare(
-          `UPDATE observations SET access_count = access_count + 1 WHERE id IN (${idPlaceholders})`
+          `UPDATE observations SET access_count = CASE WHEN access_count < 0 THEN 1 ELSE access_count + 1 END WHERE id IN (${idPlaceholders})`
         ).run(...foundIds);
       }
     }
@@ -2868,6 +2908,38 @@ ${storedOutput}`;
     repair();
   }
   /**
+   * One-time idempotent migration: backfill access_count sentinel (-1) for rows
+   * that received DEFAULT 0 via ALTER TABLE and were never actually tracked.
+   *
+   * Background: access_count was added via ALTER TABLE ... DEFAULT 0, which set
+   * all ~6,500 pre-migration rows to 0. This is indistinguishable from rows
+   * genuinely accessed zero times after tracking began, making never-accessed
+   * pruning unreliable. Sentinel -1 means "tracking unavailable (pre-migration)".
+   *
+   * applyDecay() guards against the sentinel with Math.max(0, access_count ?? 0)
+   * so sentinel rows are treated as frequency=0 for decay purposes, not penalized.
+   *
+   * Idempotency: the marker key in the meta table ensures this runs exactly once.
+   * New rows are inserted with access_count = 0 (the schema DEFAULT), so future
+   * rows are correctly interpreted as "tracked, never accessed" and are not backfilled.
+   */
+  migrateBackfillAccessCountSentinel() {
+    const marker = "migration:access_count_sentinel_backfilled";
+    const alreadyRun = this.db.prepare(
+      `SELECT 1 FROM meta WHERE key = ?`
+    ).get(marker);
+    if (alreadyRun) return;
+    const backfill = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE observations SET access_count = -1 WHERE access_count = 0`
+      ).run();
+      this.db.prepare(
+        `INSERT INTO meta (key, value) VALUES (?, ?)`
+      ).run(marker, (/* @__PURE__ */ new Date()).toISOString());
+    });
+    backfill();
+  }
+  /**
    * Add tokens to the token_index, incrementing frequency on conflict.
    * Runs as a transaction for efficiency. Tokens are already normalized.
    */
@@ -2950,21 +3022,62 @@ ${storedOutput}`;
 
 // src/utils/validation.ts
 import { realpathSync } from "fs";
-import { homedir as homedir2 } from "os";
+import { homedir as homedir3 } from "os";
 import path2 from "path";
 import { randomBytes } from "crypto";
+
+// src/utils/find-project-root.ts
+import { existsSync } from "fs";
+import { homedir as homedir2 } from "os";
+import { dirname, join } from "path";
+var DEFAULT_ROOT_MARKERS = [
+  ".git",
+  ".obsidian",
+  "package.json",
+  "Cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  ".claude"
+];
+function getMarkers() {
+  const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
+  if (!extra) return DEFAULT_ROOT_MARKERS;
+  const extras = extra.split(",").map((s) => s.trim()).filter(Boolean);
+  return [...DEFAULT_ROOT_MARKERS, ...extras];
+}
+function findProjectRoot(cwd) {
+  const markers = getMarkers();
+  const home = homedir2();
+  let current = cwd;
+  while (current !== home && current !== dirname(current)) {
+    for (const marker of markers) {
+      if (existsSync(join(current, marker))) {
+        return current;
+      }
+    }
+    current = dirname(current);
+  }
+  for (const marker of markers) {
+    if (existsSync(join(home, marker))) {
+      return home;
+    }
+  }
+  return cwd;
+}
+
+// src/utils/validation.ts
 var ALLOWED_PROJECT_ROOTS = [
-  path2.join(homedir2(), "Projects"),
-  path2.join(homedir2(), "projects"),
-  path2.join(homedir2(), "Dev"),
-  path2.join(homedir2(), "dev"),
-  path2.join(homedir2(), "Code"),
-  path2.join(homedir2(), "code"),
-  path2.join(homedir2(), "Workspace"),
-  path2.join(homedir2(), "workspace"),
-  path2.join(homedir2(), "Documents"),
+  path2.join(homedir3(), "Projects"),
+  path2.join(homedir3(), "projects"),
+  path2.join(homedir3(), "Dev"),
+  path2.join(homedir3(), "dev"),
+  path2.join(homedir3(), "Code"),
+  path2.join(homedir3(), "code"),
+  path2.join(homedir3(), "Workspace"),
+  path2.join(homedir3(), "workspace"),
+  path2.join(homedir3(), "Documents"),
   // Common location
-  homedir2()
+  homedir3()
   // Allow home directory as fallback
 ];
 function validateProjectPath(projectPath) {
@@ -3004,7 +3117,7 @@ function validateSessionStartInput(input) {
     try {
       validatedCwd = validateProjectPath(process.cwd());
     } catch {
-      const fallback = homedir2();
+      const fallback = homedir3();
       const inputDescription = hookCwd ? `'${hookCwd}'` : "(none \u2014 hook sent no cwd)";
       console.error(`[context-manager] WARNING: could not validate project path ${inputDescription} or process.cwd(), falling back to home directory. Observations will be scoped to ${fallback}`);
       validatedCwd = fallback;
@@ -3012,14 +3125,14 @@ function validateSessionStartInput(input) {
   }
   return {
     session_id,
-    cwd: validatedCwd
+    cwd: findProjectRoot(validatedCwd)
   };
 }
 
 // plugin/hooks/context-inject.ts
-import { existsSync, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync } from "fs";
-import { join as join2 } from "path";
-import { homedir as homedir4 } from "os";
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync } from "fs";
+import { join as join3 } from "path";
+import { homedir as homedir5 } from "os";
 
 // src/capture/remote-client.ts
 import { randomUUID as randomUUID2 } from "crypto";
@@ -3104,10 +3217,10 @@ async function remoteMcpText(client, toolName, args) {
 
 // src/utils/env.ts
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir as homedir3 } from "node:os";
+import { join as join2 } from "node:path";
+import { homedir as homedir4 } from "node:os";
 function loadDotEnv() {
-  const envPath = join(homedir3(), ".claude-context", ".env");
+  const envPath = join2(homedir4(), ".claude-context", ".env");
   try {
     const content = readFileSync(envPath, "utf8");
     for (const line of content.split("\n")) {
@@ -3171,25 +3284,25 @@ function writeResponse(data) {
 }
 function checkVersionMismatch() {
   try {
-    const installedPluginPath = join2(
-      homedir4(),
+    const installedPluginPath = join3(
+      homedir5(),
       ".claude",
       "plugins",
       "context-manager",
       "package.json"
     );
-    if (!existsSync(installedPluginPath)) {
+    if (!existsSync2(installedPluginPath)) {
       return "";
     }
     const installedPackageJson = JSON.parse(
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.142") {
+    if (installedVersion !== "0.8.148") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.142"}
+   Source:    v${"0.8.148"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -3199,21 +3312,21 @@ function checkVersionMismatch() {
     return "";
   }
 }
-var PLUGIN_VERSION_FILE = join2(homedir4(), ".claude-context", ".plugin-version");
+var PLUGIN_VERSION_FILE = join3(homedir5(), ".claude-context", ".plugin-version");
 function checkPostUpdate() {
   try {
-    const stored = existsSync(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.142") return "";
+    const stored = existsSync2(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
+    if (stored === "0.8.148") return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.142"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.148"}. Hooks active.`;
   } catch {
     return "";
   }
 }
 function markVersionActivated() {
   try {
-    mkdirSync2(join2(homedir4(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.142", "utf-8");
+    mkdirSync2(join3(homedir5(), ".claude-context"), { recursive: true });
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.148", "utf-8");
   } catch {
   }
 }
@@ -3294,7 +3407,7 @@ async function main() {
       const statsText = await remoteMcpText(client, "context_stats", { project: input.cwd });
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1]) remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.142"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.148"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3393,7 +3506,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.142"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.148"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);
