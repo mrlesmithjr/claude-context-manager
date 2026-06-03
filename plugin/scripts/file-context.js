@@ -600,8 +600,11 @@ ${storedOutput}`;
     ))));
     const paginationClause = searchOffset > 0 ? `LIMIT ${limitParam} OFFSET ${searchOffset}` : `LIMIT ${limitParam}`;
     if (ftsQuery === "") {
-      const plainConditions = ["o.superseded_by IS NULL"];
+      const plainConditions = [];
       const plainParams = [];
+      if (!includeSuperseded) {
+        plainConditions.push("o.superseded_by IS NULL");
+      }
       if (project) {
         plainConditions.push("o.project LIKE ?");
         plainParams.push(project + "%");
@@ -617,9 +620,6 @@ ${storedOutput}`;
       if (toolName) {
         plainConditions.push("o.tool_name = ?");
         plainParams.push(toolName);
-      }
-      if (includeSuperseded) {
-        plainConditions.shift();
       }
       const whereClause = plainConditions.length > 0 ? `WHERE ${plainConditions.join(" AND ")}` : "";
       const plainSql = `
