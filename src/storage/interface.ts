@@ -225,9 +225,16 @@ export interface ContextStorage {
 
   /**
    * Get observations within a token budget using tiered allocation.
-   * Applies time-weighted decay before ranking. First pass fills 60% of the
-   * effective budget (tokenBudget * 0.8) from observations with importance_score >= 0.65.
-   * Second pass fills the remainder from all other observations sorted by decayed score.
+   * Applies time-weighted decay before ranking. Effective budget = tokenBudget * 0.8.
+   *
+   * Allocation uses three passes:
+   * - Pass 0 (priority reserve): PRIORITY_RESERVE_FRACTION * effectiveBudget reserved for
+   *   Conversation, pinned, and Manual observations (configurable via CONTEXT_MANAGER_PRIORITY_RESERVE,
+   *   default 0.25, clamped [0.0, 0.5], 0.0 disables).
+   * - Pass 1 (high importance): 60% of effectiveBudget for observations with applyDecay() >= 0.65.
+   * - Pass 2 (general): remaining budget for all other observations sorted by decayed score.
+   * All passes share an includedIds Set to prevent double-counting.
+   * Results are returned in order: priority, high, general.
    */
   getWithinBudget(project: string, tokenBudget: number): Promise<Observation[]>;
 

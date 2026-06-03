@@ -43260,6 +43260,8 @@ var DEFAULT_DB_PATH = import_path.default.join((0, import_os.homedir)(), ".claud
 var GC_SESSION_SUMMARY = "[Session ended abnormally - no Stop hook fired]";
 var _rawHalflife = parseFloat(process.env.CONTEXT_MANAGER_DECAY_HALFLIFE ?? "");
 var DECAY_HALFLIFE_DAYS = Number.isFinite(_rawHalflife) && _rawHalflife >= 1 && _rawHalflife <= 3650 ? _rawHalflife : 60;
+var _rawPriorityReserve = parseFloat(process.env["CONTEXT_MANAGER_PRIORITY_RESERVE"] ?? "");
+var PRIORITY_RESERVE_FRACTION = Number.isFinite(_rawPriorityReserve) && _rawPriorityReserve >= 0 && _rawPriorityReserve <= 0.5 ? _rawPriorityReserve : 0.25;
 function recencyFactor(capturedAt) {
   const ageMs = Date.now() - new Date(capturedAt).getTime();
   const ageDays = ageMs / (1e3 * 60 * 60 * 24);
@@ -43711,18 +43713,32 @@ ${storedOutput}`;
       return { obs, score: applyDecay(obs) };
     });
     scoredRows.sort((a, b) => b.score - a.score);
-    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * effectiveBudget);
-    const highResults = [];
     const includedIds = /* @__PURE__ */ new Set();
+    const priorityBudget = Math.floor(PRIORITY_RESERVE_FRACTION * effectiveBudget);
+    const priorityResults = [];
+    let priorityTokens = 0;
+    if (priorityBudget > 0) {
+      for (const { obs } of scoredRows) {
+        const isPriority = obs.pinned === 1 || obs.tool_name === "Conversation" || obs.tool_name.startsWith("Manual");
+        if (!isPriority) continue;
+        if (priorityTokens + obs.token_estimate > priorityBudget) continue;
+        priorityResults.push(obs);
+        if (obs.id !== void 0) includedIds.add(obs.id);
+        priorityTokens += obs.token_estimate;
+      }
+    }
+    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * Math.max(0, effectiveBudget - priorityTokens));
+    const highResults = [];
     let highTokens = 0;
     for (const { obs, score } of scoredRows) {
       if (score < 0.65) continue;
+      if (obs.id !== void 0 && includedIds.has(obs.id)) continue;
       if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
       if (obs.id !== void 0) includedIds.add(obs.id);
       highTokens += obs.token_estimate;
     }
-    const remainingBudget = effectiveBudget - highTokens;
+    const remainingBudget = Math.max(0, effectiveBudget - priorityTokens - highTokens);
     const lowResults = [];
     let lowTokens = 0;
     for (const { obs } of scoredRows) {
@@ -43731,7 +43747,7 @@ ${storedOutput}`;
       lowResults.push(obs);
       lowTokens += obs.token_estimate;
     }
-    return [...highResults, ...lowResults];
+    return [...priorityResults, ...highResults, ...lowResults];
   }
   async search(query, projectOrOptions) {
     const project = typeof projectOrOptions === "string" ? projectOrOptions : projectOrOptions?.project;
@@ -46771,7 +46787,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.144") return "0.8.144";
+  if ("0.8.145") return "0.8.145";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;

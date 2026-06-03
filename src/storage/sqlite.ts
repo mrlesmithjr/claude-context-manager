@@ -71,6 +71,14 @@ const DECAY_HALFLIFE_DAYS = (Number.isFinite(_rawHalflife) && _rawHalflife >= 1 
   ? _rawHalflife
   : 60;
 
+// Fraction of the effective budget reserved by Pass 0 for Conversation, pinned, and Manual observations.
+// Configurable via CONTEXT_MANAGER_PRIORITY_RESERVE. Default 0.25, range [0.0, 0.5].
+// Set to 0.0 to disable the priority reserve entirely.
+const _rawPriorityReserve = parseFloat(process.env['CONTEXT_MANAGER_PRIORITY_RESERVE'] ?? '');
+const PRIORITY_RESERVE_FRACTION = (Number.isFinite(_rawPriorityReserve) && _rawPriorityReserve >= 0 && _rawPriorityReserve <= 0.5)
+  ? _rawPriorityReserve
+  : 0.25;
+
 /**
  * Compute a recency multiplier for temporal 'current' mode scoring.
  *
@@ -746,24 +754,49 @@ export class SQLiteStorage implements ContextStorage {
     });
     scoredRows.sort((a, b) => b.score - a.score);
 
-    // Pass 1: fill up to 60% of budget from high-importance observations (decayed score >= 0.65)
+    // Shared dedup set — all three passes check and register here to prevent double-counting.
+    const includedIds = new Set<number>();
+
+    // Pass 0: priority reserve — Conversation, pinned, and Manual observations get a guaranteed
+    // share of the budget (PRIORITY_RESERVE_FRACTION * effectiveBudget) before Pass 1 and 2 run.
+    // This prevents Edit/Write rows (importance 0.80) from flooding the recall tier and crowding
+    // out Decision/Conversation/Manual observations.
+    const priorityBudget = Math.floor(PRIORITY_RESERVE_FRACTION * effectiveBudget);
+    const priorityResults: Observation[] = [];
+    let priorityTokens = 0;
+
+    if (priorityBudget > 0) {
+      for (const { obs } of scoredRows) {
+        const isPriority = obs.pinned === 1
+          || obs.tool_name === 'Conversation'
+          || obs.tool_name.startsWith('Manual');
+        if (!isPriority) continue;
+        if (priorityTokens + obs.token_estimate > priorityBudget) continue;
+        priorityResults.push(obs);
+        if (obs.id !== undefined) includedIds.add(obs.id);
+        priorityTokens += obs.token_estimate;
+      }
+    }
+
+    // Pass 1: fill up to 60% of effectiveBudget from high-importance observations (decayed score >= 0.65).
     // Uses the already-computed decayed score from scoredRows — not the raw base importance_score.
     // Aged observations that decay below 0.65 fall through to Pass 2 (general pool, no floor).
-    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * effectiveBudget);
+    // includedIds guard prevents double-counting Pass 0 items that also qualify here.
+    const highBudget = Math.floor(HIGH_IMPORTANCE_ALLOCATION * Math.max(0, effectiveBudget - priorityTokens));
     const highResults: Observation[] = [];
-    const includedIds = new Set<number>();
     let highTokens = 0;
 
     for (const { obs, score } of scoredRows) {
       if (score < 0.65) continue;
+      if (obs.id !== undefined && includedIds.has(obs.id)) continue;
       if (highTokens + obs.token_estimate > highBudget) continue;
       highResults.push(obs);
       if (obs.id !== undefined) includedIds.add(obs.id);
       highTokens += obs.token_estimate;
     }
 
-    // Pass 2: fill remaining budget from everything else (sorted by decayed score)
-    const remainingBudget = effectiveBudget - highTokens;
+    // Pass 2: fill remaining budget from all other observations (sorted by decayed score).
+    const remainingBudget = Math.max(0, effectiveBudget - priorityTokens - highTokens);
     const lowResults: Observation[] = [];
     let lowTokens = 0;
 
@@ -774,7 +807,7 @@ export class SQLiteStorage implements ContextStorage {
       lowTokens += obs.token_estimate;
     }
 
-    return [...highResults, ...lowResults];
+    return [...priorityResults, ...highResults, ...lowResults];
   }
 
   async search(query: string, projectOrOptions?: string | SearchOptions): Promise<Observation[]> {
