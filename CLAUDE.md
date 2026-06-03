@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code when working in this repository.
 
 **Status**: ACTIVE
-**Last Updated**: May 30, 2026 (v0.8.139)
+**Last Updated**: June 3, 2026 (v0.8.146)
 
 ---
 
@@ -107,7 +107,7 @@ npm run import -- --source <path> --project <target> [--filter <text>] [--dry-ru
 `context_add`, `context_stats`, `context_list`, `context_search`, `context_semantic_search`, `context_embed`,
 `context_vacuum`, `context_export`, `context_memory_audit`, `context_memory_consolidate`, `context_pin`, `context_prune`,
 `context_get`, `context_timeline`, `context_lessons`, `context_decisions`, `context_reflect`,
-`context_skill_stats`, `context_skill_lessons`, `context_agent_lessons`
+`context_skill_stats`, `context_skill_lessons`, `context_agent_lessons`, `context_consolidate_projects`
 
 ---
 
@@ -207,6 +207,7 @@ claude-context-manager/
 |   +-- utils/facts.ts                  # FACT_CATEGORIES + detectFactType() for supersession
 |   +-- utils/correct-tokens.ts         # correctTokens() fuzzy typo-correction pre-pass
 |   +-- utils/lessons.ts                # Auto-write lesson utilities for skill/agent .lessons.md sidecars
+|   +-- utils/find-project-root.ts      # Walk upward from CWD to nearest root marker; used for project key normalization
 +-- web/                            # Fastify web dashboard
 +-- test/e2e/                       # Docker-based E2E scenarios (9 scenarios)
 +-- docs/ARCHITECTURE.md            # Full design decision details
@@ -229,7 +230,7 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 5a | Conversation insights | Stop hook extracts top 10 assistant blocks as `Conversation` observations |
 | 6 | Auto-memory export | Score >= 0.65 exported to `memory/context-manager-activity.md` at Stop |
 | 8 | Vector search | sqlite-vec, session embeddings (enriched text), on-demand via `context_embed` |
-| 9 | Rule-based compaction | >7 days old, groups of 3+, never compacts high-importance. `context_vacuum` and `context_prune` also protect observations with `importance_score >= 0.65`, `pinned = 1`, or a `lesson_type` by default; pass `include_high: true` to override. |
+| 9 | Rule-based compaction | >7 days old, groups of 3+, never compacts high-importance. `context_vacuum` and `context_prune` also protect observations with `importance_score >= 0.65`, `pinned = 1`, or a `lesson_type` by default; pass `include_high: true` to override. `context_prune` accepts `max_access_count` (int >= 0) to prune by access count; rows with `access_count = -1` are sentinel values meaning "tracking unavailable" (pre-migration rows backfilled by `migrateBackfillAccessCountSentinel()`) and are excluded from access-count pruning by default; pass `include_untracked: true` to include them. |
 | 10 | Surprise scoring | First encounter +0.15; 7-day windowed count; cap [-0.15, +0.20] |
 | 11 | Observation relationships | `followed_by`, `same_file`, `cross_project_same_file` inferred at capture |
 | 12 | Retrieval routing | 1-2 words=keyword, 3-4=hybrid (RRF), 5+=semantic |
@@ -264,11 +265,12 @@ Full details in `docs/ARCHITECTURE.md`. Quick reference:
 | 46 | context_agent_lessons | Reads `~/.dotfiles/.claude/agents/<agent>.lessons.md` flat sidecar; kebab-case validation (`/^[a-z0-9][a-z0-9-]*$/`); returns file content or "No lessons accumulated for agent '<name>' yet." |
 | 47 | Auto-write lessons at Stop | `getSessionLessonCandidates()` fetches observations where `skill IS NOT NULL`, `lesson_type IS NOT NULL`, or `importance_score >= 0.65`; `writeSessionLessons()` groups by skill name, threshold: invocation importance >= 0.5 OR `lesson_type` present; appends dated bullet entries to `~/.dotfiles/.claude/agents/<name>.lessons.md` (agents) or `~/.dotfiles/.claude/skills/<name>/.lessons.md` (skills); local mode only; rule-based, no LLM calls |
 | 48 | Background compaction loop | `backgroundCompact(storage, signal)` in `src/server/http.ts`; mirrors `backgroundEmbed()` pattern; 10s startup delay (non-urgent, gives embed initialization head start); `CONTEXT_MANAGER_COMPACT_INTERVAL` controls interval in hours (default 24); only runs in HTTP server mode; abortable via same `AbortSignal` as embed loop |
+| 49 | Subpath project key normalization | `findProjectRoot()` in `src/utils/find-project-root.ts`; walks upward from CWD, stops at `homedir()`, returns the deepest directory containing any root marker; default markers: `.git`, `.obsidian`, `package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `.claude`; extended via `CONTEXT_MANAGER_ROOT_MARKERS` (comma-separated); applied at write time only so all captures from any subpath of a project share the same root key; hierarchical `WHERE project LIKE path%` query handles read-time parent visibility unchanged; no-op when no markers exist on disk (correct for cross-machine remote mode). `context_consolidate_projects` MCP tool retroactively re-keys existing observations, sessions, user_prompts, and decisions; `dry_run: true` by default. |
 | 36 | Fuzzy search pre-pass | `token_index` table; `addTokens()` on every save (4+ char tokens, freq upsert); `findClosestToken()` exact-match short-circuit: if token exists verbatim in `token_index`, correction is skipped entirely; otherwise Levenshtein DP <= 2 edit distance, freq >= 3; `correctTokens()` skips operator-prefixed tokens; `fuzzy` param (default true) on `context_search`; correction notice in response header |
 | 37 | Progressive disclosure | `context_search` (compact, default) + `context_get` (full detail by ID) + `context_timeline` (session context around IDs); 3-layer pattern |
 | 38 | Remote parity | `remoteCreateSession` forwards branch; `GET /api/decisions/next-number` for globally sequential decision numbering in remote mode; `POST /capture/observation` forwards `lesson_type`, `skill`, `branch`, and `package` so remote captures have full field parity with local captures |
 | 39 | searchByTag json_each | Tag matching uses `EXISTS (SELECT 1 FROM json_each(o.tags) WHERE json_each.value = ?)` instead of LIKE; correct for JSON array storage |
-| 40 | Tiered recall budget | `getWithinBudget()` and `getSessionObservations()` filter `is_compacted = 0 AND superseded_by IS NULL` before allocation. `getWithinBudget()` applies `applyDecay()` before ranking (consistent with `search()`), then two-pass allocation: 60% of effective budget to observations with `applyDecay(obs) >= 0.65` (decayed score, not base score); remaining 40% filled by everything else sorted by decayed score. Both passes use `continue` on overflow so smaller items later in the sort are not skipped. `context_list` reads `CONTEXT_MANAGER_TOKEN_BUDGET` and stops adding sessions when `TOKEN_BUDGET * 0.8` is reached; always shows at least 1 session; appends `[Budget: showing N of M sessions. Use context_search for full history.]` when truncated. `budget_fill_tokens` stat (renamed from `typical_injection_tokens`) reports the actual token count `getWithinBudget()` would return for the configured budget. |
+| 40 | Tiered recall budget | `getWithinBudget()` and `getSessionObservations()` filter `is_compacted = 0 AND superseded_by IS NULL` before allocation. `getWithinBudget()` applies `applyDecay()` before ranking, then three-pass allocation: Pass 0 reserves `PRIORITY_RESERVE_FRACTION × effectiveBudget` tokens for priority observations (`pinned = 1`, `tool_name = 'Conversation'`, or `tool_name LIKE 'Manual%'`); set `CONTEXT_MANAGER_PRIORITY_RESERVE=0.0` to disable. Pass 1 takes 60% of the remaining budget (`highBudget = 0.6 × max(0, effectiveBudget - priorityTokens)`) for observations with `applyDecay(obs) >= 0.65`. Pass 2 fills the remainder with everything else sorted by decayed score. All three passes share a single `includedIds` Set to prevent duplicates. `context_list` reads `CONTEXT_MANAGER_TOKEN_BUDGET` and stops adding sessions when `TOKEN_BUDGET * 0.8` is reached; always shows at least 1 session; appends `[Budget: showing N of M sessions. Use context_search for full history.]` when truncated. `budget_fill_tokens` stat (renamed from `typical_injection_tokens`) reports the actual token count `getWithinBudget()` would return for the configured budget. |
 
 ---
 
@@ -309,6 +311,8 @@ All env vars read from `~/.claude-context/.env` (loaded at hook and MCP server s
 | `CONTEXT_MANAGER_COMPACT_INTERVAL` | `24` | Hours between background compaction passes in HTTP server; invalid values fall back to 24 |
 | `CONTEXT_MANAGER_CAPTURE_FLOOR` | `0.15` | Minimum importance score for any observation to be stored; observations scoring below this are dropped at capture time. Values are clamped to [0.0, 0.65]; values outside this range are silently adjusted. Setting 0.0 disables the floor entirely. |
 | `CONTEXT_MANAGER_DECAY_HALFLIFE` | `60` | Half-life in days for memory decay formula; clamped to [1, 3650] |
+| `CONTEXT_MANAGER_ROOT_MARKERS` | _(unset)_ | Comma-separated additional marker filenames appended to defaults (`.git`, `.obsidian`, `package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `.claude`) for project root detection |
+| `CONTEXT_MANAGER_PRIORITY_RESERVE` | `0.25` | Fraction of effective budget reserved for priority observations in Pass 0 (pinned, Conversation, Manual); range [0.0, 0.5]; set 0.0 to disable Pass 0 |
 
 ---
 
