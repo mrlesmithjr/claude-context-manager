@@ -55,6 +55,7 @@ export class ObservationSearch extends Component {
       selectedImportance: '',
       selectedTag: '',
       selectedBranch: '',
+      pinnedOnly: false,
       observations: [],
       tools: [], // Will be dynamically populated
       branches: [], // Will be dynamically populated from /api/observations/branches
@@ -198,8 +199,14 @@ export class ObservationSearch extends Component {
     this.setState({ selectedBranch, offset: 0, hasSearched: true }, () => this.performSearch());
   };
 
+  handlePinnedToggle = () => {
+    // Pinned toggle triggers a search unconditionally: a user enabling pinned-only
+    // without a query wants to browse pinned observations immediately. refs #230
+    this.setState({ pinnedOnly: !this.state.pinnedOnly, offset: 0, hasSearched: true }, () => this.performSearch());
+  };
+
   async performSearch() {
-    const { query, selectedTool, selectedImportance, selectedTag, selectedBranch, limit, offset } = this.state;
+    const { query, selectedTool, selectedImportance, selectedTag, selectedBranch, pinnedOnly, limit, offset } = this.state;
     const { project } = this.props;
 
     this.setState({ loading: true, error: null, hasSearched: true });
@@ -212,6 +219,7 @@ export class ObservationSearch extends Component {
       if (selectedImportance) params.append('importance', selectedImportance);
       if (selectedTag) params.append('tag', selectedTag);
       if (selectedBranch) params.append('branch', selectedBranch);
+      if (pinnedOnly) params.append('pinned', 'true');
 
       const response = await apiFetch(`/api/observations?${params}`);
       if (!response.ok) throw new Error('Failed to search observations');
@@ -253,7 +261,7 @@ export class ObservationSearch extends Component {
   };
 
   renderSearchControls() {
-    const { query, selectedTool, selectedImportance, selectedTag, selectedBranch, tools, branches } = this.state;
+    const { query, selectedTool, selectedImportance, selectedTag, selectedBranch, pinnedOnly, tools, branches } = this.state;
 
     return html`
       <div class="bg-gray-800 rounded-lg p-4 mb-6">
@@ -388,6 +396,20 @@ export class ObservationSearch extends Component {
             </div>
           </div>
         </div>
+
+        <!-- Pinned only toggle (refs #230) -->
+        <div class="flex items-center gap-2 mt-2">
+          <input
+            id="pinned-only"
+            type="checkbox"
+            class="accent-blue-500 cursor-pointer"
+            checked=${pinnedOnly}
+            onChange=${this.handlePinnedToggle}
+          />
+          <label for="pinned-only" class="text-sm text-gray-300 cursor-pointer select-none">
+            Pinned only
+          </label>
+        </div>
       </div>
     `;
   }
@@ -443,6 +465,11 @@ export class ObservationSearch extends Component {
               ${obs.branch ? html`
                 <span class="px-2 py-0.5 text-xs rounded bg-gray-600/50 text-gray-400">
                   &#x2387; ${obs.branch}
+                </span>
+              ` : null}
+              ${obs.pinned === 1 ? html`
+                <span class="px-1.5 py-0.5 text-xs rounded bg-yellow-500/20 text-yellow-300">
+                  Pinned
                 </span>
               ` : null}
             </div>
