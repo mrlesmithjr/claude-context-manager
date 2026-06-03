@@ -43760,6 +43760,7 @@ ${storedOutput}`;
     )));
     const importance = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.importance : void 0;
     const toolName = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.toolName : void 0;
+    const pinned = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.pinned : void 0;
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
@@ -43767,6 +43768,7 @@ ${storedOutput}`;
     const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     const importanceClause = importance ? " AND o.importance = ?" : "";
     const toolClause = toolName ? " AND o.tool_name = ?" : "";
+    const pinnedClause = pinned === 1 ? " AND o.pinned = 1" : "";
     const limitParam = Math.floor(Math.max(1, Math.min(500, Number(
       typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50
     ))));
@@ -43792,6 +43794,9 @@ ${storedOutput}`;
       if (toolName) {
         plainConditions.push("o.tool_name = ?");
         plainParams.push(toolName);
+      }
+      if (pinned === 1) {
+        plainConditions.push("o.pinned = 1");
       }
       const whereClause = plainConditions.length > 0 ? `WHERE ${plainConditions.join(" AND ")}` : "";
       const plainSql = `
@@ -43836,7 +43841,7 @@ ${storedOutput}`;
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -43847,7 +43852,7 @@ ${storedOutput}`;
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -43858,7 +43863,7 @@ ${storedOutput}`;
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -43869,7 +43874,7 @@ ${storedOutput}`;
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -44631,7 +44636,7 @@ ${storedOutput}`;
       created_at: row.created_at
     }));
   }
-  async countObservations(project, tool, importance, branch) {
+  async countObservations(project, tool, importance, branch, pinned) {
     const conditions = [];
     const params = [];
     if (project) {
@@ -44649,6 +44654,10 @@ ${storedOutput}`;
     if (branch) {
       conditions.push("branch = ?");
       params.push(branch);
+    }
+    if (pinned === 1) {
+      conditions.push("pinned = ?");
+      params.push(1);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     const sql = `SELECT COUNT(*) as count FROM observations ${where}`;
@@ -46433,6 +46442,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
             importance: { type: "string", enum: ["high", "medium", "low"] },
             tag: { type: "string", maxLength: 64 },
             branch: { type: "string", maxLength: 255 },
+            pinned: { type: "boolean" },
             limit: { type: "integer", minimum: 1, maximum: 200 },
             offset: { type: "integer", minimum: 0 }
           }
@@ -46440,7 +46450,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
       }
     },
     async (request, reply) => {
-      const { q, project, tool, importance, tag, branch, limit = 50, offset = 0 } = request.query;
+      const { q, project, tool, importance, tag, branch, pinned, limit = 50, offset = 0 } = request.query;
       if (isNetworkMode2 && !project) {
         reply.status(400).send({ error: "project parameter is required in network mode" });
         return;
@@ -46463,17 +46473,21 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
           if (branch) {
             observations = observations.filter((obs) => obs.branch === branch);
           }
+          if (pinned) {
+            observations = observations.filter((obs) => obs.pinned === 1);
+          }
           total = observations.length;
-        } else if (q || importance || branch) {
+        } else if (q || importance || branch || pinned) {
           observations = await storage.search(q || "", {
             project,
             limit,
             offset,
             importance,
             toolName: tool,
-            branch
+            branch,
+            pinned: pinned ? 1 : void 0
           });
-          total = await storage.countObservations(project, tool, importance, branch);
+          total = await storage.countObservations(project, tool, importance, branch, pinned ? 1 : void 0);
         } else {
           observations = await storage.getRecent(project || "", limit, offset, tool);
           total = await storage.countObservations(project, tool);
@@ -46919,7 +46933,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.152") return "0.8.152";
+  if ("0.8.154") return "0.8.154";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;

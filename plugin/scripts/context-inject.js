@@ -588,6 +588,7 @@ ${storedOutput}`;
     )));
     const importance = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.importance : void 0;
     const toolName = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.toolName : void 0;
+    const pinned = typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.pinned : void 0;
     let sql;
     let params;
     const ftsQuery = query.replace(/"/g, '""').split(/\s+/).filter((t) => t.length > 0).map((t) => `"${t}"`).join(" ");
@@ -595,6 +596,7 @@ ${storedOutput}`;
     const supersededClause = includeSuperseded ? "" : " AND o.superseded_by IS NULL";
     const importanceClause = importance ? " AND o.importance = ?" : "";
     const toolClause = toolName ? " AND o.tool_name = ?" : "";
+    const pinnedClause = pinned === 1 ? " AND o.pinned = 1" : "";
     const limitParam = Math.floor(Math.max(1, Math.min(500, Number(
       typeof projectOrOptions === "object" && projectOrOptions !== null ? projectOrOptions.limit ?? 50 : 50
     ))));
@@ -620,6 +622,9 @@ ${storedOutput}`;
       if (toolName) {
         plainConditions.push("o.tool_name = ?");
         plainParams.push(toolName);
+      }
+      if (pinned === 1) {
+        plainConditions.push("o.pinned = 1");
       }
       const whereClause = plainConditions.length > 0 ? `WHERE ${plainConditions.join(" AND ")}` : "";
       const plainSql = `
@@ -664,7 +669,7 @@ ${storedOutput}`;
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ? AND o.branch = ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -675,7 +680,7 @@ ${storedOutput}`;
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.project LIKE ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -686,7 +691,7 @@ ${storedOutput}`;
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ? AND o.branch = ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -697,7 +702,7 @@ ${storedOutput}`;
       sql = `
         SELECT o.* FROM observations o
         INNER JOIN observations_fts ON o.id = observations_fts.rowid
-        WHERE observations_fts MATCH ?${importanceClause}${toolClause}${supersededClause}
+        WHERE observations_fts MATCH ?${importanceClause}${toolClause}${pinnedClause}${supersededClause}
         ORDER BY o.created_at DESC
         ${paginationClause}
       `;
@@ -1459,7 +1464,7 @@ ${storedOutput}`;
       created_at: row.created_at
     }));
   }
-  async countObservations(project, tool, importance, branch) {
+  async countObservations(project, tool, importance, branch, pinned) {
     const conditions = [];
     const params = [];
     if (project) {
@@ -1477,6 +1482,10 @@ ${storedOutput}`;
     if (branch) {
       conditions.push("branch = ?");
       params.push(branch);
+    }
+    if (pinned === 1) {
+      conditions.push("pinned = ?");
+      params.push(1);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     const sql = `SELECT COUNT(*) as count FROM observations ${where}`;
@@ -3371,11 +3380,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.152") {
+    if (installedVersion !== "0.8.154") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.152"}
+   Source:    v${"0.8.154"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -3389,9 +3398,9 @@ var PLUGIN_VERSION_FILE = join3(homedir5(), ".claude-context", ".plugin-version"
 function checkPostUpdate() {
   try {
     const stored = existsSync2(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.152") return "";
+    if (stored === "0.8.154") return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.152"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.154"}. Hooks active.`;
   } catch {
     return "";
   }
@@ -3399,7 +3408,7 @@ function checkPostUpdate() {
 function markVersionActivated() {
   try {
     mkdirSync2(join3(homedir5(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.152", "utf-8");
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.154", "utf-8");
   } catch {
   }
 }
@@ -3480,7 +3489,7 @@ async function main() {
       const statsText = await remoteMcpText(client, "context_stats", { project: input.cwd });
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1]) remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.152"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.154"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3579,7 +3588,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.152"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.154"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

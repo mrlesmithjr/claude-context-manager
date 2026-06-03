@@ -58,6 +58,12 @@ export interface SearchOptions {
    * Filtering happens in SQL to ensure paginated results are dense (fixes #127).
    */
   toolName?: string;
+  /**
+   * When 1, restrict results to pinned observations only (pinned = 1).
+   * When omitted or undefined, no pin filter is applied.
+   * refs #230
+   */
+  pinned?: number;
 }
 export type RelationshipType = 'same_file' | 'followed_by' | 'cross_project_same_file';
 export type ObservationTag =
@@ -520,8 +526,9 @@ export interface ContextStorage {
    * @param tool - Tool name filter (optional)
    * @param importance - Importance level filter: 'high' | 'medium' | 'low' (optional)
    * @param branch - Git branch filter: exact match (optional)
+   * @param pinned - When 1, only count pinned observations (optional). refs #230
    */
-  countObservations(project?: string, tool?: string, importance?: ImportanceLevel, branch?: string): Promise<number>;
+  countObservations(project?: string, tool?: string, importance?: ImportanceLevel, branch?: string, pinned?: number): Promise<number>;
 
   /**
    * Count sessions with optional filters
