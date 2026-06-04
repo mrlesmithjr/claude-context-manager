@@ -46964,7 +46964,10 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
                     )
                 )
               `).run() : { changes: 0 };
-          return { sessionsResult, obsResult, promptsResult, fileCountsResult, decisionsResult };
+          const skippedNoHash = db.prepare(
+            "SELECT COUNT(*) as n FROM src.observations WHERE content_hash IS NULL"
+          ).get().n;
+          return { sessionsResult, obsResult, promptsResult, fileCountsResult, decisionsResult, skippedNoHash };
         })();
         reply.send({
           imported: {
@@ -46974,6 +46977,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
             file_counts: results.fileCountsResult.changes,
             decisions: results.decisionsResult.changes
           },
+          skipped_no_hash: results.skippedNoHash,
           skipped: ["observation_relationships", "vec_observations", "vec_sessions"],
           note: "Run context_embed in any Claude Code session to regenerate vector embeddings"
         });
@@ -46999,7 +47003,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.159") return "0.8.159";
+  if ("0.8.160") return "0.8.160";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;
@@ -47040,7 +47044,7 @@ async function main() {
   if (isNetworkMode) {
     fastify.addHook("onRequest", async (request, reply) => {
       const rawPath = request.url.split("?")[0];
-      if (rawPath === "/api/health" || rawPath === "/") return;
+      if (!rawPath.startsWith("/api/") || rawPath === "/api/health") return;
       const authHeader = request.headers["authorization"] || "";
       const provided = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
       const expected = Buffer.from(TOKEN);
