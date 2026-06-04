@@ -60,10 +60,7 @@ export class ProjectFilter extends Component {
 
   handleChange = (e) => {
     const value = e.target.value;
-    // In required mode, never allow clearing back to null (no empty option is rendered,
-    // but guard defensively in case a future change adds one).
-    const project = (value === '' && !this.props.required) ? null : (value || null);
-    this.props.onProjectChange(project);
+    this.props.onProjectChange(value || null);
   };
 
   render() {
@@ -101,9 +98,7 @@ export class ProjectFilter extends Component {
           onChange=${this.handleChange}
           value=${selectedProject || ''}
         >
-          ${!required ? html`
-            <option value="">All Projects (${projects.reduce((sum, p) => sum + p.observation_count, 0).toLocaleString()})</option>
-          ` : null}
+          <option value="">All Projects (${projects.reduce((sum, p) => sum + p.observation_count, 0).toLocaleString()})</option>
           ${projects.map(
             (project) => html`
               <option value=${project.path} title=${project.path}>

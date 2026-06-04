@@ -32,13 +32,13 @@ export class AdminPanel extends Component {
   }
 
   componentDidMount() {
-    if (this.props.projectRequired && !this.props.project) return;
+    
     this.loadTools();
   }
 
   componentDidUpdate(prevProps) {
     if (prevProps.project !== this.props.project) {
-      if (this.props.projectRequired && !this.props.project) return;
+      
       this.loadTools();
     }
   }
@@ -302,11 +302,6 @@ export class AdminPanel extends Component {
 
   render() {
     // In network mode, require a project selection before showing anything
-    if (this.props.projectRequired && !this.props.project) {
-      return html`
-        <div class="text-center py-16 text-gray-500">Select a project above to use admin tools.</div>
-      `;
-    }
 
     return html`
       <div>

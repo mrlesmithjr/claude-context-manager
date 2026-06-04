@@ -92,7 +92,7 @@ export class TokenAnalytics extends Component {
   componentDidMount() {
     this.setupChartDefaults();
     // In network mode, skip the initial fetch until a project is selected
-    if (this.props.projectRequired && !this.props.project) return;
+    
     this.loadData();
   }
 
@@ -100,7 +100,7 @@ export class TokenAnalytics extends Component {
     // Reload when project filter changes
     if (prevProps.project !== this.props.project) {
       // In network mode, skip the fetch if no project is selected
-      if (this.props.projectRequired && !this.props.project) return;
+      
       this.loadData();
     }
   }
@@ -128,7 +128,7 @@ export class TokenAnalytics extends Component {
 
   async loadData() {
     // Guard: do not fetch without a project in network mode
-    if (this.props.projectRequired && !this.props.project) return;
+    
 
     const { project } = this.props;
     const { days } = this.state;
@@ -800,11 +800,6 @@ export class TokenAnalytics extends Component {
       this.state;
 
     // In network mode, require a project selection before showing anything
-    if (this.props.projectRequired && !this.props.project) {
-      return html`
-        <div class="text-center py-16 text-gray-500">Select a project above to view analytics.</div>
-      `;
-    }
 
     if (loading) {
       return html`
