@@ -19,6 +19,8 @@ SERVER_IMAGE     := context-manager-server:latest
 SERVER_ENV       := $(HOME)/.claude-context/.env
 SERVER_COMPOSE   := docker compose -f docker-compose.server.yml
 TEST_COMPOSE     := docker compose -f docker-compose.test.yml -p ctx-test
+NATIVE_MCP_URL   := http://localhost:4000
+TEST_MCP_URL     := http://localhost:4001
 LAUNCHD_LABEL        := com.mrlesmithjr.context-manager
 LAUNCHD_PLIST        := $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL).plist
 LAUNCHD_LABEL_WEB    := com.mrlesmithjr.context-manager-web
@@ -32,7 +34,8 @@ NODE_BIN         := $(shell which node)
         server-launchd-install server-launchd-uninstall server-launchd-status \
         server-quickstart server-stop-native switch-to-docker switch-to-native \
         server-launchd-web-install server-launchd-web-uninstall server-launchd-web-status \
-        test-docker-start test-docker-stop
+        test-docker-start test-docker-stop \
+        use-docker-mcp use-native-mcp
 
 # --- Help (default target) ---
 
@@ -77,6 +80,8 @@ help:
 	@echo "  make switch-to-native    Stop Docker, start native"
 	@echo "  make test-docker-start   Run Docker stack alongside native (ports 4001/3848)"
 	@echo "  make test-docker-stop    Stop test Docker stack"
+	@echo "  make use-docker-mcp      Point hooks at Docker test container (port 4001)"
+	@echo "  make use-native-mcp      Point hooks at native server (port 4000)"
 	@echo ""
 	@echo "Development"
 	@echo "  make update              Pull, build, and restart server (then follow prompts)"
@@ -723,3 +728,33 @@ test-docker-start: server-build
 # Stop and remove test containers (preserves the test data volume).
 test-docker-stop:
 	$(TEST_COMPOSE) --env-file "$(SERVER_ENV)" down
+
+# Point Claude Code hooks at the Docker test container (fixes #245).
+# Edits CONTEXT_MANAGER_URL in ~/.claude-context/.env in place.
+# Restart Claude Code after switching for the new session to use the new target.
+use-docker-mcp:
+	@if [ ! -f "$(SERVER_ENV)" ]; then \
+		echo "ERROR: $(SERVER_ENV) not found. Run 'make server-init' first."; exit 1; \
+	fi
+	@if grep -q '^CONTEXT_MANAGER_URL=' "$(SERVER_ENV)"; then \
+		sed -i '' 's|^CONTEXT_MANAGER_URL=.*|CONTEXT_MANAGER_URL=$(TEST_MCP_URL)|' "$(SERVER_ENV)"; \
+	else \
+		echo "CONTEXT_MANAGER_URL=$(TEST_MCP_URL)" >> "$(SERVER_ENV)"; \
+	fi
+	@echo "[mcp] Hooks now point to Docker test container: $(TEST_MCP_URL)"
+	@echo "  Restart Claude Code for the new session to capture there."
+	@echo "  To switch back: make use-native-mcp"
+
+# Point Claude Code hooks back at the native server (fixes #245).
+use-native-mcp:
+	@if [ ! -f "$(SERVER_ENV)" ]; then \
+		echo "ERROR: $(SERVER_ENV) not found. Run 'make server-init' first."; exit 1; \
+	fi
+	@if grep -q '^CONTEXT_MANAGER_URL=' "$(SERVER_ENV)"; then \
+		sed -i '' 's|^CONTEXT_MANAGER_URL=.*|CONTEXT_MANAGER_URL=$(NATIVE_MCP_URL)|' "$(SERVER_ENV)"; \
+	else \
+		echo "CONTEXT_MANAGER_URL=$(NATIVE_MCP_URL)" >> "$(SERVER_ENV)"; \
+	fi
+	@echo "[mcp] Hooks now point to native server: $(NATIVE_MCP_URL)"
+	@echo "  Restart Claude Code for the new session to capture there."
+	@echo "  To switch to Docker: make use-docker-mcp"
