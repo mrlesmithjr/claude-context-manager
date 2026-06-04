@@ -34853,7 +34853,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.159" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.160" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -35105,7 +35105,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.159" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.160" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {

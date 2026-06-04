@@ -941,7 +941,12 @@ export async function registerApiRoutes(
               `).run()
             : { changes: 0 };
 
-          return { sessionsResult, obsResult, promptsResult, fileCountsResult, decisionsResult };
+          // Count observations excluded due to missing content_hash (pre-migration rows).
+          const skippedNoHash = (db.prepare(
+            'SELECT COUNT(*) as n FROM src.observations WHERE content_hash IS NULL'
+          ).get() as { n: number }).n;
+
+          return { sessionsResult, obsResult, promptsResult, fileCountsResult, decisionsResult, skippedNoHash };
         })();
 
         reply.send({
@@ -952,6 +957,7 @@ export async function registerApiRoutes(
             file_counts: results.fileCountsResult.changes,
             decisions: results.decisionsResult.changes,
           },
+          skipped_no_hash: results.skippedNoHash,
           skipped: ['observation_relationships', 'vec_observations', 'vec_sessions'],
           note: 'Run context_embed in any Claude Code session to regenerate vector embeddings',
         });
