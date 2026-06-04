@@ -136,7 +136,7 @@ export class ImportPanel extends Component {
 
   renderSuccess() {
     const { result } = this.state;
-    const { imported } = result;
+    const { imported, skipped_no_hash } = result;
     return html`
       <div class="space-y-4">
         <div class="flex items-center gap-2">
@@ -158,7 +158,17 @@ export class ImportPanel extends Component {
           ` : null}
           <div class="text-gray-400">File encounter records</div>
           <div class="font-semibold">${imported.file_counts.toLocaleString()}</div>
+          ${skipped_no_hash > 0 ? html`
+            <div class="text-gray-400">Skipped (pre-migration)</div>
+            <div class="font-semibold text-yellow-400">${skipped_no_hash.toLocaleString()}</div>
+          ` : null}
         </div>
+        ${skipped_no_hash > 0 ? html`
+          <div class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 text-sm text-yellow-300">
+            ${skipped_no_hash.toLocaleString()} observations were skipped because they predate the
+            content hash migration and cannot be deduplicated safely.
+          </div>
+        ` : null}
         <div class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 text-sm text-yellow-300">
           Run <code class="font-mono bg-gray-800 px-1 rounded">context_embed</code> in any Claude Code
           session to regenerate vector embeddings for semantic search.
@@ -215,6 +225,12 @@ export class ImportPanel extends Component {
             to merge observations into this container's database.
             Existing records are not duplicated.
           </p>
+          <div class="mt-3 bg-blue-900/30 border border-blue-700/50 rounded p-3 text-sm text-blue-300">
+            <strong>Before uploading:</strong> stop the context manager on the source machine
+            (or run <code class="font-mono bg-gray-800 px-1 rounded">PRAGMA wal_checkpoint(TRUNCATE)</code>)
+            to flush pending writes from the WAL journal into the DB file.
+            Uploading while the server is running may omit recent observations.
+          </div>
         </div>
 
         ${status === 'idle' && this.renderDropZone()}

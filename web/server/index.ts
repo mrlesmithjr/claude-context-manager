@@ -97,11 +97,12 @@ async function main() {
   // Bearer token auth: enforced on all routes in network mode
   if (isNetworkMode) {
     fastify.addHook('onRequest', async (request, reply) => {
-      // Allow the health check and the root page without auth.
-      // The root page (GET /) injects the token into HTML; a browser visiting for
-      // the first time has no token yet so it must load without auth first.
+      // Only enforce auth on API routes. Static assets (JS, CSS, vendor files)
+      // cannot carry Authorization headers from <script>/<link> tags, and they
+      // contain no sensitive data. GET / is also exempt: it serves the HTML with
+      // the bearer token injected as window.__CTX_TOKEN for the JS to use.
       const rawPath = request.url.split('?')[0];
-      if (rawPath === '/api/health' || rawPath === '/') return;
+      if (!rawPath.startsWith('/api/') || rawPath === '/api/health') return;
 
       const authHeader = request.headers['authorization'] || '';
       const provided = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';

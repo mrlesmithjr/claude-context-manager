@@ -18,6 +18,7 @@ E2E_IMAGE        := context-manager-e2e:latest
 SERVER_IMAGE     := context-manager-server:latest
 SERVER_ENV       := $(HOME)/.claude-context/.env
 SERVER_COMPOSE   := docker compose -f docker-compose.server.yml
+TEST_COMPOSE     := docker compose -f docker-compose.test.yml -p ctx-test
 LAUNCHD_LABEL        := com.mrlesmithjr.context-manager
 LAUNCHD_PLIST        := $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL).plist
 LAUNCHD_LABEL_WEB    := com.mrlesmithjr.context-manager-web
@@ -30,7 +31,8 @@ NODE_BIN         := $(shell which node)
         server-native-start server-native-stop server-native-status \
         server-launchd-install server-launchd-uninstall server-launchd-status \
         server-quickstart server-stop-native switch-to-docker switch-to-native \
-        server-launchd-web-install server-launchd-web-uninstall server-launchd-web-status
+        server-launchd-web-install server-launchd-web-uninstall server-launchd-web-status \
+        test-docker-start test-docker-stop
 
 # --- Help (default target) ---
 
@@ -73,6 +75,8 @@ help:
 	@echo "  make server-env          Print remote mode env setup instructions"
 	@echo "  make switch-to-docker    Stop native, start Docker"
 	@echo "  make switch-to-native    Stop Docker, start native"
+	@echo "  make test-docker-start   Run Docker stack alongside native (ports 4001/3848)"
+	@echo "  make test-docker-stop    Stop test Docker stack"
 	@echo ""
 	@echo "Development"
 	@echo "  make update              Pull, build, and restart server (then follow prompts)"
@@ -702,3 +706,20 @@ switch-to-native:
 	echo "[switch] Ports are free. Installing native launchd services..."
 	$(MAKE) server-launchd-install
 	$(MAKE) server-launchd-web-install
+
+# Run Docker stack on alternate ports alongside the native server (refs #241).
+# MCP server:    http://localhost:4001  (native uses 4000)
+# Web dashboard: http://localhost:3848  (native uses 3847)
+# Data volume:   context-manager-test-data (isolated from production)
+test-docker-start: server-build
+	$(TEST_COMPOSE) --env-file "$(SERVER_ENV)" up -d
+	@echo ""
+	@echo "[test-docker] Test stack running:"
+	@echo "  MCP server:    http://localhost:4001"
+	@echo "  Web dashboard: http://localhost:3848"
+	@echo "  Logs:   docker compose -p ctx-test logs -f"
+	@echo "  Stop:   make test-docker-stop"
+
+# Stop and remove test containers (preserves the test data volume).
+test-docker-stop:
+	$(TEST_COMPOSE) --env-file "$(SERVER_ENV)" down

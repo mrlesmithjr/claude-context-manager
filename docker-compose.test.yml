@@ -1,0 +1,63 @@
+# Self-contained test stack for running Docker alongside the native server (refs #241).
+#
+# MCP server:    http://localhost:4001  (native uses 4000)
+# Web dashboard: http://localhost:3848  (native uses 3847)
+# Data volume:   ctx-test_context-manager-test-data (isolated from production)
+#
+# Usage:
+#   make test-docker-start   build image (if needed) and start this stack
+#   make test-docker-stop    stop and remove test containers
+#
+# Note: Docker Compose port overrides append rather than replace, so this file
+# is intentionally self-contained rather than an overlay of docker-compose.server.yml.
+
+services:
+  context-server:
+    image: context-manager-server:latest
+    command: node /app/docker/start-mcp-server.mjs
+    ports:
+      - "127.0.0.1:4001:4000"
+    environment:
+      CONTEXT_MANAGER_DB: /data/context.db
+      CONTEXT_MANAGER_TOKEN: ${CONTEXT_MANAGER_TOKEN}
+      CONTEXT_MANAGER_PORT: "4000"
+      CONTEXT_MANAGER_HOST: "0.0.0.0"
+      CONTEXT_MANAGER_EMBED_INTERVAL: "10"
+      LOG_LEVEL: info
+    volumes:
+      - context-manager-test-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  web-ui:
+    image: context-manager-server:latest
+    command: node /app/dist/web/server.js
+    ports:
+      - "127.0.0.1:3848:3847"
+    environment:
+      CONTEXT_MANAGER_DB: /data/context.db
+      CONTEXT_MANAGER_TOKEN: ${CONTEXT_MANAGER_TOKEN}
+      CONTEXT_MANAGER_PORT: "3847"
+      CONTEXT_MANAGER_HOST: "0.0.0.0"
+      LOG_LEVEL: info
+    volumes:
+      - context-manager-test-data:/data
+    depends_on:
+      context-server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3847/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  context-manager-test-data:
+    driver: local
