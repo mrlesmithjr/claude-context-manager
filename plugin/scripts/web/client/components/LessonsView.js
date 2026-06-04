@@ -70,13 +70,13 @@ export class LessonsView extends Component {
   }
 
   componentDidMount() {
-    if (this.props.projectRequired && !this.props.project) return;
+    
     this.loadLessons();
   }
 
   componentDidUpdate(prevProps) {
     if (prevProps.project !== this.props.project) {
-      if (this.props.projectRequired && !this.props.project) return;
+      
       this.loadLessons();
     }
   }
@@ -275,11 +275,6 @@ export class LessonsView extends Component {
   render() {
     const { lessons, total, loading, error, query, lessonType, days } = this.state;
 
-    if (this.props.projectRequired && !this.props.project) {
-      return html`
-        <div class="text-center py-16 text-gray-500">Select a project above to view lessons.</div>
-      `;
-    }
 
     return html`
       <div>

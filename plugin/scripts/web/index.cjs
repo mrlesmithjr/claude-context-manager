@@ -46303,10 +46303,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { project } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46338,10 +46334,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { project, status, limit = 50, offset = 0, branch } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46412,10 +46404,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { project } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46451,10 +46439,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { q, project, tool, importance, tag, branch, pinned, limit = 50, offset = 0 } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46518,10 +46502,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { project } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46550,10 +46530,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { project, days = 30 } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46583,10 +46559,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { project, days = 30, limit = 10 } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46615,10 +46587,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { project, weeks = 12 } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46647,10 +46615,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { project, weeks = 12 } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46692,10 +46656,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { project, q, limit = 20 } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46730,10 +46690,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { project, q, lesson_type, limit = 20, days } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46764,10 +46720,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     },
     async (request, reply) => {
       const { project, days, limit = 50 } = request.query;
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -46797,10 +46749,6 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
     async (request, reply) => {
       const { project, days } = request.query;
       const skillName = decodeURIComponent(request.params.name);
-      if (isNetworkMode2 && !project) {
-        reply.status(400).send({ error: "project parameter is required in network mode" });
-        return;
-      }
       if (project && isProjectTooBroad(project, isNetworkMode2)) {
         reply.status(403).send({ error: "Project path too broad for network mode" });
         return;
@@ -47003,7 +46951,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.161") return "0.8.161";
+  if ("0.8.162") return "0.8.162";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;

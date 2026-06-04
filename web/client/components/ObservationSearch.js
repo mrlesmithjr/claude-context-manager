@@ -72,26 +72,12 @@ export class ObservationSearch extends Component {
   }
 
   componentDidMount() {
-    // In network mode, skip fetching tools/branches (requires a project) until one
-    // is selected. loadTools and loadBranches will be called from componentDidUpdate
-    // when the first project is selected.
-    if (this.props.projectRequired && !this.props.project) return;
     this.loadTools();
     this.loadBranches();
   }
 
   componentDidUpdate(prevProps) {
-    // Reload when project filter changes
     if (prevProps.project !== this.props.project) {
-      // In network mode, skip re-fetch if no project is selected
-      if (this.props.projectRequired && !this.props.project) return;
-
-      // Load tools and branches when a project becomes available for the first time
-      if (this.props.projectRequired && !prevProps.project && this.props.project) {
-        this.loadTools();
-        this.loadBranches();
-      }
-
       // Reset branch selection and reload branch list when project changes
       this.setState({ selectedBranch: '', branches: [] }, () => {
         this.loadBranches();
@@ -129,7 +115,7 @@ export class ObservationSearch extends Component {
    */
   async loadBranches() {
     // Guard: do not fetch without a project in network mode
-    if (this.props.projectRequired && !this.props.project) return;
+    
 
     try {
       const params = new URLSearchParams();
@@ -604,11 +590,6 @@ export class ObservationSearch extends Component {
     const { observations, total, limit, offset, loading, error } = this.state;
 
     // In network mode, require a project selection before showing anything
-    if (this.props.projectRequired && !this.props.project) {
-      return html`
-        <div class="text-center py-16 text-gray-500">Select a project above to search observations.</div>
-      `;
-    }
 
     return html`
       <div>

@@ -50,13 +50,13 @@ export class SkillStats extends Component {
   }
 
   componentDidMount() {
-    if (this.props.projectRequired && !this.props.project) return;
+    
     this.loadSkills();
   }
 
   componentDidUpdate(prevProps, prevState) {
     if (prevProps.project !== this.props.project) {
-      if (this.props.projectRequired && !this.props.project) return;
+      
       // Reset detail view when project changes
       this.setState({ selectedSkill: null, detailLessons: [] }, () => this.loadSkills());
       return;
@@ -372,11 +372,6 @@ export class SkillStats extends Component {
   render() {
     const { selectedSkill } = this.state;
 
-    if (this.props.projectRequired && !this.props.project) {
-      return html`
-        <div class="text-center py-16 text-gray-500">Select a project above to view skills.</div>
-      `;
-    }
 
     return html`
       <div>

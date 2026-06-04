@@ -28,13 +28,13 @@ export class DecisionLog extends Component {
   }
 
   componentDidMount() {
-    if (this.props.projectRequired && !this.props.project) return;
+    
     this.loadDecisions();
   }
 
   componentDidUpdate(prevProps) {
     if (prevProps.project !== this.props.project) {
-      if (this.props.projectRequired && !this.props.project) return;
+      
       this.loadDecisions();
     }
   }
@@ -196,11 +196,6 @@ export class DecisionLog extends Component {
   render() {
     const { decisions, total, loading, error, query } = this.state;
 
-    if (this.props.projectRequired && !this.props.project) {
-      return html`
-        <div class="text-center py-16 text-gray-500">Select a project above to view decisions.</div>
-      `;
-    }
 
     return html`
       <div>
