@@ -3183,6 +3183,7 @@ function decodeDashedPath(encoded) {
   if (!encoded) return null;
   const tokens = encoded.split("-");
   if (tokens.length < 2 || tokens[0] !== "") return null;
+  if (tokens.some((t) => t === ".." || t === ".")) return null;
   function recurse(tokenIndex, currentPath) {
     if (tokenIndex >= tokens.length) {
       return currentPath;
@@ -66026,39 +66027,38 @@ function extractToolResultBlocks(content) {
 }
 function pairToolEvents(entries) {
   const pending = /* @__PURE__ */ new Map();
-  for (const entry of entries) {
-    if (entry.type !== "assistant") continue;
-    const content = entry.message?.content;
-    const toolUses = extractToolUseBlocks(content);
-    if (toolUses.length === 0) continue;
-    const cwd = typeof entry.cwd === "string" ? entry.cwd : "";
-    const branch = typeof entry.gitBranch === "string" ? entry.gitBranch : null;
-    const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : (/* @__PURE__ */ new Date()).toISOString();
-    for (const block of toolUses) {
-      pending.set(block.id, { block, cwd, branch, timestamp });
-    }
-  }
   const pairs = [];
   for (const entry of entries) {
-    if (entry.type !== "user") continue;
-    const content = entry.message?.content;
-    const results = extractToolResultBlocks(content);
-    for (const result of results) {
-      const use = pending.get(result.tool_use_id);
-      if (!use) continue;
-      pending.delete(result.tool_use_id);
-      const toolName = use.block.name;
-      const toolInput = use.block.input;
-      if (!shouldCaptureTool(toolName, toolInput)) continue;
-      const toolResponse = extractResultContent(result.content);
-      pairs.push({
-        toolName,
-        toolInput,
-        toolResponse,
-        timestamp: use.timestamp,
-        cwd: use.cwd,
-        branch: use.branch
-      });
+    if (entry.type === "assistant") {
+      const content = entry.message?.content;
+      const toolUses = extractToolUseBlocks(content);
+      if (toolUses.length === 0) continue;
+      const cwd = typeof entry.cwd === "string" ? entry.cwd : "";
+      const branch = typeof entry.gitBranch === "string" ? entry.gitBranch : null;
+      const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : (/* @__PURE__ */ new Date()).toISOString();
+      for (const block of toolUses) {
+        pending.set(block.id, { block, cwd, branch, timestamp });
+      }
+    } else if (entry.type === "user") {
+      const content = entry.message?.content;
+      const results = extractToolResultBlocks(content);
+      for (const result of results) {
+        const use = pending.get(result.tool_use_id);
+        if (!use) continue;
+        pending.delete(result.tool_use_id);
+        const toolName = use.block.name;
+        const toolInput = use.block.input;
+        if (!shouldCaptureTool(toolName, toolInput)) continue;
+        const toolResponse = extractResultContent(result.content);
+        pairs.push({
+          toolName,
+          toolInput,
+          toolResponse,
+          timestamp: use.timestamp,
+          cwd: use.cwd,
+          branch: use.branch
+        });
+      }
     }
   }
   return pairs;
@@ -66116,10 +66116,12 @@ async function mineTranscripts(storage2, opts) {
   };
   const projectFilter = project ? findProjectRoot(project) : void 0;
   const sessions = discoverSessions(projectFilter);
+  let sessionsAttempted = 0;
   for (const session of sessions) {
-    if (limit_sessions !== void 0 && result.sessions_processed >= limit_sessions) {
+    if (limit_sessions !== void 0 && sessionsAttempted >= limit_sessions) {
       break;
     }
+    sessionsAttempted++;
     const { sessionId, filePath, decodedProject } = session;
     let alreadyExists = false;
     try {
@@ -66180,11 +66182,16 @@ async function mineTranscripts(storage2, opts) {
         result.errors.push(`save failed in session ${sessionId}: ${String(err)}`);
       }
     }
+    try {
+      const rawDb = storage2.db;
+      if (!rawDb) throw new Error("SQLiteStorage.db not accessible \u2014 source patch cannot be applied");
+      rawDb.prepare(`UPDATE sessions SET source = 'mine' WHERE id = ?`).run(sessionId);
+    } catch (err) {
+      result.errors.push(`source patch failed for ${sessionId}: ${String(err)}`);
+    }
     const summary = `Mined session: ${sessionObs} observation${sessionObs !== 1 ? "s" : ""} imported`;
     try {
       await storage2.endSession(sessionId, summary);
-      const rawDb = storage2.db;
-      rawDb.prepare(`UPDATE sessions SET source = 'mine' WHERE id = ?`).run(sessionId);
     } catch (err) {
       result.errors.push(`endSession failed for ${sessionId}: ${String(err)}`);
     }
@@ -67953,7 +67960,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
       }
       lines.push(`Sessions processed: ${result.sessions_processed}`);
       lines.push(`Sessions skipped (already in DB): ${result.sessions_skipped}`);
-      lines.push(`Observations imported: ${result.observations_imported}`);
+      const obsLabel = dry_run ?? false ? "Observations estimated (tool pairs found)" : "Observations imported";
+      lines.push(`${obsLabel}: ${result.observations_imported}`);
       lines.push(`Observations skipped (below capture floor or duplicate): ${result.duplicates_skipped}`);
       if (result.errors.length > 0) {
         lines.push("");

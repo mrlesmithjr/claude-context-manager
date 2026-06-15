@@ -48,6 +48,7 @@ export function decodeDashedPath(encoded: string): string | null {
   // Split on `-` gives ['', 'Users', 'larry', ...]; skip the empty first element.
   const tokens = encoded.split('-');
   if (tokens.length < 2 || tokens[0] !== '') return null;
+  if (tokens.some(t => t === '..' || t === '.')) return null;
 
   // tokens[0] is '' (before the leading '-')
   // We reconstruct by trying to greedily merge consecutive tokens into a single

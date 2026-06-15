@@ -2410,7 +2410,8 @@ export function createContextManagerServer(
       }
       lines.push(`Sessions processed: ${result.sessions_processed}`);
       lines.push(`Sessions skipped (already in DB): ${result.sessions_skipped}`);
-      lines.push(`Observations imported: ${result.observations_imported}`);
+      const obsLabel = (dry_run ?? false) ? 'Observations estimated (tool pairs found)' : 'Observations imported';
+      lines.push(`${obsLabel}: ${result.observations_imported}`);
       lines.push(`Observations skipped (below capture floor or duplicate): ${result.duplicates_skipped}`);
 
       if (result.errors.length > 0) {

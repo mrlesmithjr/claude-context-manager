@@ -157,59 +157,52 @@ function extractToolResultBlocks(content: unknown): ToolResultBlock[] {
  * Returns only pairs that pass shouldCaptureTool() to avoid indexing skip-listed tools.
  */
 function pairToolEvents(entries: TranscriptEntry[]): ToolPair[] {
-  // Build a lookup map from tool_use_id to (block + metadata) from assistant entries
   const pending = new Map<string, {
     block: ToolUseBlock;
     cwd: string;
     branch: string | null;
     timestamp: string;
   }>();
-
-  for (const entry of entries) {
-    if (entry.type !== 'assistant') continue;
-    const content = entry.message?.content;
-    const toolUses = extractToolUseBlocks(content);
-    if (toolUses.length === 0) continue;
-
-    const cwd = typeof entry.cwd === 'string' ? entry.cwd : '';
-    const branch = typeof entry.gitBranch === 'string' ? entry.gitBranch : null;
-    const timestamp = typeof entry.timestamp === 'string'
-      ? entry.timestamp
-      : new Date().toISOString();
-
-    for (const block of toolUses) {
-      pending.set(block.id, { block, cwd, branch, timestamp });
-    }
-  }
-
   const pairs: ToolPair[] = [];
 
   for (const entry of entries) {
-    if (entry.type !== 'user') continue;
-    const content = entry.message?.content;
-    const results = extractToolResultBlocks(content);
+    if (entry.type === 'assistant') {
+      const content = entry.message?.content;
+      const toolUses = extractToolUseBlocks(content);
+      if (toolUses.length === 0) continue;
 
-    for (const result of results) {
-      const use = pending.get(result.tool_use_id);
-      if (!use) continue; // Orphaned result — no matching tool_use
+      const cwd = typeof entry.cwd === 'string' ? entry.cwd : '';
+      const branch = typeof entry.gitBranch === 'string' ? entry.gitBranch : null;
+      const timestamp = typeof entry.timestamp === 'string'
+        ? entry.timestamp
+        : new Date().toISOString();
 
-      pending.delete(result.tool_use_id);
+      for (const block of toolUses) {
+        pending.set(block.id, { block, cwd, branch, timestamp });
+      }
+    } else if (entry.type === 'user') {
+      const content = entry.message?.content;
+      const results = extractToolResultBlocks(content);
 
-      const toolName = use.block.name;
-      const toolInput = use.block.input;
+      for (const result of results) {
+        const use = pending.get(result.tool_use_id);
+        if (!use) continue;
+        pending.delete(result.tool_use_id);
 
-      if (!shouldCaptureTool(toolName, toolInput)) continue;
+        const toolName = use.block.name;
+        const toolInput = use.block.input;
+        if (!shouldCaptureTool(toolName, toolInput)) continue;
 
-      const toolResponse = extractResultContent(result.content);
-
-      pairs.push({
-        toolName,
-        toolInput,
-        toolResponse,
-        timestamp: use.timestamp,
-        cwd: use.cwd,
-        branch: use.branch,
-      });
+        const toolResponse = extractResultContent(result.content);
+        pairs.push({
+          toolName,
+          toolInput,
+          toolResponse,
+          timestamp: use.timestamp,
+          cwd: use.cwd,
+          branch: use.branch,
+        });
+      }
     }
   }
 
@@ -319,10 +312,13 @@ export async function mineTranscripts(
 
   const sessions = discoverSessions(projectFilter);
 
+  let sessionsAttempted = 0;
+
   for (const session of sessions) {
-    if (limit_sessions !== undefined && result.sessions_processed >= limit_sessions) {
+    if (limit_sessions !== undefined && sessionsAttempted >= limit_sessions) {
       break;
     }
+    sessionsAttempted++;
 
     const { sessionId, filePath, decodedProject } = session;
 
@@ -410,14 +406,18 @@ export async function mineTranscripts(
       }
     }
 
-    // End the session with a derived summary and mark it complete with source='mine'
+    // Patch source FIRST (separate try/catch so endSession failure can't suppress it)
+    try {
+      const rawDb = (storage as unknown as { db: import('better-sqlite3').Database }).db;
+      if (!rawDb) throw new Error('SQLiteStorage.db not accessible — source patch cannot be applied');
+      rawDb.prepare(`UPDATE sessions SET source = 'mine' WHERE id = ?`).run(sessionId);
+    } catch (err) {
+      result.errors.push(`source patch failed for ${sessionId}: ${String(err)}`);
+    }
+
     const summary = `Mined session: ${sessionObs} observation${sessionObs !== 1 ? 's' : ''} imported`;
     try {
-      // endSession sets status='complete'. We also need source='mine'.
       await storage.endSession(sessionId, summary);
-      // Patch source to 'mine' directly — createSession defaults to 'hook'
-      const rawDb = (storage as unknown as { db: import('better-sqlite3').Database }).db;
-      rawDb.prepare(`UPDATE sessions SET source = 'mine' WHERE id = ?`).run(sessionId);
     } catch (err) {
       result.errors.push(`endSession failed for ${sessionId}: ${String(err)}`);
     }
