@@ -36073,7 +36073,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.167" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.168" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -36325,7 +36325,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.167" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.168" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -37733,12 +37733,17 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
     },
     async ({ project, dry_run, limit_sessions }) => {
       if (isProxy) {
-        return {
-          content: [{
-            type: "text",
-            text: "context_mine requires local mode. Proxy mode (CONTEXT_MANAGER_URL) is not supported."
-          }]
-        };
+        const remoteHost = new URL(remoteUrl).hostname;
+        const isLocal = remoteHost === "localhost" || remoteHost === "127.0.0.1" || remoteHost === "::1";
+        if (!isLocal) {
+          return {
+            content: [{
+              type: "text",
+              text: "context_mine requires local mode. The context-manager server is on a remote host; transcripts in ~/.claude/projects/ are local and cannot be mined into a remote DB."
+            }]
+          };
+        }
+        return proxyToolCall("context_mine", { project, dry_run, limit_sessions }, remoteUrl, remoteToken);
       }
       const { mineTranscripts: mineTranscripts2 } = await Promise.resolve().then(() => (init_mine(), mine_exports));
       const db = await getDb();

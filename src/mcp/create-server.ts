@@ -2369,17 +2369,23 @@ export function createContextManagerServer(
         .describe('Cap the number of new sessions to process. Useful for incremental runs on large transcript histories.'),
     },
     async ({ project, dry_run, limit_sessions }) => {
-      // Local mode only: cannot mine local transcript files into a remote DB.
-      // Use isProxy (the server-level flag) rather than re-reading CONTEXT_MANAGER_URL
-      // from the environment — the HTTP server process sees that env var set (so hooks
-      // can locate it) even though it has direct DB access and is not a proxy.
+      // In proxy mode the STDIO server forwards the call to the HTTP server,
+      // which runs with isProxy=false and has direct DB access. Mining runs on
+      // the server side where both the DB and ~/.claude/projects/ transcripts live.
+      // Only block when truly remote (non-localhost): in that case the DB is on
+      // a different machine from the transcripts and mining cannot work.
       if (isProxy) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: 'context_mine requires local mode. Proxy mode (CONTEXT_MANAGER_URL) is not supported.',
-          }],
-        };
+        const remoteHost = new URL(remoteUrl).hostname;
+        const isLocal = remoteHost === 'localhost' || remoteHost === '127.0.0.1' || remoteHost === '::1';
+        if (!isLocal) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: 'context_mine requires local mode. The context-manager server is on a remote host; transcripts in ~/.claude/projects/ are local and cannot be mined into a remote DB.',
+            }],
+          };
+        }
+        return proxyToolCall('context_mine', { project, dry_run, limit_sessions }, remoteUrl, remoteToken);
       }
 
       const { mineTranscripts } = await import('../capture/mine.js');
