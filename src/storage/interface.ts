@@ -850,6 +850,15 @@ export interface ContextStorage {
   findClosestToken(token: string, minFrequency?: number): string | null;
 
   /**
+   * Check whether a session with the given ID already exists in the database.
+   * Used by mineTranscripts() to skip sessions that have already been imported.
+   *
+   * @param id - Session ID (UUID)
+   * @returns true if a row exists in the sessions table with this ID
+   */
+  sessionExists(id: string): Promise<boolean>;
+
+  /**
    * Close storage connection
    */
   close(): Promise<void>;

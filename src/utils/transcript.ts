@@ -24,6 +24,66 @@ export function convertPathToDashed(projectPath: string): string {
 }
 
 /**
+ * Decode a Claude Code dashed directory name back to a real filesystem path.
+ *
+ * Claude Code encodes project paths by replacing every `/` with `-`, producing
+ * strings like `-Users-larry-my-project`. The problem: hyphens inside real path
+ * segments (e.g., `my-project`) are indistinguishable from path separators.
+ *
+ * Strategy: greedy filesystem-validated decode. Walk left to right, trying the
+ * longest possible segment at each position that exists as a directory on disk.
+ * For the root segment (`-Users`) the first character is always the leading `/`
+ * separator, so we start from the first `-`-separated token.
+ *
+ * Returns null if no valid filesystem path could be assembled from the encoded
+ * string, or if the encoded string is empty.
+ *
+ * @param encoded - The dashed directory name (e.g. "-Users-larry-my-project")
+ * @returns The decoded absolute path, or null if no match found
+ */
+export function decodeDashedPath(encoded: string): string | null {
+  if (!encoded) return null;
+
+  // The encoded form always starts with a leading `-` that represents `/`.
+  // Split on `-` gives ['', 'Users', 'larry', ...]; skip the empty first element.
+  const tokens = encoded.split('-');
+  if (tokens.length < 2 || tokens[0] !== '') return null;
+
+  // tokens[0] is '' (before the leading '-')
+  // We reconstruct by trying to greedily merge consecutive tokens into a single
+  // path segment when intermediate hyphens could be part of the segment name.
+
+  function recurse(tokenIndex: number, currentPath: string): string | null {
+    // All tokens consumed — we have a complete candidate path
+    if (tokenIndex >= tokens.length) {
+      return currentPath;
+    }
+
+    // Try merging 1..N remaining tokens into the next segment (greedy: longest first)
+    const remaining = tokens.length - tokenIndex;
+    for (let len = remaining; len >= 1; len--) {
+      const segment = tokens.slice(tokenIndex, tokenIndex + len).join('-');
+      if (!segment) continue; // skip empty segments (double-hyphen edge cases)
+
+      const candidate = currentPath + '/' + segment;
+
+      // Check if this candidate path exists on disk
+      if (existsSync(candidate)) {
+        const result = recurse(tokenIndex + len, candidate);
+        if (result !== null) return result;
+      }
+    }
+
+    return null;
+  }
+
+  // Start from root: first real token is at index 1 (index 0 is the '' before leading '-')
+  // Seed the path at filesystem root '/'
+  const result = recurse(1, '');
+  return result;
+}
+
+/**
  * Get the transcript path for a session
  *
  * @param project - Project path

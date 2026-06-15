@@ -1316,6 +1316,13 @@ export class SQLiteStorage implements ContextStorage {
     return row ?? null;
   }
 
+  async sessionExists(id: string): Promise<boolean> {
+    const row = this.db.prepare(
+      `SELECT 1 FROM sessions WHERE id = ? LIMIT 1`
+    ).get(id);
+    return row !== undefined;
+  }
+
   async getSession(id: string): Promise<Session | undefined> {
     const row = this.db.prepare(`
       SELECT id, project, started_at, ended_at, summary, summary_extended,

@@ -984,6 +984,12 @@ ${storedOutput}`;
     `).get(sessionId);
         return row ?? null;
       }
+      async sessionExists(id) {
+        const row = this.db.prepare(
+          `SELECT 1 FROM sessions WHERE id = ? LIMIT 1`
+        ).get(id);
+        return row !== void 0;
+      }
       async getSession(id) {
         const row = this.db.prepare(`
       SELECT id, project, started_at, ended_at, summary, summary_extended,
@@ -3169,8 +3175,32 @@ ${storedOutput}`;
 });
 
 // src/utils/transcript.ts
+import { readFileSync, existsSync } from "fs";
 function convertPathToDashed(projectPath) {
   return projectPath.replace(/\//g, "-");
+}
+function decodeDashedPath(encoded) {
+  if (!encoded) return null;
+  const tokens = encoded.split("-");
+  if (tokens.length < 2 || tokens[0] !== "") return null;
+  function recurse(tokenIndex, currentPath) {
+    if (tokenIndex >= tokens.length) {
+      return currentPath;
+    }
+    const remaining = tokens.length - tokenIndex;
+    for (let len = remaining; len >= 1; len--) {
+      const segment = tokens.slice(tokenIndex, tokenIndex + len).join("-");
+      if (!segment) continue;
+      const candidate = currentPath + "/" + segment;
+      if (existsSync(candidate)) {
+        const result2 = recurse(tokenIndex + len, candidate);
+        if (result2 !== null) return result2;
+      }
+    }
+    return null;
+  }
+  const result = recurse(1, "");
+  return result;
 }
 var init_transcript = __esm({
   "src/utils/transcript.ts"() {
@@ -3241,7 +3271,7 @@ var init_version = __esm({
 });
 
 // src/export/memory.ts
-import { mkdirSync as mkdirSync2, readFileSync, writeFileSync, existsSync } from "fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync, existsSync as existsSync2 } from "fs";
 import { join } from "path";
 import { homedir as homedir2 } from "os";
 function resolveMemoryDir(projectPath) {
@@ -3505,8 +3535,8 @@ function writeActivityToMemory(projectPath, newContent, maxLines = DEFAULT_MAX_L
     ""
   ].join("\n");
   let existingBody = "";
-  if (existsSync(filePath)) {
-    const existing = readFileSync(filePath, "utf-8");
+  if (existsSync2(filePath)) {
+    const existing = readFileSync2(filePath, "utf-8");
     const bodyMatch = existing.match(/^(## .+)/m);
     if (bodyMatch?.index !== void 0) {
       existingBody = existing.substring(bodyMatch.index);
@@ -7402,8 +7432,8 @@ var require_req = __commonJS({
       if (req.originalUrl) {
         _req.url = req.originalUrl;
       } else {
-        const path2 = req.path;
-        _req.url = typeof path2 === "string" ? path2 : req.url ? req.url.path || req.url : void 0;
+        const path3 = req.path;
+        _req.url = typeof path3 === "string" ? path3 : req.url ? req.url.path || req.url : void 0;
       }
       if (req.query) {
         _req.query = req.query;
@@ -7568,14 +7598,14 @@ var require_redact = __commonJS({
       }
       return obj;
     }
-    function parsePath(path2) {
+    function parsePath(path3) {
       const parts = [];
       let current = "";
       let inBrackets = false;
       let inQuotes = false;
       let quoteChar = "";
-      for (let i = 0; i < path2.length; i++) {
-        const char = path2[i];
+      for (let i = 0; i < path3.length; i++) {
+        const char = path3[i];
         if (!inBrackets && char === ".") {
           if (current) {
             parts.push(current);
@@ -7706,10 +7736,10 @@ var require_redact = __commonJS({
       return current;
     }
     function redactPaths(obj, paths, censor, remove = false) {
-      for (const path2 of paths) {
-        const parts = parsePath(path2);
+      for (const path3 of paths) {
+        const parts = parsePath(path3);
         if (parts.includes("*")) {
-          redactWildcardPath(obj, parts, censor, path2, remove);
+          redactWildcardPath(obj, parts, censor, path3, remove);
         } else {
           if (remove) {
             removeKey(obj, parts);
@@ -7794,8 +7824,8 @@ var require_redact = __commonJS({
           }
         } else {
           if (afterWildcard.includes("*")) {
-            const wrappedCensor = typeof censor === "function" ? (value, path2) => {
-              const fullPath = [...pathArray.slice(0, pathLength), ...path2];
+            const wrappedCensor = typeof censor === "function" ? (value, path3) => {
+              const fullPath = [...pathArray.slice(0, pathLength), ...path3];
               return censor(value, fullPath);
             } : censor;
             redactWildcardPath(current, afterWildcard, wrappedCensor, originalPath, remove);
@@ -7830,8 +7860,8 @@ var require_redact = __commonJS({
         return null;
       }
       const pathStructure = /* @__PURE__ */ new Map();
-      for (const path2 of pathsToClone) {
-        const parts = parsePath(path2);
+      for (const path3 of pathsToClone) {
+        const parts = parsePath(path3);
         let current = pathStructure;
         for (let i = 0; i < parts.length; i++) {
           const part = parts[i];
@@ -7883,24 +7913,24 @@ var require_redact = __commonJS({
       }
       return cloneSelectively(obj, pathStructure);
     }
-    function validatePath(path2) {
-      if (typeof path2 !== "string") {
+    function validatePath(path3) {
+      if (typeof path3 !== "string") {
         throw new Error("Paths must be (non-empty) strings");
       }
-      if (path2 === "") {
+      if (path3 === "") {
         throw new Error("Invalid redaction path ()");
       }
-      if (path2.includes("..")) {
-        throw new Error(`Invalid redaction path (${path2})`);
+      if (path3.includes("..")) {
+        throw new Error(`Invalid redaction path (${path3})`);
       }
-      if (path2.includes(",")) {
-        throw new Error(`Invalid redaction path (${path2})`);
+      if (path3.includes(",")) {
+        throw new Error(`Invalid redaction path (${path3})`);
       }
       let bracketCount = 0;
       let inQuotes = false;
       let quoteChar = "";
-      for (let i = 0; i < path2.length; i++) {
-        const char = path2[i];
+      for (let i = 0; i < path3.length; i++) {
+        const char = path3[i];
         if ((char === '"' || char === "'") && bracketCount > 0) {
           if (!inQuotes) {
             inQuotes = true;
@@ -7914,20 +7944,20 @@ var require_redact = __commonJS({
         } else if (char === "]" && !inQuotes) {
           bracketCount--;
           if (bracketCount < 0) {
-            throw new Error(`Invalid redaction path (${path2})`);
+            throw new Error(`Invalid redaction path (${path3})`);
           }
         }
       }
       if (bracketCount !== 0) {
-        throw new Error(`Invalid redaction path (${path2})`);
+        throw new Error(`Invalid redaction path (${path3})`);
       }
     }
     function validatePaths(paths) {
       if (!Array.isArray(paths)) {
         throw new TypeError("paths must be an array");
       }
-      for (const path2 of paths) {
-        validatePath(path2);
+      for (const path3 of paths) {
+        validatePath(path3);
       }
     }
     function slowRedact(options = {}) {
@@ -8095,8 +8125,8 @@ var require_redaction = __commonJS({
         if (shape[k] === null) {
           o[k] = (value) => topCensor(value, [k]);
         } else {
-          const wrappedCensor = typeof censor === "function" ? (value, path2) => {
-            return censor(value, [k, ...path2]);
+          const wrappedCensor = typeof censor === "function" ? (value, path3) => {
+            return censor(value, [k, ...path3]);
           } : censor;
           o[k] = Redact({
             paths: shape[k],
@@ -8317,7 +8347,7 @@ var require_sonic_boom = __commonJS({
     var fs = __require("fs");
     var EventEmitter = __require("events");
     var inherits = __require("util").inherits;
-    var path2 = __require("path");
+    var path3 = __require("path");
     var sleep = require_atomic_sleep();
     var assert2 = __require("assert");
     var BUSY_WRITE_TIMEOUT = 100;
@@ -8371,7 +8401,7 @@ var require_sonic_boom = __commonJS({
       const mode = sonic.mode;
       if (sonic.sync) {
         try {
-          if (sonic.mkdir) fs.mkdirSync(path2.dirname(file2), { recursive: true });
+          if (sonic.mkdir) fs.mkdirSync(path3.dirname(file2), { recursive: true });
           const fd = fs.openSync(file2, flags, mode);
           fileOpened(null, fd);
         } catch (err) {
@@ -8379,7 +8409,7 @@ var require_sonic_boom = __commonJS({
           throw err;
         }
       } else if (sonic.mkdir) {
-        fs.mkdir(path2.dirname(file2), { recursive: true }, (err) => {
+        fs.mkdir(path3.dirname(file2), { recursive: true }, (err) => {
           if (err) return fileOpened(err);
           fs.open(file2, flags, mode, fileOpened);
         });
@@ -9120,7 +9150,7 @@ var require_thread_stream = __commonJS({
     var { version: version2 } = require_package();
     var { EventEmitter } = __require("events");
     var { Worker } = __require("worker_threads");
-    var { join: join7 } = __require("path");
+    var { join: join8 } = __require("path");
     var { pathToFileURL } = __require("url");
     var { wait } = require_wait();
     var {
@@ -9156,7 +9186,7 @@ var require_thread_stream = __commonJS({
     function createWorker(stream, opts) {
       const { filename, workerData } = opts;
       const bundlerOverrides = "__bundlerPathsOverrides" in globalThis ? globalThis.__bundlerPathsOverrides : {};
-      const toExecute = bundlerOverrides["thread-stream-worker"] || join7(__dirname, "lib", "worker.js");
+      const toExecute = bundlerOverrides["thread-stream-worker"] || join8(__dirname, "lib", "worker.js");
       const worker = new Worker(toExecute, {
         ...opts.workerOpts,
         trackUnmanagedFds: false,
@@ -9542,7 +9572,7 @@ var require_transport = __commonJS({
     "use strict";
     var { createRequire: createRequire2 } = __require("module");
     var getCallers = require_caller();
-    var { join: join7, isAbsolute, sep } = __require("node:path");
+    var { join: join8, isAbsolute, sep } = __require("node:path");
     var sleep = require_atomic_sleep();
     var onExit = require_on_exit_leak_free();
     var ThreadStream = require_thread_stream();
@@ -9605,7 +9635,7 @@ var require_transport = __commonJS({
         throw new Error("only one of target or targets can be specified");
       }
       if (targets) {
-        target = bundlerOverrides["pino-worker"] || join7(__dirname, "worker.js");
+        target = bundlerOverrides["pino-worker"] || join8(__dirname, "worker.js");
         options.targets = targets.filter((dest) => dest.target).map((dest) => {
           return {
             ...dest,
@@ -9623,7 +9653,7 @@ var require_transport = __commonJS({
           });
         });
       } else if (pipeline) {
-        target = bundlerOverrides["pino-worker"] || join7(__dirname, "worker.js");
+        target = bundlerOverrides["pino-worker"] || join8(__dirname, "worker.js");
         options.pipelines = [pipeline.map((dest) => {
           return {
             ...dest,
@@ -9645,7 +9675,7 @@ var require_transport = __commonJS({
           return origin;
         }
         if (origin === "pino/file") {
-          return join7(__dirname, "..", "file.js");
+          return join8(__dirname, "..", "file.js");
         }
         let fixTarget2;
         for (const filePath of callers) {
@@ -10623,7 +10653,7 @@ var require_safe_stable_stringify = __commonJS({
               return circularValue;
             }
             let res = "";
-            let join7 = ",";
+            let join8 = ",";
             const originalIndentation = indentation;
             if (Array.isArray(value)) {
               if (value.length === 0) {
@@ -10637,7 +10667,7 @@ var require_safe_stable_stringify = __commonJS({
                 indentation += spacer;
                 res += `
 ${indentation}`;
-                join7 = `,
+                join8 = `,
 ${indentation}`;
               }
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
@@ -10645,13 +10675,13 @@ ${indentation}`;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyFnReplacer(String(i), value, stack, replacer, spacer, indentation);
                 res += tmp2 !== void 0 ? tmp2 : "null";
-                res += join7;
+                res += join8;
               }
               const tmp = stringifyFnReplacer(String(i), value, stack, replacer, spacer, indentation);
               res += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res += `${join7}"... ${getItemCount(removedKeys)} not stringified"`;
+                res += `${join8}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               if (spacer !== "") {
                 res += `
@@ -10672,7 +10702,7 @@ ${originalIndentation}`;
             let separator = "";
             if (spacer !== "") {
               indentation += spacer;
-              join7 = `,
+              join8 = `,
 ${indentation}`;
               whitespace = " ";
             }
@@ -10686,13 +10716,13 @@ ${indentation}`;
               const tmp = stringifyFnReplacer(key2, value, stack, replacer, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}:${whitespace}${tmp}`;
-                separator = join7;
+                separator = join8;
               }
             }
             if (keyLength > maximumBreadth) {
               const removedKeys = keyLength - maximumBreadth;
               res += `${separator}"...":${whitespace}"${getItemCount(removedKeys)} not stringified"`;
-              separator = join7;
+              separator = join8;
             }
             if (spacer !== "" && separator.length > 1) {
               res = `
@@ -10733,7 +10763,7 @@ ${originalIndentation}`;
             }
             const originalIndentation = indentation;
             let res = "";
-            let join7 = ",";
+            let join8 = ",";
             if (Array.isArray(value)) {
               if (value.length === 0) {
                 return "[]";
@@ -10746,7 +10776,7 @@ ${originalIndentation}`;
                 indentation += spacer;
                 res += `
 ${indentation}`;
-                join7 = `,
+                join8 = `,
 ${indentation}`;
               }
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
@@ -10754,13 +10784,13 @@ ${indentation}`;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyArrayReplacer(String(i), value[i], stack, replacer, spacer, indentation);
                 res += tmp2 !== void 0 ? tmp2 : "null";
-                res += join7;
+                res += join8;
               }
               const tmp = stringifyArrayReplacer(String(i), value[i], stack, replacer, spacer, indentation);
               res += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res += `${join7}"... ${getItemCount(removedKeys)} not stringified"`;
+                res += `${join8}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               if (spacer !== "") {
                 res += `
@@ -10773,7 +10803,7 @@ ${originalIndentation}`;
             let whitespace = "";
             if (spacer !== "") {
               indentation += spacer;
-              join7 = `,
+              join8 = `,
 ${indentation}`;
               whitespace = " ";
             }
@@ -10782,7 +10812,7 @@ ${indentation}`;
               const tmp = stringifyArrayReplacer(key2, value[key2], stack, replacer, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}:${whitespace}${tmp}`;
-                separator = join7;
+                separator = join8;
               }
             }
             if (spacer !== "" && separator.length > 1) {
@@ -10840,20 +10870,20 @@ ${originalIndentation}`;
               indentation += spacer;
               let res2 = `
 ${indentation}`;
-              const join8 = `,
+              const join9 = `,
 ${indentation}`;
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
               let i = 0;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyIndent(String(i), value[i], stack, spacer, indentation);
                 res2 += tmp2 !== void 0 ? tmp2 : "null";
-                res2 += join8;
+                res2 += join9;
               }
               const tmp = stringifyIndent(String(i), value[i], stack, spacer, indentation);
               res2 += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res2 += `${join8}"... ${getItemCount(removedKeys)} not stringified"`;
+                res2 += `${join9}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               res2 += `
 ${originalIndentation}`;
@@ -10869,16 +10899,16 @@ ${originalIndentation}`;
               return '"[Object]"';
             }
             indentation += spacer;
-            const join7 = `,
+            const join8 = `,
 ${indentation}`;
             let res = "";
             let separator = "";
             let maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth);
             if (isTypedArrayWithEntries(value)) {
-              res += stringifyTypedArray(value, join7, maximumBreadth);
+              res += stringifyTypedArray(value, join8, maximumBreadth);
               keys = keys.slice(value.length);
               maximumPropertiesToStringify -= value.length;
-              separator = join7;
+              separator = join8;
             }
             if (deterministic) {
               keys = sort(keys, comparator);
@@ -10889,13 +10919,13 @@ ${indentation}`;
               const tmp = stringifyIndent(key2, value[key2], stack, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}: ${tmp}`;
-                separator = join7;
+                separator = join8;
               }
             }
             if (keyLength > maximumBreadth) {
               const removedKeys = keyLength - maximumBreadth;
               res += `${separator}"...": "${getItemCount(removedKeys)} not stringified"`;
-              separator = join7;
+              separator = join8;
             }
             if (separator !== "") {
               res = `
@@ -18977,8 +19007,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path2) {
-      let input = path2;
+    function removeDotSegments(path3) {
+      let input = path3;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -19177,8 +19207,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path2, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path2 && path2 !== "/" ? path2 : void 0;
+        const [path3, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path3 && path3 !== "/" ? path3 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -31570,40 +31600,40 @@ var require_node = __commonJS({
         super();
         this.staticChildren = {};
       }
-      findStaticMatchingChild(path2, pathIndex) {
-        const staticChild = this.staticChildren[path2.charAt(pathIndex)];
-        if (staticChild === void 0 || !staticChild.matchPrefix(path2, pathIndex)) {
+      findStaticMatchingChild(path3, pathIndex) {
+        const staticChild = this.staticChildren[path3.charAt(pathIndex)];
+        if (staticChild === void 0 || !staticChild.matchPrefix(path3, pathIndex)) {
           return null;
         }
         return staticChild;
       }
-      getStaticChild(path2, pathIndex = 0) {
-        if (path2.length === pathIndex) {
+      getStaticChild(path3, pathIndex = 0) {
+        if (path3.length === pathIndex) {
           return this;
         }
-        const staticChild = this.findStaticMatchingChild(path2, pathIndex);
+        const staticChild = this.findStaticMatchingChild(path3, pathIndex);
         if (staticChild) {
-          return staticChild.getStaticChild(path2, pathIndex + staticChild.prefix.length);
+          return staticChild.getStaticChild(path3, pathIndex + staticChild.prefix.length);
         }
         return null;
       }
-      createStaticChild(path2) {
-        if (path2.length === 0) {
+      createStaticChild(path3) {
+        if (path3.length === 0) {
           return this;
         }
-        let staticChild = this.staticChildren[path2.charAt(0)];
+        let staticChild = this.staticChildren[path3.charAt(0)];
         if (staticChild) {
           let i = 1;
           for (; i < staticChild.prefix.length; i++) {
-            if (path2.charCodeAt(i) !== staticChild.prefix.charCodeAt(i)) {
+            if (path3.charCodeAt(i) !== staticChild.prefix.charCodeAt(i)) {
               staticChild = staticChild.split(this, i);
               break;
             }
           }
-          return staticChild.createStaticChild(path2.slice(i));
+          return staticChild.createStaticChild(path3.slice(i));
         }
-        const label = path2.charAt(0);
-        this.staticChildren[label] = new StaticNode(path2);
+        const label = path3.charAt(0);
+        this.staticChildren[label] = new StaticNode(path3);
         return this.staticChildren[label];
       }
     };
@@ -31663,8 +31693,8 @@ var require_node = __commonJS({
         parentNode.staticChildren[parentPrefix.charAt(0)] = staticNode;
         return staticNode;
       }
-      getNextNode(path2, pathIndex, nodeStack, paramsCount) {
-        let node = this.findStaticMatchingChild(path2, pathIndex);
+      getNextNode(path3, pathIndex, nodeStack, paramsCount) {
+        let node = this.findStaticMatchingChild(path3, pathIndex);
         let parametricBrotherNodeIndex = 0;
         if (node === null) {
           if (this.parametricChildren.length === 0) {
@@ -31711,8 +31741,8 @@ var require_node = __commonJS({
         this.kind = NODE_TYPES.PARAMETRIC;
         this.nodePaths = /* @__PURE__ */ new Set([nodePath]);
       }
-      getNextNode(path2, pathIndex) {
-        return this.findStaticMatchingChild(path2, pathIndex);
+      getNextNode(path3, pathIndex) {
+        return this.findStaticMatchingChild(path3, pathIndex);
       }
     };
     var WildcardNode = class extends Node {
@@ -32048,33 +32078,33 @@ var require_url_sanitizer = __commonJS({
       }
       return null;
     }
-    function safeDecodeURI(path2, useSemicolonDelimiter) {
+    function safeDecodeURI(path3, useSemicolonDelimiter) {
       let shouldDecode = false;
       let shouldDecodeParam = false;
       let querystring = "";
-      for (let i = 1; i < path2.length; i++) {
-        const charCode = path2.charCodeAt(i);
+      for (let i = 1; i < path3.length; i++) {
+        const charCode = path3.charCodeAt(i);
         if (charCode === 37) {
-          const highCharCode = path2.charCodeAt(i + 1);
-          const lowCharCode = path2.charCodeAt(i + 2);
+          const highCharCode = path3.charCodeAt(i + 1);
+          const lowCharCode = path3.charCodeAt(i + 2);
           if (decodeComponentChar(highCharCode, lowCharCode) === null) {
             shouldDecode = true;
           } else {
             shouldDecodeParam = true;
             if (highCharCode === 50 && lowCharCode === 53) {
               shouldDecode = true;
-              path2 = path2.slice(0, i + 1) + "25" + path2.slice(i + 1);
+              path3 = path3.slice(0, i + 1) + "25" + path3.slice(i + 1);
               i += 2;
             }
             i += 2;
           }
         } else if (charCode === 63 || charCode === 35 || charCode === 59 && useSemicolonDelimiter) {
-          querystring = path2.slice(i + 1);
-          path2 = path2.slice(0, i);
+          querystring = path3.slice(i + 1);
+          path3 = path3.slice(0, i);
           break;
         }
       }
-      const decodedPath = shouldDecode ? decodeURI(path2) : path2;
+      const decodedPath = shouldDecode ? decodeURI(path3) : path3;
       return { path: decodedPath, querystring, shouldDecodeParam };
     }
     function safeDecodeURIComponent(uriComponent) {
@@ -32167,7 +32197,7 @@ var require_find_my_way = __commonJS({
       this.routes = [];
       this.trees = {};
     }
-    Router.prototype.on = function on(method, path2, opts, handler, store) {
+    Router.prototype.on = function on(method, path3, opts, handler, store) {
       if (typeof opts === "function") {
         if (handler !== void 0) {
           store = handler;
@@ -32175,34 +32205,34 @@ var require_find_my_way = __commonJS({
         handler = opts;
         opts = {};
       }
-      assert2(typeof path2 === "string", "Path should be a string");
-      assert2(path2.length > 0, "The path could not be empty");
-      assert2(path2[0] === "/" || path2[0] === "*", "The first character of a path should be `/` or `*`");
+      assert2(typeof path3 === "string", "Path should be a string");
+      assert2(path3.length > 0, "The path could not be empty");
+      assert2(path3[0] === "/" || path3[0] === "*", "The first character of a path should be `/` or `*`");
       assert2(typeof handler === "function", "Handler should be a function");
-      const optionalParamMatch = path2.match(OPTIONAL_PARAM_REGEXP);
+      const optionalParamMatch = path3.match(OPTIONAL_PARAM_REGEXP);
       if (optionalParamMatch) {
-        assert2(path2.length === optionalParamMatch.index + optionalParamMatch[0].length, "Optional Parameter needs to be the last parameter of the path");
-        const pathFull = path2.replace(OPTIONAL_PARAM_REGEXP, "$1$2");
-        const pathOptional = path2.replace(OPTIONAL_PARAM_REGEXP, "$2") || "/";
+        assert2(path3.length === optionalParamMatch.index + optionalParamMatch[0].length, "Optional Parameter needs to be the last parameter of the path");
+        const pathFull = path3.replace(OPTIONAL_PARAM_REGEXP, "$1$2");
+        const pathOptional = path3.replace(OPTIONAL_PARAM_REGEXP, "$2") || "/";
         this.on(method, pathFull, opts, handler, store);
         this.on(method, pathOptional, opts, handler, store);
         return;
       }
-      const route = path2;
+      const route = path3;
       if (this.ignoreDuplicateSlashes) {
-        path2 = removeDuplicateSlashes(path2);
+        path3 = removeDuplicateSlashes(path3);
       }
       if (this.ignoreTrailingSlash) {
-        path2 = trimLastSlash(path2);
+        path3 = trimLastSlash(path3);
       }
       const methods = Array.isArray(method) ? method : [method];
       for (const method2 of methods) {
         assert2(typeof method2 === "string", "Method should be a string");
         assert2(httpMethods.includes(method2), `Method '${method2}' is not an http method.`);
-        this._on(method2, path2, opts, handler, store, route);
+        this._on(method2, path3, opts, handler, store, route);
       }
     };
-    Router.prototype._on = function _on(method, path2, opts, handler, store) {
+    Router.prototype._on = function _on(method, path3, opts, handler, store) {
       let constraints = {};
       if (opts.constraints !== void 0) {
         assert2(typeof opts.constraints === "object" && opts.constraints !== null, "Constraints should be an object");
@@ -32215,7 +32245,7 @@ var require_find_my_way = __commonJS({
       if (this.trees[method] === void 0) {
         this.trees[method] = new StaticNode("/");
       }
-      let pattern = path2;
+      let pattern = path3;
       if (pattern === "*" && this.trees[method].prefix.length !== 0) {
         const currentRoot = this.trees[method];
         this.trees[method] = new StaticNode("");
@@ -32318,19 +32348,19 @@ var require_find_my_way = __commonJS({
           throw new Error(`Method '${method}' already declared for route '${pattern}' with constraints '${JSON.stringify(constraints)}'`);
         }
       }
-      const route = { method, path: path2, pattern, params, opts, handler, store };
+      const route = { method, path: path3, pattern, params, opts, handler, store };
       this.routes.push(route);
       currentNode.addRoute(route, this.constrainer);
     };
-    Router.prototype.hasRoute = function hasRoute(method, path2, constraints) {
-      const route = this.findRoute(method, path2, constraints);
+    Router.prototype.hasRoute = function hasRoute(method, path3, constraints) {
+      const route = this.findRoute(method, path3, constraints);
       return route !== null;
     };
-    Router.prototype.findRoute = function findNode(method, path2, constraints = {}) {
+    Router.prototype.findRoute = function findNode(method, path3, constraints = {}) {
       if (this.trees[method] === void 0) {
         return null;
       }
-      let pattern = path2;
+      let pattern = path3;
       let currentNode = this.trees[method];
       let parentNodePathIndex = currentNode.prefix.length;
       const params = [];
@@ -32448,39 +32478,39 @@ var require_find_my_way = __commonJS({
       this.trees = {};
       this.routes = [];
     };
-    Router.prototype.off = function off(method, path2, constraints) {
-      assert2(typeof path2 === "string", "Path should be a string");
-      assert2(path2.length > 0, "The path could not be empty");
-      assert2(path2[0] === "/" || path2[0] === "*", "The first character of a path should be `/` or `*`");
+    Router.prototype.off = function off(method, path3, constraints) {
+      assert2(typeof path3 === "string", "Path should be a string");
+      assert2(path3.length > 0, "The path could not be empty");
+      assert2(path3[0] === "/" || path3[0] === "*", "The first character of a path should be `/` or `*`");
       assert2(
         typeof constraints === "undefined" || typeof constraints === "object" && !Array.isArray(constraints) && constraints !== null,
         "Constraints should be an object or undefined."
       );
-      const optionalParamMatch = path2.match(OPTIONAL_PARAM_REGEXP);
+      const optionalParamMatch = path3.match(OPTIONAL_PARAM_REGEXP);
       if (optionalParamMatch) {
-        assert2(path2.length === optionalParamMatch.index + optionalParamMatch[0].length, "Optional Parameter needs to be the last parameter of the path");
-        const pathFull = path2.replace(OPTIONAL_PARAM_REGEXP, "$1$2");
-        const pathOptional = path2.replace(OPTIONAL_PARAM_REGEXP, "$2");
+        assert2(path3.length === optionalParamMatch.index + optionalParamMatch[0].length, "Optional Parameter needs to be the last parameter of the path");
+        const pathFull = path3.replace(OPTIONAL_PARAM_REGEXP, "$1$2");
+        const pathOptional = path3.replace(OPTIONAL_PARAM_REGEXP, "$2");
         this.off(method, pathFull, constraints);
         this.off(method, pathOptional, constraints);
         return;
       }
       if (this.ignoreDuplicateSlashes) {
-        path2 = removeDuplicateSlashes(path2);
+        path3 = removeDuplicateSlashes(path3);
       }
       if (this.ignoreTrailingSlash) {
-        path2 = trimLastSlash(path2);
+        path3 = trimLastSlash(path3);
       }
       const methods = Array.isArray(method) ? method : [method];
       for (const method2 of methods) {
-        this._off(method2, path2, constraints);
+        this._off(method2, path3, constraints);
       }
     };
-    Router.prototype._off = function _off(method, path2, constraints) {
+    Router.prototype._off = function _off(method, path3, constraints) {
       assert2(typeof method === "string", "Method should be a string");
       assert2(httpMethods.includes(method), `Method '${method}' is not an http method.`);
       function matcherWithoutConstraints(route) {
-        return method !== route.method || path2 !== route.path;
+        return method !== route.method || path3 !== route.path;
       }
       function matcherWithConstraints(route) {
         return matcherWithoutConstraints(route) || !deepEqual(constraints, route.opts.constraints || {});
@@ -32517,37 +32547,37 @@ var require_find_my_way = __commonJS({
       if (handle === null) return this._defaultRoute(req, res, ctx);
       return ctx === void 0 ? handle.handler(req, res, handle.params, handle.store, handle.searchParams) : handle.handler.call(ctx, req, res, handle.params, handle.store, handle.searchParams);
     };
-    Router.prototype.find = function find(method, path2, derivedConstraints) {
+    Router.prototype.find = function find(method, path3, derivedConstraints) {
       let currentNode = this.trees[method];
       if (currentNode === void 0) return null;
-      if (path2.charCodeAt(0) !== 47) {
-        path2 = path2.replace(FULL_PATH_REGEXP, "/");
+      if (path3.charCodeAt(0) !== 47) {
+        path3 = path3.replace(FULL_PATH_REGEXP, "/");
       }
       if (this.ignoreDuplicateSlashes) {
-        path2 = removeDuplicateSlashes(path2);
+        path3 = removeDuplicateSlashes(path3);
       }
       let sanitizedUrl;
       let querystring2;
       let shouldDecodeParam;
       try {
-        sanitizedUrl = safeDecodeURI(path2, this.useSemicolonDelimiter);
-        path2 = sanitizedUrl.path;
+        sanitizedUrl = safeDecodeURI(path3, this.useSemicolonDelimiter);
+        path3 = sanitizedUrl.path;
         querystring2 = sanitizedUrl.querystring;
         shouldDecodeParam = sanitizedUrl.shouldDecodeParam;
       } catch (error48) {
-        return this._onBadUrl(path2);
+        return this._onBadUrl(path3);
       }
       if (this.ignoreTrailingSlash) {
-        path2 = trimLastSlash(path2);
+        path3 = trimLastSlash(path3);
       }
-      const originPath = path2;
+      const originPath = path3;
       if (this.caseSensitive === false) {
-        path2 = path2.toLowerCase();
+        path3 = path3.toLowerCase();
       }
       const maxParamLength = this.maxParamLength;
       let pathIndex = currentNode.prefix.length;
       const params = [];
-      const pathLen = path2.length;
+      const pathLen = path3.length;
       const brothersNodesStack = [];
       while (true) {
         if (pathIndex === pathLen && currentNode.isLeafNode) {
@@ -32561,7 +32591,7 @@ var require_find_my_way = __commonJS({
             };
           }
         }
-        let node = currentNode.getNextNode(path2, pathIndex, brothersNodesStack, params.length);
+        let node = currentNode.getNextNode(path3, pathIndex, brothersNodesStack, params.length);
         if (node === null) {
           if (brothersNodesStack.length === 0) {
             return null;
@@ -32615,8 +32645,8 @@ var require_find_my_way = __commonJS({
     Router.prototype._rebuild = function(routes) {
       this.reset();
       for (const route of routes) {
-        const { method, path: path2, opts, handler, store } = route;
-        this._on(method, path2, opts, handler, store);
+        const { method, path: path3, opts, handler, store } = route;
+        this._on(method, path3, opts, handler, store);
       }
     };
     Router.prototype._defaultRoute = function(req, res, ctx) {
@@ -32627,13 +32657,13 @@ var require_find_my_way = __commonJS({
         res.end();
       }
     };
-    Router.prototype._onBadUrl = function(path2) {
+    Router.prototype._onBadUrl = function(path3) {
       if (this.onBadUrl === null) {
         return null;
       }
       const onBadUrl = this.onBadUrl;
       return {
-        handler: (req, res, ctx) => onBadUrl(path2, req, res),
+        handler: (req, res, ctx) => onBadUrl(path3, req, res),
         params: {},
         store: null
       };
@@ -32665,25 +32695,25 @@ var require_find_my_way = __commonJS({
       if (!httpMethods.hasOwnProperty(i)) continue;
       const m = httpMethods[i];
       const methodName = m.toLowerCase();
-      Router.prototype[methodName] = function(path2, handler, store) {
-        return this.on(m, path2, handler, store);
+      Router.prototype[methodName] = function(path3, handler, store) {
+        return this.on(m, path3, handler, store);
       };
     }
-    Router.prototype.all = function(path2, handler, store) {
-      this.on(httpMethods, path2, handler, store);
+    Router.prototype.all = function(path3, handler, store) {
+      this.on(httpMethods, path3, handler, store);
     };
     module.exports = Router;
     function escapeRegExp(string4) {
       return string4.replace(ESCAPE_REGEXP, "\\$&");
     }
-    function removeDuplicateSlashes(path2) {
-      return path2.indexOf("//") !== -1 ? path2.replace(REMOVE_DUPLICATE_SLASHES_REGEXP, "/") : path2;
+    function removeDuplicateSlashes(path3) {
+      return path3.indexOf("//") !== -1 ? path3.replace(REMOVE_DUPLICATE_SLASHES_REGEXP, "/") : path3;
     }
-    function trimLastSlash(path2) {
-      if (path2.length > 1 && path2.charCodeAt(path2.length - 1) === 47) {
-        return path2.slice(0, -1);
+    function trimLastSlash(path3) {
+      if (path3.length > 1 && path3.charCodeAt(path3.length - 1) === 47) {
+        return path3.slice(0, -1);
       }
-      return path2;
+      return path3;
     }
     function trimRegExpStartAndEnd(regexString) {
       if (regexString.charCodeAt(1) === 94) {
@@ -32694,22 +32724,22 @@ var require_find_my_way = __commonJS({
       }
       return regexString;
     }
-    function getClosingParenthensePosition(path2, idx) {
+    function getClosingParenthensePosition(path3, idx) {
       let parentheses = 1;
-      while (idx < path2.length) {
+      while (idx < path3.length) {
         idx++;
-        if (path2.charCodeAt(idx) === 92) {
+        if (path3.charCodeAt(idx) === 92) {
           idx++;
           continue;
         }
-        if (path2.charCodeAt(idx) === 41) {
+        if (path3.charCodeAt(idx) === 41) {
           parentheses--;
-        } else if (path2.charCodeAt(idx) === 40) {
+        } else if (path3.charCodeAt(idx) === 40) {
           parentheses++;
         }
         if (!parentheses) return idx;
       }
-      throw new TypeError('Invalid regexp expression in "' + path2 + '"');
+      throw new TypeError('Invalid regexp expression in "' + path3 + '"');
     }
     function defaultBuildPrettyMeta(route) {
       if (!route) return {};
@@ -32946,12 +32976,12 @@ var require_route = __commonJS({
       function route({ options: options2, isFastify }) {
         throwIfAlreadyStarted("Cannot add route!");
         const opts = { ...options2 };
-        const path2 = opts.url || opts.path || "";
+        const path3 = opts.url || opts.path || "";
         if (!opts.handler) {
-          throw new FST_ERR_ROUTE_MISSING_HANDLER(opts.method, path2);
+          throw new FST_ERR_ROUTE_MISSING_HANDLER(opts.method, path3);
         }
         if (opts.errorHandler !== void 0 && typeof opts.errorHandler !== "function") {
-          throw new FST_ERR_ROUTE_HANDLER_NOT_FN(opts.method, path2);
+          throw new FST_ERR_ROUTE_HANDLER_NOT_FN(opts.method, path3);
         }
         validateBodyLimitOption(opts.bodyLimit);
         validateHandlerTimeoutOption(opts.handlerTimeout);
@@ -32961,22 +32991,22 @@ var require_route = __commonJS({
         if (Array.isArray(opts.method)) {
           for (let i = 0; i < opts.method.length; ++i) {
             opts.method[i] = normalizeAndValidateMethod.call(this, opts.method[i]);
-            validateSchemaBodyOption.call(this, opts.method[i], path2, opts.schema);
+            validateSchemaBodyOption.call(this, opts.method[i], path3, opts.schema);
             isGetRoute = opts.method.includes("GET");
             isHeadRoute = opts.method.includes("HEAD");
           }
         } else {
           opts.method = normalizeAndValidateMethod.call(this, opts.method);
-          validateSchemaBodyOption.call(this, opts.method, path2, opts.schema);
+          validateSchemaBodyOption.call(this, opts.method, path3, opts.schema);
           isGetRoute = opts.method === "GET";
           isHeadRoute = opts.method === "HEAD";
         }
         const headOpts = shouldExposeHead && isGetRoute ? { ...options2 } : null;
         const prefix = this[kRoutePrefix];
-        if (path2 === "/" && prefix.length > 0 && opts.method !== "HEAD") {
+        if (path3 === "/" && prefix.length > 0 && opts.method !== "HEAD") {
           switch (opts.prefixTrailingSlash) {
             case "slash":
-              addNewRoute.call(this, { path: path2, isFastify });
+              addNewRoute.call(this, { path: path3, isFastify });
               break;
             case "no-slash":
               addNewRoute.call(this, { path: "", isFastify });
@@ -32985,20 +33015,20 @@ var require_route = __commonJS({
             default:
               addNewRoute.call(this, { path: "", isFastify });
               if (ignoreTrailingSlash !== true && (ignoreDuplicateSlashes !== true || !prefix.endsWith("/"))) {
-                addNewRoute.call(this, { path: path2, prefixing: true, isFastify });
+                addNewRoute.call(this, { path: path3, prefixing: true, isFastify });
               }
           }
-        } else if (path2[0] === "/" && prefix.endsWith("/")) {
-          addNewRoute.call(this, { path: path2.slice(1), isFastify });
+        } else if (path3[0] === "/" && prefix.endsWith("/")) {
+          addNewRoute.call(this, { path: path3.slice(1), isFastify });
         } else {
-          addNewRoute.call(this, { path: path2, isFastify });
+          addNewRoute.call(this, { path: path3, isFastify });
         }
         return this;
-        function addNewRoute({ path: path3, prefixing = false, isFastify: isFastify2 = false }) {
-          const url2 = prefix + path3;
+        function addNewRoute({ path: path4, prefixing = false, isFastify: isFastify2 = false }) {
+          const url2 = prefix + path4;
           opts.url = url2;
           opts.path = url2;
-          opts.routePath = path3;
+          opts.routePath = path4;
           opts.prefix = prefix;
           opts.logLevel = opts.logLevel || this[kLogLevel];
           if (this[kLogSerializers] || opts.logSerializers) {
@@ -33128,7 +33158,7 @@ var require_route = __commonJS({
           });
           if (shouldExposeHead && isGetRoute && !isHeadRoute && !hasHEADHandler) {
             const onSendHandlers = parseHeadOnSendHandlers(headOpts.onSend);
-            prepareRoute.call(this, { method: "HEAD", url: path3, options: { ...headOpts, onSend: onSendHandlers }, isFastify: true });
+            prepareRoute.call(this, { method: "HEAD", url: path4, options: { ...headOpts, onSend: onSendHandlers }, isFastify: true });
           }
         }
       }
@@ -33252,9 +33282,9 @@ var require_route = __commonJS({
       }
       return method;
     }
-    function validateSchemaBodyOption(method, path2, schema) {
+    function validateSchemaBodyOption(method, path3, schema) {
       if (this[kSupportedHTTPMethods].bodyless.has(method) && schema?.body) {
-        throw new FST_ERR_ROUTE_BODY_VALIDATION_SCHEMA_NOT_SUPPORTED(method, path2);
+        throw new FST_ERR_ROUTE_BODY_VALIDATION_SCHEMA_NOT_SUPPORTED(method, path3);
       }
     }
     function validateBodyLimitOption(bodyLimit) {
@@ -33353,7 +33383,7 @@ var require_four_oh_four = __commonJS({
         });
       }
       function createOnBadUrl() {
-        return function onBadUrl(path2, req, res) {
+        return function onBadUrl(path3, req, res) {
           const fourOhFourContext = this[kFourOhFourLevelInstance][kFourOhFourContext];
           const id = getGenReqId(fourOhFourContext.server, req);
           const childLogger = createChildLogger(fourOhFourContext, logger, req, id);
@@ -37212,7 +37242,7 @@ var require_fastify = __commonJS({
         }
         fourOhFour.router.lookup(req, res);
       }
-      function onBadUrl(path2, req, res) {
+      function onBadUrl(path3, req, res) {
         if (options.frameworkErrors) {
           const id = getGenReqId(onBadUrlContext.server, req);
           const childLogger = createChildLogger(onBadUrlContext, options.logger, req, id);
@@ -37222,12 +37252,12 @@ var require_fastify = __commonJS({
           if (resolvedDisableRequestLogging === false) {
             childLogger.info({ req: request }, "incoming request");
           }
-          return options.frameworkErrors(new FST_ERR_BAD_URL(path2), request, reply);
+          return options.frameworkErrors(new FST_ERR_BAD_URL(path3), request, reply);
         }
         const body = JSON.stringify({
           error: "Bad Request",
           code: "FST_ERR_BAD_URL",
-          message: `'${path2}' is not a valid url component`,
+          message: `'${path3}' is not a valid url component`,
           statusCode: 400
         });
         res.writeHead(400, {
@@ -39137,10 +39167,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path2) {
-  if (!path2)
+function getElementAtPath(obj, path3) {
+  if (!path3)
     return obj;
-  return path2.reduce((acc, key) => acc?.[key], obj);
+  return path3.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -39452,11 +39482,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path2, issues) {
+function prefixIssues(path3, issues) {
   return issues.map((iss) => {
     var _a2;
     (_a2 = iss).path ?? (_a2.path = []);
-    iss.path.unshift(path2);
+    iss.path.unshift(path3);
     return iss;
   });
 }
@@ -39698,7 +39728,7 @@ function formatError(error48, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error48, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error49, path2 = []) => {
+  const processError = (error49, path3 = []) => {
     var _a2, _b;
     for (const issue2 of error49.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
@@ -39708,7 +39738,7 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
       } else if (issue2.code === "invalid_element") {
         processError({ issues: issue2.issues }, issue2.path);
       } else {
-        const fullpath = [...path2, ...issue2.path];
+        const fullpath = [...path3, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -39740,8 +39770,8 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path2 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path2) {
+  const path3 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path3) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -52435,13 +52465,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path2 = ref.slice(1).split("/").filter(Boolean);
-  if (path2.length === 0) {
+  const path3 = ref.slice(1).split("/").filter(Boolean);
+  if (path3.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path2[0] === defsKey) {
-    const key = path2[1];
+  if (path3[0] === defsKey) {
+    const key = path3[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -55868,8 +55898,8 @@ var init_parseUtil = __esm({
     init_errors3();
     init_en2();
     makeIssue = (params) => {
-      const { data, path: path2, errorMaps, issueData } = params;
-      const fullPath = [...path2, ...issueData.path || []];
+      const { data, path: path3, errorMaps, issueData } = params;
+      const fullPath = [...path3, ...issueData.path || []];
       const fullIssue = {
         ...issueData,
         path: fullPath
@@ -56149,11 +56179,11 @@ var init_types2 = __esm({
     init_parseUtil();
     init_util2();
     ParseInputLazyPath = class {
-      constructor(parent, value, path2, key) {
+      constructor(parent, value, path3, key) {
         this._cachedPath = [];
         this.parent = parent;
         this.data = value;
-        this._path = path2;
+        this._path = path3;
         this._key = key;
       }
       get path() {
@@ -63901,7 +63931,7 @@ var init_mcp = __esm({
 
 // src/embedding/service.ts
 import { spawnSync } from "child_process";
-import { existsSync as existsSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3 } from "fs";
+import { existsSync as existsSync3, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3 } from "fs";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { dirname, join as join2 } from "path";
@@ -63940,12 +63970,12 @@ var init_service = __esm({
       autoInstall() {
         const embeddingsDir = resolveEmbeddingsDir();
         const nodeModulesDir = join2(embeddingsDir, "node_modules");
-        if (existsSync2(join2(nodeModulesDir, "@huggingface", "transformers"))) {
+        if (existsSync3(join2(nodeModulesDir, "@huggingface", "transformers"))) {
           return true;
         }
         mkdirSync3(embeddingsDir, { recursive: true });
         const pkgJsonPath = join2(embeddingsDir, "package.json");
-        if (!existsSync2(pkgJsonPath)) {
+        if (!existsSync3(pkgJsonPath)) {
           writeFileSync2(pkgJsonPath, JSON.stringify({
             private: true,
             type: "module",
@@ -63985,7 +64015,7 @@ var init_service = __esm({
       async importTransformers() {
         const embeddingsDir = resolveEmbeddingsDir();
         const embeddingsNodeModules = join2(embeddingsDir, "node_modules");
-        if (existsSync2(join2(embeddingsNodeModules, "@huggingface", "transformers"))) {
+        if (existsSync3(join2(embeddingsNodeModules, "@huggingface", "transformers"))) {
           try {
             const require2 = createRequire(join2(embeddingsDir, "index.js"));
             return require2("@huggingface/transformers");
@@ -64184,7 +64214,7 @@ var init_enrichment = __esm({
 });
 
 // src/memory/audit.ts
-import { readdirSync, statSync, readFileSync as readFileSync2, existsSync as existsSync3 } from "fs";
+import { readdirSync, statSync, readFileSync as readFileSync3, existsSync as existsSync4 } from "fs";
 import { join as join3 } from "path";
 import { homedir as homedir3 } from "os";
 function parseFrontmatter(content) {
@@ -64228,7 +64258,7 @@ function scanMemoryDirectory(projectDir, dashedPath, isCurrentProject) {
     isCurrent: isCurrentProject,
     files: []
   };
-  if (!existsSync3(memoryDir)) {
+  if (!existsSync4(memoryDir)) {
     return stats;
   }
   let entries;
@@ -64249,7 +64279,7 @@ function scanMemoryDirectory(projectDir, dashedPath, isCurrentProject) {
     }
     let content = "";
     try {
-      content = readFileSync2(filePath, "utf-8");
+      content = readFileSync3(filePath, "utf-8");
     } catch {
     }
     const { name, description, type } = parseFrontmatter(content);
@@ -64302,7 +64332,7 @@ function auditMemoryDirectories(projectPath) {
     const isChildMatch = remainder.startsWith("-");
     if (!isExactMatch && !isChildMatch) continue;
     const memoryDir = join3(fullProjectDir, "memory");
-    if (!existsSync3(memoryDir)) continue;
+    if (!existsSync4(memoryDir)) continue;
     const dirStats = scanMemoryDirectory(fullProjectDir, entry, isExactMatch);
     if (isExactMatch) {
       current.push(dirStats);
@@ -64393,9 +64423,9 @@ import {
   copyFileSync,
   mkdirSync as mkdirSync4,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync3,
+  readFileSync as readFileSync4,
   writeFileSync as writeFileSync3,
-  existsSync as existsSync4
+  existsSync as existsSync5
 } from "fs";
 import { join as join4 } from "path";
 import { homedir as homedir4 } from "os";
@@ -64455,7 +64485,7 @@ function rebuildMemoryIndex(memoryDir, projectPath) {
     const filePath = join4(memoryDir, filename);
     let content = "";
     try {
-      content = readFileSync3(filePath, "utf-8");
+      content = readFileSync4(filePath, "utf-8");
     } catch {
       continue;
     }
@@ -64488,7 +64518,7 @@ function consolidateMemories(projectPath, dryRun = true, includeStale = false) {
   const claudeProjectsDir = join4(homedir4(), ".claude", "projects");
   const parentMemoryDir = join4(claudeProjectsDir, parentDashedPath, "memory");
   const existingInParent = /* @__PURE__ */ new Set();
-  if (existsSync4(parentMemoryDir)) {
+  if (existsSync5(parentMemoryDir)) {
     try {
       for (const f of readdirSync2(parentMemoryDir)) {
         existingInParent.add(f);
@@ -64813,7 +64843,7 @@ var init_git = __esm({
 });
 
 // src/utils/find-project-root.ts
-import { existsSync as existsSync5 } from "fs";
+import { existsSync as existsSync6 } from "fs";
 import { homedir as homedir5 } from "os";
 import { dirname as dirname2, join as join5 } from "path";
 function getMarkers() {
@@ -64828,14 +64858,14 @@ function findProjectRoot(cwd) {
   let current = cwd;
   while (current !== home && current !== dirname2(current)) {
     for (const marker of markers) {
-      if (existsSync5(join5(current, marker))) {
+      if (existsSync6(join5(current, marker))) {
         return current;
       }
     }
     current = dirname2(current);
   }
   for (const marker of markers) {
-    if (existsSync5(join5(home, marker))) {
+    if (existsSync6(join5(home, marker))) {
       return home;
     }
   }
@@ -64874,8 +64904,8 @@ __export(remote_client_exports, {
   remoteSavePrompt: () => remoteSavePrompt
 });
 import { randomUUID as randomUUID2 } from "crypto";
-async function post(client, path2, body) {
-  const response = await fetch(`${client.url}${path2}`, {
+async function post(client, path3, body) {
+  const response = await fetch(`${client.url}${path3}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -64885,7 +64915,7 @@ async function post(client, path2, body) {
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Remote ${path2} returned ${response.status}: ${text}`);
+    throw new Error(`Remote ${path3} returned ${response.status}: ${text}`);
   }
   return response.json().catch(() => ({}));
 }
@@ -65027,11 +65057,1173 @@ var init_remote_client = __esm({
   }
 });
 
+// src/utils/sanitize.ts
+function stripPrivateTags(content) {
+  let result = "";
+  let i = 0;
+  const openTag = "<private>";
+  const closeTag = "</private>";
+  while (i < content.length) {
+    const remainingLength = content.length - i;
+    if (remainingLength >= openTag.length && content.substring(i, i + openTag.length) === openTag) {
+      const closeIndex = content.indexOf(closeTag, i + openTag.length);
+      if (closeIndex !== -1) {
+        result += "[REDACTED]";
+        i = closeIndex + closeTag.length;
+      } else {
+        result += "[REDACTED]";
+        i = content.length;
+      }
+      continue;
+    }
+    result += content[i];
+    i++;
+  }
+  return result;
+}
+function sanitizeSensitiveData(content) {
+  let sanitized = content;
+  for (const { pattern, replacement } of SENSITIVE_PATTERNS) {
+    if (typeof replacement === "function") {
+      sanitized = sanitized.replace(pattern, replacement);
+    } else {
+      sanitized = sanitized.replace(pattern, replacement);
+    }
+  }
+  return sanitized;
+}
+function sanitizeContent(content) {
+  let sanitized = stripPrivateTags(content);
+  sanitized = sanitizeSensitiveData(sanitized);
+  return sanitized;
+}
+function estimateTokens(text) {
+  return Math.ceil(text.length / 4);
+}
+var SENSITIVE_PATTERNS;
+var init_sanitize = __esm({
+  "src/utils/sanitize.ts"() {
+    "use strict";
+    SENSITIVE_PATTERNS = [
+      // API keys
+      { pattern: /\b(sk|pk|api|token)[-_]?[a-zA-Z0-9]{20,}\b/gi, replacement: "[API_KEY_REDACTED]" },
+      // AWS credentials
+      { pattern: /\bAKIA[0-9A-Z]{16}\b/g, replacement: "[AWS_KEY_REDACTED]" },
+      {
+        pattern: /aws_secret_access_key\s*=\s*[^\s]+/gi,
+        replacement: "aws_secret_access_key=[REDACTED]"
+      },
+      // JWT tokens (basic pattern - 3 base64 segments separated by dots)
+      {
+        pattern: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g,
+        replacement: "[JWT_REDACTED]"
+      },
+      // URLs with embedded credentials
+      {
+        pattern: /(\w+):\/\/[^:]+:[^@]+@[^\s]+/gi,
+        replacement: (match) => {
+          try {
+            const url2 = new URL(match);
+            return `${url2.protocol}//${url2.hostname}${url2.pathname}`;
+          } catch {
+            return "[URL_WITH_CREDENTIALS_REDACTED]";
+          }
+        }
+      },
+      // Environment variables with common secret names
+      {
+        pattern: /(PASSWORD|SECRET|TOKEN|KEY|CREDENTIALS?)\s*[:=]\s*['"]?([^\s'"]+)['"]?/gi,
+        replacement: "$1=[REDACTED]"
+      },
+      // Private keys
+      {
+        pattern: /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
+        replacement: "[PRIVATE_KEY_REDACTED]"
+      }
+    ];
+  }
+});
+
+// src/capture/processor.ts
+function shouldUseReducedLimits(toolName, toolInput) {
+  if (toolName !== "Bash") return false;
+  const input = toolInput;
+  const command = typeof input?.command === "string" ? input.command : "";
+  if (command.includes("psql")) {
+    return true;
+  }
+  if (command.includes("sqlite3")) {
+    return true;
+  }
+  if (command.startsWith("ssh ") && (command.includes(" cat ") || command.includes(" logs "))) {
+    return true;
+  }
+  if (command.includes("pytest") || command.includes("python -m pytest")) {
+    return true;
+  }
+  if (command.includes("npm run") && (command.includes("test") || command.includes("build"))) {
+    return true;
+  }
+  if (/^(ls|du|df|wc|find)\s/.test(command) || command === "ls" || command === "du" || command === "df") {
+    return true;
+  }
+  if (/^python3?\s+-c\s+/.test(command)) {
+    return true;
+  }
+  return false;
+}
+function extractFilesTouched(toolName, toolInput, toolResponse) {
+  const files = [];
+  if (toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const pathFields = ["file_path", "path", "filepath", "file"];
+    for (const field of pathFields) {
+      if (typeof input[field] === "string") {
+        files.push(input[field]);
+      }
+    }
+  }
+  return [...new Set(files)];
+}
+function extractBashStats(output) {
+  const stats = {};
+  const exitCodeMatch = output.match(/exit\s+code:?\s*(\d+)/i);
+  if (exitCodeMatch && exitCodeMatch[1]) {
+    stats.exit_code = parseInt(exitCodeMatch[1], 10);
+  }
+  return Object.keys(stats).length > 0 ? stats : void 0;
+}
+function extractGrepStats(output, toolInput) {
+  const stats = {};
+  const lines = output.split("\n").filter((line) => line.trim().length > 0);
+  stats.match_count = lines.length;
+  return stats;
+}
+function extractGlobStats(output) {
+  const stats = {};
+  const lines = output.split("\n").filter((line) => line.trim().length > 0);
+  stats.file_count = lines.length;
+  return stats;
+}
+function extractOutput(output, toolName, toolInput) {
+  const originalLength = output.length;
+  const lineCount = output.split("\n").length;
+  const useReduced = shouldUseReducedLimits(toolName, toolInput);
+  const thresholds = useReduced ? REDUCED_OUTPUT_THRESHOLDS : OUTPUT_THRESHOLDS;
+  let toolSpecific;
+  switch (toolName) {
+    case "Bash":
+      toolSpecific = extractBashStats(output);
+      break;
+    case "Grep":
+      toolSpecific = extractGrepStats(output, toolInput);
+      break;
+    case "Glob":
+      toolSpecific = extractGlobStats(output);
+      break;
+  }
+  if (originalLength <= thresholds.FULL_STORAGE_LIMIT) {
+    return {
+      stored_output: output,
+      output_stats: {
+        original_length: originalLength,
+        line_count: lineCount,
+        truncated: false,
+        tool_specific: toolSpecific
+      }
+    };
+  }
+  const head = output.substring(0, thresholds.HEAD_SIZE);
+  const tail = output.substring(output.length - thresholds.TAIL_SIZE);
+  const omittedChars = originalLength - thresholds.HEAD_SIZE - thresholds.TAIL_SIZE;
+  const storedOutput = `${head}
+[... ${omittedChars} chars omitted ...]
+${tail}`;
+  return {
+    stored_output: storedOutput,
+    output_stats: {
+      original_length: originalLength,
+      line_count: lineCount,
+      truncated: true,
+      tool_specific: toolSpecific
+    }
+  };
+}
+function summarizeRead(input, response) {
+  const filePath = input.file_path;
+  const fileName = filePath.split("/").pop() || filePath;
+  const ext = fileName.split(".").pop()?.toLowerCase();
+  let typeHint = "";
+  if (ext) {
+    const typeMap = {
+      ts: "TypeScript",
+      js: "JavaScript",
+      py: "Python",
+      md: "Markdown",
+      json: "JSON",
+      yml: "YAML",
+      yaml: "YAML",
+      sql: "SQL",
+      sh: "Shell script",
+      rs: "Rust",
+      go: "Go"
+    };
+    typeHint = typeMap[ext] || ext.toUpperCase();
+  }
+  return `Read ${fileName}${typeHint ? ` (${typeHint})` : ""}`;
+}
+function summarizeWrite(input, response) {
+  const filePath = input.file_path;
+  const fileName = filePath.split("/").pop() || filePath;
+  const isNew = response?.toLowerCase().includes("created");
+  return `${isNew ? "Created" : "Updated"} ${fileName}`;
+}
+function summarizeEdit(input, response) {
+  const filePath = input.file_path;
+  const fileName = filePath.split("/").pop() || filePath;
+  const oldString = input.old_string || "";
+  const newString = input.new_string || "";
+  if (!oldString && !newString) return `Edited ${fileName}`;
+  const oldLines = oldString.split("\n").map((l) => l.trim()).filter(Boolean);
+  const newLines = newString.split("\n").map((l) => l.trim()).filter(Boolean);
+  const oldSet = new Set(oldLines);
+  const newSet = new Set(newLines);
+  const addedLines = newLines.filter((l) => !oldSet.has(l));
+  const removedLines = oldLines.filter((l) => !newSet.has(l));
+  for (const line of addedLines) {
+    const funcMatch = line.match(
+      /(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|interface|type)\s+(\w+)/
+    );
+    if (funcMatch) return `Edited ${fileName}: Added ${funcMatch[0].substring(0, 60)}`;
+    const importMatch = line.match(/import\s+.+from\s+['"](.+?)['"]/);
+    if (importMatch) return `Edited ${fileName}: Added import from '${importMatch[1]}'`;
+    const typeMatch = line.match(/(?:interface|type)\s+(\w+)/);
+    if (typeMatch) return `Edited ${fileName}: Added ${typeMatch[0]}`;
+    if (line.includes("CREATE TABLE") || line.includes("ALTER TABLE")) {
+      return `Edited ${fileName}: Schema ${line.substring(0, 50)}`;
+    }
+  }
+  const netLines = newLines.length - oldLines.length;
+  if (netLines > 3) return `Edited ${fileName}: Added ~${netLines} lines`;
+  if (netLines < -3) return `Edited ${fileName}: Removed ~${Math.abs(netLines)} lines`;
+  if (addedLines.length > 0) {
+    const hint = addedLines[0].substring(0, 60);
+    if (hint.length >= 8 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
+      return `Edited ${fileName}: ${hint}`;
+    }
+  }
+  if (removedLines.length > 0) {
+    const hint = removedLines[0].substring(0, 60);
+    if (hint.length >= 8 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
+      return `Edited ${fileName}: Changed ${hint}`;
+    }
+  }
+  return `Edited ${fileName}`;
+}
+function summarizeBash(input, response) {
+  const command = input.command || "";
+  const commandPreview = command.length > 60 ? command.substring(0, 60) + "..." : command;
+  if (command.startsWith("git ")) {
+    return `Git: ${commandPreview.substring(4)}`;
+  }
+  if (command.startsWith("npm ") || command.startsWith("yarn ")) {
+    return `Package manager: ${commandPreview}`;
+  }
+  if (command.startsWith("make ")) {
+    return `Make: ${commandPreview.substring(5)}`;
+  }
+  return `Bash: ${commandPreview}`;
+}
+function summarizeGrep(input, response) {
+  const pattern = input.pattern || "";
+  const path3 = input.path || ".";
+  const outputMode = input.output_mode || "files_with_matches";
+  const patternPreview = pattern.length > 30 ? pattern.substring(0, 30) + "..." : pattern;
+  if (outputMode === "count") {
+    return `Grep count: "${patternPreview}" in ${path3}`;
+  }
+  return `Grep: "${patternPreview}" in ${path3}`;
+}
+function summarizeGlob(input, response) {
+  const pattern = input.pattern || "";
+  const path3 = input.path || ".";
+  return `Glob: "${pattern}" in ${path3}`;
+}
+function summarizeTool(toolName, toolInput, toolResponse) {
+  let summary = `${toolName} tool invocation`;
+  if (!toolInput || typeof toolInput !== "object") {
+    return summary;
+  }
+  const input = toolInput;
+  switch (toolName) {
+    case "Read":
+      summary = summarizeRead(input, toolResponse);
+      break;
+    case "Write":
+      summary = summarizeWrite(input, toolResponse);
+      break;
+    case "Edit":
+      summary = summarizeEdit(input, toolResponse);
+      break;
+    case "Bash":
+      summary = summarizeBash(input, toolResponse);
+      break;
+    case "Grep":
+      summary = summarizeGrep(input, toolResponse);
+      break;
+    case "Glob":
+      summary = summarizeGlob(input, toolResponse);
+      break;
+    default:
+      summary = `${toolName} invocation`;
+  }
+  return summary;
+}
+function isNearNoOpEdit(input) {
+  const oldStr = typeof input.old_string === "string" ? input.old_string : "";
+  const newStr = typeof input.new_string === "string" ? input.new_string : "";
+  if (!oldStr && !newStr) return false;
+  if (oldStr.replace(/\s/g, "") === newStr.replace(/\s/g, "")) return true;
+  const oldLines = oldStr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const newLines = newStr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const oldSet = new Set(oldLines);
+  const addedLines = newLines.filter((l) => !oldSet.has(l));
+  if (addedLines.length === 0) return true;
+  return addedLines.every((l) => /^(\/\/|#|\/\*|\*|\*\/)/.test(l));
+}
+function parseExitCode(toolResponse) {
+  const match = toolResponse.match(/exit\s+code:?\s*(\d+)/i);
+  if (match?.[1]) {
+    const code = parseInt(match[1], 10);
+    return isNaN(code) ? null : code;
+  }
+  return null;
+}
+function detectLessonType(toolName, toolResponse) {
+  if (toolName === "Bash") {
+    const exitCode = parseExitCode(toolResponse);
+    if (exitCode !== null && exitCode !== 0) {
+      if (exitCode === 126 || exitCode === 127) return "permission_denied";
+      if (toolResponse.includes("npm ERR!") || toolResponse.includes("error TS") || toolResponse.includes("build failed") || toolResponse.includes("FAILED")) return "build_failure";
+      if (toolResponse.includes("FAIL ") || toolResponse.includes("\u25CF ") || toolResponse.includes("AssertionError") || toolResponse.includes("test failed")) return "test_failure";
+      return "error";
+    }
+  }
+  if (ACTION_TOOLS.has(toolName)) {
+    if (toolResponse.includes("Error:") || toolResponse.includes("error TS") || toolResponse.includes("npm ERR!") || toolResponse.includes("FAILED")) {
+      if (toolResponse.includes("error TS") || toolResponse.includes("build failed")) return "build_failure";
+      if (toolResponse.includes("FAIL ") || toolResponse.includes("AssertionError")) return "test_failure";
+      return "error";
+    }
+  }
+  return null;
+}
+function inferTags(toolName, files, command) {
+  const tags = /* @__PURE__ */ new Set();
+  for (const file2 of files) {
+    for (const rule of TAG_FILE_RULES) {
+      if (rule.patterns.some((p) => p.test(file2))) {
+        tags.add(rule.tag);
+      }
+    }
+  }
+  if (toolName === "Bash" && command) {
+    for (const rule of TAG_BASH_RULES) {
+      if (rule.pattern.test(command)) {
+        tags.add(rule.tag);
+      }
+    }
+  }
+  return [...tags];
+}
+function calculateImportance(toolName, toolInput, toolResponse, filesTouched) {
+  let score;
+  const input = toolInput && typeof toolInput === "object" ? toolInput : {};
+  const command = typeof input.command === "string" ? input.command : "";
+  switch (toolName) {
+    case "Edit": {
+      const editInput = toolInput;
+      const editFilePath = typeof editInput?.file_path === "string" ? editInput.file_path : "";
+      if (editFilePath && isVersionBump(editFilePath)) {
+        score = 0.4;
+      } else if (editInput && isNearNoOpEdit(editInput)) {
+        score = 0.15;
+      } else {
+        score = 0.8;
+      }
+      break;
+    }
+    case "Write":
+      score = 0.8;
+      break;
+    case "Bash": {
+      if (/^git\s+(commit|merge|rebase|cherry-pick)\b/.test(command)) {
+        score = 0.9;
+      } else if (/\b(npm\s+(run\s+)?test|pytest|cargo\s+test|go\s+test)\b/.test(command)) {
+        score = 0.7;
+      } else if (/\b(npm\s+(run\s+)?build|cargo\s+build|make\s+|go\s+build)\b/.test(command)) {
+        score = 0.55;
+      } else if (/\bnpm\s+version\b/.test(command)) {
+        score = 0.4;
+      } else if (/\b(npm\s+install|yarn\s+add|pip\s+install|cargo\s+add|go\s+get)\b/.test(command)) {
+        score = 0.75;
+      } else if (/^git\s+(status|log|diff|show)\b/.test(command)) {
+        score = 0.35;
+      } else if (/^(cat|head|tail)\s+/.test(command)) {
+        score = 0.2;
+      } else if (/^(ls|du|df|wc|find)\s/.test(command) || /^(ls|du|df)$/.test(command)) {
+        score = 0.2;
+      } else if (command.includes("sqlite3") || command.includes("psql")) {
+        score = 0.35;
+      } else if (/^python3?\s+-c\s+/.test(command)) {
+        score = 0.3;
+      } else {
+        score = 0.5;
+      }
+      break;
+    }
+    case "Read":
+      score = 0.3;
+      break;
+    case "Grep":
+      score = 0.25;
+      break;
+    case "Glob":
+      score = 0.2;
+      break;
+    case "NotebookEdit":
+      score = 0.75;
+      break;
+    default:
+      score = 0.5;
+  }
+  if (toolResponse) {
+    const responseLower = toolResponse.toLowerCase();
+    if (responseLower.includes("error") || responseLower.includes("failed") || responseLower.includes("exception") || responseLower.includes("fatal")) {
+      score += 0.25;
+    }
+  }
+  const allFiles = [
+    ...filesTouched || [],
+    typeof input.file_path === "string" ? input.file_path : "",
+    typeof input.path === "string" ? input.path : ""
+  ].filter(Boolean);
+  for (const file2 of allFiles) {
+    if (CONFIG_FILE_PATTERNS.some((p) => p.test(file2))) {
+      score += 0.15;
+      break;
+    }
+  }
+  for (const file2 of allFiles) {
+    if (TEST_FILE_PATTERNS.some((p) => p.test(file2))) {
+      score += 0.1;
+      break;
+    }
+  }
+  for (const file2 of allFiles) {
+    if (LOCK_FILE_PATTERNS.some((p) => p.test(file2))) {
+      score -= 0.3;
+      break;
+    }
+  }
+  score = Math.max(0, Math.min(1, score));
+  let importance;
+  if (score >= 0.65) {
+    importance = "high";
+  } else if (score >= 0.35) {
+    importance = "medium";
+  } else {
+    importance = "low";
+  }
+  return { importance, importance_score: Math.round(score * 100) / 100 };
+}
+function processToolCapture(capture) {
+  const sanitizedResponse = capture.tool_response ? sanitizeContent(capture.tool_response) : "";
+  const extracted = extractOutput(
+    sanitizedResponse,
+    capture.tool_name,
+    capture.tool_input
+  );
+  let summary = summarizeTool(
+    capture.tool_name,
+    capture.tool_input,
+    sanitizedResponse
+  );
+  const filesTouched = extractFilesTouched(
+    capture.tool_name,
+    capture.tool_input,
+    sanitizedResponse
+  );
+  const contentToEstimate = `${summary}
+${extracted.stored_output}`;
+  const tokenEstimate = estimateTokens(contentToEstimate);
+  let { importance, importance_score } = calculateImportance(
+    capture.tool_name,
+    capture.tool_input,
+    sanitizedResponse,
+    filesTouched
+  );
+  const rawFloor = parseFloat(process.env["CONTEXT_MANAGER_CAPTURE_FLOOR"] ?? "");
+  const captureFloor = isNaN(rawFloor) ? DEFAULT_CAPTURE_FLOOR : Math.min(Math.max(rawFloor, 0), 0.65);
+  if (importance_score < captureFloor) {
+    return { status: "skipped" };
+  }
+  if (capture.tool_name.startsWith("mcp__") && importance_score < MCP_SUMMARY_SCORE_THRESHOLD && summary.length > MCP_SUMMARY_TRUNCATE_CHARS) {
+    summary = summary.substring(0, MCP_SUMMARY_TRUNCATE_CHARS) + "...";
+  }
+  const lessonType = detectLessonType(capture.tool_name, sanitizedResponse);
+  if (lessonType !== null && importance_score < 0.85) {
+    importance_score = 0.85;
+    importance = "high";
+  }
+  const command = capture.tool_input && typeof capture.tool_input === "object" ? capture.tool_input.command : void 0;
+  const inferredTags = inferTags(capture.tool_name, filesTouched, command);
+  const tagsSet = new Set(inferredTags);
+  if (lessonType !== null) {
+    tagsSet.add("error");
+  }
+  const tags = [...tagsSet];
+  const sanitizedToolInput = capture.tool_input ? { ...capture.tool_input } : void 0;
+  if (sanitizedToolInput) {
+    if (capture.tool_name === "Edit" || capture.tool_name === "Write") {
+      delete sanitizedToolInput["old_string"];
+      delete sanitizedToolInput["new_string"];
+      delete sanitizedToolInput["content"];
+    }
+  }
+  const metadata = {
+    tool_input: sanitizedToolInput,
+    stored_output: extracted.stored_output,
+    output_stats: extracted.output_stats
+  };
+  let skill = null;
+  if (capture.tool_input && typeof capture.tool_input === "object") {
+    const ti = capture.tool_input;
+    if (capture.tool_name === "Skill" && typeof ti["skill"] === "string") {
+      skill = ti["skill"];
+    } else if ((capture.tool_name === "Agent" || capture.tool_name === "Task") && typeof ti["subagent_type"] === "string") {
+      skill = ti["subagent_type"];
+    }
+  }
+  return {
+    session_id: capture.session_id,
+    project: capture.project,
+    tool_name: capture.tool_name,
+    summary,
+    files_touched: filesTouched,
+    metadata,
+    token_estimate: tokenEstimate,
+    importance,
+    importance_score,
+    tags: tags.length > 0 ? tags : void 0,
+    lesson_type: lessonType ?? void 0,
+    skill,
+    created_at: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+var OUTPUT_THRESHOLDS, REDUCED_OUTPUT_THRESHOLDS, ACTION_TOOLS, TAG_FILE_RULES, TAG_BASH_RULES, CONFIG_FILE_PATTERNS, TEST_FILE_PATTERNS, LOCK_FILE_PATTERNS, DEFAULT_CAPTURE_FLOOR, MCP_SUMMARY_TRUNCATE_CHARS, MCP_SUMMARY_SCORE_THRESHOLD;
+var init_processor = __esm({
+  "src/capture/processor.ts"() {
+    "use strict";
+    init_sanitize();
+    init_version();
+    OUTPUT_THRESHOLDS = {
+      FULL_STORAGE_LIMIT: 800,
+      // chars - store full if under this (was 1500)
+      HEAD_SIZE: 400,
+      // chars - first N for long outputs (was 800)
+      TAIL_SIZE: 200,
+      // chars - last N for long outputs (was 400)
+      MAX_STORAGE: 700
+      // chars - absolute max stored (was 1600)
+    };
+    REDUCED_OUTPUT_THRESHOLDS = {
+      FULL_STORAGE_LIMIT: 300,
+      // chars - aggressive truncation
+      HEAD_SIZE: 150,
+      // chars - keep query/command visible
+      TAIL_SIZE: 100
+      // chars - minimal tail
+    };
+    ACTION_TOOLS = /* @__PURE__ */ new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
+    TAG_FILE_RULES = [
+      {
+        tag: "auth",
+        patterns: [
+          /\/auth\//i,
+          /\/authentication\//i,
+          /\/authorization\//i,
+          /auth\.(ts|js|py|go|rs)$/i,
+          /login\.(ts|js|py|go|rs)$/i,
+          /session\.(ts|js|py|go|rs)$/i,
+          /jwt\.(ts|js|py|go|rs)$/i,
+          /oauth/i,
+          /token/i,
+          /credential/i,
+          /password/i,
+          /ssh_config$/i,
+          /\.pem$/i,
+          /\.key$/i
+        ]
+      },
+      {
+        tag: "database",
+        patterns: [
+          /sqlite/i,
+          /postgres/i,
+          /mysql/i,
+          /mongodb/i,
+          /\/db\//i,
+          /\/database\//i,
+          /schema\.(ts|js|py|sql)$/i,
+          /migration/i,
+          /\.sql$/i,
+          /query\.(ts|js|py)$/i
+        ]
+      },
+      {
+        tag: "testing",
+        patterns: [
+          /\.test\./i,
+          /\.spec\./i,
+          /__tests__\//i,
+          /\/test\//i,
+          /\/tests\//i,
+          /\/e2e\//i
+        ]
+      },
+      {
+        tag: "git",
+        patterns: [
+          /\.gitignore$/i,
+          /\.gitattributes$/i,
+          /\.gitmodules$/i
+        ]
+      },
+      {
+        tag: "infra",
+        patterns: [
+          /Dockerfile$/i,
+          /docker-compose/i,
+          /\.github\//i,
+          /\/k8s\//i,
+          /\/kubernetes\//i,
+          /\/ansible\//i,
+          /\/terraform\//i,
+          /\.tf$/i,
+          /\.ya?ml$/,
+          /\/molecule\//i,
+          /ansible\.cfg$/i
+        ]
+      },
+      {
+        tag: "config",
+        patterns: [
+          /package\.json$/,
+          /tsconfig/i,
+          /pyproject\.toml$/,
+          /Makefile$/,
+          /\.env(\.\w+)?$/,
+          /webpack\.config\./,
+          /vite\.config\./,
+          /eslint/,
+          /prettier/,
+          /Cargo\.toml$/,
+          /go\.mod$/,
+          /requirements.*\.txt$/,
+          /setup\.py$/
+        ]
+      },
+      {
+        tag: "frontend",
+        patterns: [
+          /\/web\//i,
+          /\/client\//i,
+          /\/ui\//i,
+          /\/components\//i,
+          /\.html$/,
+          /\.css$/,
+          /\.scss$/,
+          /\.tsx$/,
+          /\.vue$/,
+          /\.svelte$/
+        ]
+      },
+      {
+        tag: "api",
+        patterns: [
+          /\/api\//i,
+          /\/routes\//i,
+          /\/handlers\//i,
+          /\/endpoints\//i,
+          /router\.(ts|js|py|go)$/i,
+          /server\.(ts|js|py|go)$/i,
+          /\.http$/,
+          /openapi/,
+          /swagger/
+        ]
+      }
+    ];
+    TAG_BASH_RULES = [
+      { tag: "git", pattern: /^git\s+/ },
+      { tag: "git", pattern: /^gh\s+(pr|issue|repo|release|run|workflow|auth|gist)\b/ },
+      { tag: "build", pattern: /\b(npm\s+(run\s+)?build|tsc\b|cargo\s+build|go\s+build|make\b|uv\s+build)\b/ },
+      { tag: "testing", pattern: /\b(npm\s+(run\s+)?test|pytest\b|cargo\s+test|go\s+test|jest\b|vitest\b)\b/ },
+      { tag: "deps", pattern: /\b(npm\s+install|npm\s+i\b|yarn\s+add|pip\s+install|pip3\s+install|cargo\s+add|go\s+get|uv\s+add|uv\s+install|poetry\s+add|poetry\s+install)\b/ },
+      { tag: "build", pattern: /\buv\s+run\b/ },
+      { tag: "infra", pattern: /\b(docker\s+(build|run|compose|push|pull|tag)|kubectl\b|helm\b|terraform\b)\b/ },
+      { tag: "infra", pattern: /\b(ansible-playbook\b|ansible-galaxy\b|ansible\b)\b/ }
+    ];
+    CONFIG_FILE_PATTERNS = [
+      /package\.json$/,
+      /tsconfig.*\.json$/,
+      /docker-compose\.ya?ml$/,
+      /Dockerfile$/,
+      /\.env(\.\w+)?$/,
+      /webpack\.config\./,
+      /vite\.config\./,
+      /eslint/,
+      /prettier/,
+      /Makefile$/,
+      /Cargo\.toml$/,
+      /go\.mod$/,
+      /pyproject\.toml$/,
+      /requirements.*\.txt$/
+    ];
+    TEST_FILE_PATTERNS = [
+      /\.test\./,
+      /\.spec\./,
+      /__tests__\//,
+      /test\//
+    ];
+    LOCK_FILE_PATTERNS = [
+      /package-lock\.json$/,
+      /yarn\.lock$/,
+      /pnpm-lock\.yaml$/,
+      /Cargo\.lock$/,
+      /poetry\.lock$/
+    ];
+    DEFAULT_CAPTURE_FLOOR = 0.15;
+    MCP_SUMMARY_TRUNCATE_CHARS = 160;
+    MCP_SUMMARY_SCORE_THRESHOLD = 0.3;
+  }
+});
+
+// src/utils/validation.ts
+import { homedir as homedir6 } from "os";
+import path2 from "path";
+function shouldCaptureTool(toolName, toolInput) {
+  const SKIP_TOOLS = [
+    "TodoWrite",
+    "AskUserQuestion",
+    "SlashCommand",
+    // Meta/orchestration tools - zero cross-session value
+    "Task",
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskGet",
+    "TaskOutput",
+    "TaskList",
+    "TaskStop",
+    "AgentOutputTool",
+    "BashOutput",
+    "KillShell",
+    "Skill",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "EnterWorktree"
+  ];
+  if (SKIP_TOOLS.includes(toolName)) {
+    return false;
+  }
+  if (toolName === "Bash" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const command = typeof input.command === "string" ? input.command : "";
+    const SKIP_BASH_PATTERNS = [
+      /^cd\s+[^&|;]+$/,
+      // Simple cd (no chaining)
+      /^cd\s+.+&&/,
+      // Any cd && chain (usually just navigation)
+      /^pwd$/,
+      // Current directory
+      /^ls\s+-la?\s*$/,
+      // Basic ls without path
+      /^ls\s+-la?\s+[^\|]+$/,
+      // Basic ls with path (no piping)
+      /^echo\s+['"]?DISPATCHER/i,
+      // Dispatcher protocol messages
+      /^echo\s+['"]?<user-prompt/i,
+      // User prompt hook messages
+      /^echo\s+['"]?(Success|===|═)/i,
+      // Status echo messages and banners
+      /^echo\s+['"]?\n?═/,
+      // Banner lines starting with box chars
+      /^cat\s*<<\s*['"]?EOF/i,
+      // Here-docs (usually banner output)
+      /^clear$/,
+      // Clear screen
+      /^history/,
+      // History commands
+      /^which\s+/,
+      // Which commands
+      /^type\s+/,
+      // Type commands
+      /^find\s+/,
+      // Find commands (verbose output)
+      // Exploratory/read-only commands with low cross-session value
+      /^cat\s+/,
+      // cat file reads
+      /^head\s+/,
+      // head file reads
+      /^tail\s+/,
+      // tail file reads
+      /^wc\s+/,
+      // Word/line count
+      /^file\s+/,
+      // File type detection
+      /^stat\s+/,
+      // File stats
+      /^diff\s+/,
+      // File diffs (exploratory)
+      /^git\s+stash\s+list/,
+      // Git stash listing
+      /^git\s+branch\s*($|\s+-[^dD])/,
+      // Git branch listing (not delete)
+      /^docker\s+(ps|images)\b/,
+      // Docker listing commands
+      /^kubectl\s+get\b/
+      // Kubernetes listing commands
+    ];
+    for (const pattern of SKIP_BASH_PATTERNS) {
+      if (pattern.test(command)) {
+        return false;
+      }
+    }
+  }
+  if (toolName === "Read" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const filePath = typeof input.file_path === "string" ? input.file_path : "";
+    const SKIP_READ_PATTERNS = [
+      /\/node_modules\//,
+      // Vendored dependencies
+      /\/\.git\//,
+      // Git internals
+      /\/(dist|build|out|\.next)\//,
+      // Build output directories
+      /\/package-lock\.json$/,
+      // npm lock file
+      /\/yarn\.lock$/,
+      // Yarn lock file
+      /\/pnpm-lock\.yaml$/
+      // pnpm lock file
+    ];
+    for (const pattern of SKIP_READ_PATTERNS) {
+      if (pattern.test(filePath)) {
+        return false;
+      }
+    }
+  }
+  if (toolName === "Glob" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const pattern = typeof input.pattern === "string" ? input.pattern : "";
+    const SKIP_GLOB_PATTERNS = [
+      /^\*$/,
+      // Just "*" - matches everything
+      /^\*\.\*$/
+      // "*.*" - matches all files with extensions
+    ];
+    for (const p of SKIP_GLOB_PATTERNS) {
+      if (p.test(pattern)) {
+        return false;
+      }
+    }
+  }
+  if (toolName === "Edit" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const filePath = typeof input.file_path === "string" ? input.file_path : "";
+    const SKIP_EDIT_PATTERNS = [
+      /\/summary\.md$/,
+      // Agent summary files
+      /\/worklog\.md$/,
+      // Agent worklog files
+      /\/\.agent-.*\.md$/
+      // Agent temp files
+    ];
+    for (const pattern of SKIP_EDIT_PATTERNS) {
+      if (pattern.test(filePath)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+var ALLOWED_PROJECT_ROOTS;
+var init_validation = __esm({
+  "src/utils/validation.ts"() {
+    "use strict";
+    init_find_project_root();
+    ALLOWED_PROJECT_ROOTS = [
+      path2.join(homedir6(), "Projects"),
+      path2.join(homedir6(), "projects"),
+      path2.join(homedir6(), "Dev"),
+      path2.join(homedir6(), "dev"),
+      path2.join(homedir6(), "Code"),
+      path2.join(homedir6(), "code"),
+      path2.join(homedir6(), "Workspace"),
+      path2.join(homedir6(), "workspace"),
+      path2.join(homedir6(), "Documents"),
+      // Common location
+      homedir6()
+      // Allow home directory as fallback
+    ];
+  }
+});
+
+// src/capture/mine.ts
+var mine_exports = {};
+__export(mine_exports, {
+  mineTranscripts: () => mineTranscripts
+});
+import { readdirSync as readdirSync3, readFileSync as readFileSync5, existsSync as existsSync7, statSync as statSync2 } from "fs";
+import { join as join6 } from "path";
+import { homedir as homedir7 } from "os";
+function extractResultContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
+  }
+  return "";
+}
+function parseEntries(filePath) {
+  let raw;
+  try {
+    raw = readFileSync5(filePath, "utf-8");
+  } catch {
+    return [];
+  }
+  const entries = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      entries.push(JSON.parse(trimmed));
+    } catch {
+    }
+  }
+  return entries;
+}
+function extractToolUseBlocks(content) {
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (b) => typeof b === "object" && b !== null && b.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string"
+  );
+}
+function extractToolResultBlocks(content) {
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (b) => typeof b === "object" && b !== null && b.type === "tool_result" && typeof b.tool_use_id === "string"
+  );
+}
+function pairToolEvents(entries) {
+  const pending = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    if (entry.type !== "assistant") continue;
+    const content = entry.message?.content;
+    const toolUses = extractToolUseBlocks(content);
+    if (toolUses.length === 0) continue;
+    const cwd = typeof entry.cwd === "string" ? entry.cwd : "";
+    const branch = typeof entry.gitBranch === "string" ? entry.gitBranch : null;
+    const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : (/* @__PURE__ */ new Date()).toISOString();
+    for (const block of toolUses) {
+      pending.set(block.id, { block, cwd, branch, timestamp });
+    }
+  }
+  const pairs = [];
+  for (const entry of entries) {
+    if (entry.type !== "user") continue;
+    const content = entry.message?.content;
+    const results = extractToolResultBlocks(content);
+    for (const result of results) {
+      const use = pending.get(result.tool_use_id);
+      if (!use) continue;
+      pending.delete(result.tool_use_id);
+      const toolName = use.block.name;
+      const toolInput = use.block.input;
+      if (!shouldCaptureTool(toolName, toolInput)) continue;
+      const toolResponse = extractResultContent(result.content);
+      pairs.push({
+        toolName,
+        toolInput,
+        toolResponse,
+        timestamp: use.timestamp,
+        cwd: use.cwd,
+        branch: use.branch
+      });
+    }
+  }
+  return pairs;
+}
+function discoverSessions(projectFilter) {
+  const projectsRoot = join6(homedir7(), ".claude", "projects");
+  if (!existsSync7(projectsRoot)) return [];
+  const entries = [];
+  let dirs;
+  try {
+    dirs = readdirSync3(projectsRoot);
+  } catch {
+    return [];
+  }
+  for (const dir of dirs) {
+    const dirPath = join6(projectsRoot, dir);
+    const decodedProject = decodeDashedPath(dir);
+    if (decodedProject === null) continue;
+    if (projectFilter) {
+      const normalizedFilter = projectFilter.endsWith("/") ? projectFilter : projectFilter + "/";
+      const normalizedDecoded = decodedProject.endsWith("/") ? decodedProject : decodedProject + "/";
+      if (decodedProject !== projectFilter && !normalizedDecoded.startsWith(normalizedFilter)) {
+        continue;
+      }
+    }
+    let files;
+    try {
+      const stat = statSync2(dirPath);
+      if (!stat.isDirectory()) continue;
+      files = readdirSync3(dirPath);
+    } catch {
+      continue;
+    }
+    for (const file2 of files) {
+      if (!file2.endsWith(".jsonl")) continue;
+      const sessionId = file2.slice(0, -".jsonl".length);
+      if (!/^[0-9a-f-]{36}$/.test(sessionId)) continue;
+      entries.push({
+        sessionId,
+        filePath: join6(dirPath, file2),
+        decodedProject
+      });
+    }
+  }
+  return entries;
+}
+async function mineTranscripts(storage2, opts) {
+  const { project, dry_run = false, limit_sessions } = opts;
+  const result = {
+    sessions_processed: 0,
+    sessions_skipped: 0,
+    observations_imported: 0,
+    duplicates_skipped: 0,
+    errors: []
+  };
+  const projectFilter = project ? findProjectRoot(project) : void 0;
+  const sessions = discoverSessions(projectFilter);
+  for (const session of sessions) {
+    if (limit_sessions !== void 0 && result.sessions_processed >= limit_sessions) {
+      break;
+    }
+    const { sessionId, filePath, decodedProject } = session;
+    let alreadyExists = false;
+    try {
+      alreadyExists = await storage2.sessionExists(sessionId);
+    } catch (err) {
+      result.errors.push(`sessionExists check failed for ${sessionId}: ${String(err)}`);
+      continue;
+    }
+    if (alreadyExists) {
+      result.sessions_skipped++;
+      continue;
+    }
+    const entries = parseEntries(filePath);
+    const pairs = pairToolEvents(entries);
+    if (pairs.length === 0) {
+      continue;
+    }
+    result.sessions_processed++;
+    if (dry_run) {
+      result.observations_imported += pairs.length;
+      continue;
+    }
+    const projectKey = findProjectRoot(decodedProject);
+    const branch = deriveBranch(entries);
+    try {
+      await storage2.createSession(sessionId, projectKey, branch);
+    } catch (err) {
+      result.errors.push(`createSession failed for ${sessionId}: ${String(err)}`);
+      continue;
+    }
+    let sessionObs = 0;
+    for (const pair of pairs) {
+      try {
+        const captureResult = processToolCapture({
+          session_id: sessionId,
+          project: projectKey,
+          tool_name: pair.toolName,
+          tool_input: pair.toolInput,
+          tool_response: pair.toolResponse
+        });
+        if ("status" in captureResult) {
+          result.duplicates_skipped++;
+          continue;
+        }
+        const observation = {
+          ...captureResult,
+          branch: pair.branch,
+          created_at: pair.timestamp
+        };
+        const id = await storage2.save(observation);
+        if (id === void 0) {
+          result.duplicates_skipped++;
+        } else {
+          result.observations_imported++;
+          sessionObs++;
+        }
+      } catch (err) {
+        result.errors.push(`save failed in session ${sessionId}: ${String(err)}`);
+      }
+    }
+    const summary = `Mined session: ${sessionObs} observation${sessionObs !== 1 ? "s" : ""} imported`;
+    try {
+      await storage2.endSession(sessionId, summary);
+      const rawDb = storage2.db;
+      rawDb.prepare(`UPDATE sessions SET source = 'mine' WHERE id = ?`).run(sessionId);
+    } catch (err) {
+      result.errors.push(`endSession failed for ${sessionId}: ${String(err)}`);
+    }
+  }
+  return result;
+}
+function deriveBranch(entries) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    if (typeof entry.gitBranch === "string" && entry.gitBranch) {
+      counts.set(entry.gitBranch, (counts.get(entry.gitBranch) ?? 0) + 1);
+    }
+  }
+  if (counts.size === 0) return null;
+  let best = null;
+  let bestCount = 0;
+  for (const [branch, count] of counts) {
+    if (count > bestCount) {
+      best = branch;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+var init_mine = __esm({
+  "src/capture/mine.ts"() {
+    "use strict";
+    init_processor();
+    init_validation();
+    init_transcript();
+    init_find_project_root();
+  }
+});
+
 // src/mcp/create-server.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync6, readFileSync as readFileSync4 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync6 } from "fs";
 import { join as pathJoin } from "path";
-import { homedir as homedir6 } from "os";
+import { homedir as homedir8 } from "os";
 function formatObservations(observations) {
   if (observations.length === 0) {
     return "No observations found.";
@@ -65794,7 +66986,7 @@ ${lines.join("\n")}`
       }
       const resolvedProject = np(project) ?? project ?? process.cwd();
       let pathWarning = "";
-      if (resolvedProject && !existsSync6(resolvedProject)) {
+      if (resolvedProject && !existsSync8(resolvedProject)) {
         pathWarning = `
 Note: project path '${resolvedProject}' does not exist on disk. Observations will only be visible when searching from this exact path.`;
       }
@@ -66560,8 +67752,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir6(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
-      if (!existsSync6(lessonsPath)) {
+      const lessonsPath = pathJoin(homedir8(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
+      if (!existsSync8(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -66569,7 +67761,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const content = readFileSync4(lessonsPath, "utf8");
+      const content = readFileSync6(lessonsPath, "utf8");
       return { content: [{ type: "text", text: content }] };
     }
   );
@@ -66591,8 +67783,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir6(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
-      if (!existsSync6(lessonsPath)) {
+      const lessonsPath = pathJoin(homedir8(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
+      if (!existsSync8(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -66600,7 +67792,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const content = readFileSync4(lessonsPath, "utf8");
+      const content = readFileSync6(lessonsPath, "utf8");
       return { content: [{ type: "text", text: content }] };
     }
   );
@@ -66716,6 +67908,72 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
       };
     }
   );
+  server.tool(
+    "context_mine",
+    "Backfill context history by mining existing Claude Code session transcripts. Walks ~/.claude/projects/ and imports tool interactions through the standard capture pipeline. Skips sessions already in the database. Local mode only.",
+    {
+      project: external_exports.string().optional().describe("Limit mining to sessions for this project path. Omit to process all projects."),
+      dry_run: external_exports.boolean().optional().default(false).describe("Preview what would be imported without writing to the database (default: false)."),
+      limit_sessions: external_exports.number().int().positive().optional().describe("Cap the number of new sessions to process. Useful for incremental runs on large transcript histories.")
+    },
+    async ({ project, dry_run, limit_sessions }) => {
+      const remoteUrl2 = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
+      if (remoteUrl2) {
+        return {
+          content: [{
+            type: "text",
+            text: "context_mine requires local mode. Proxy mode (CONTEXT_MANAGER_URL) is not supported."
+          }]
+        };
+      }
+      const { mineTranscripts: mineTranscripts2 } = await Promise.resolve().then(() => (init_mine(), mine_exports));
+      const db = await getDb();
+      const resolvedProject = project ? np(project) ?? project : void 0;
+      let result;
+      try {
+        result = await mineTranscripts2(db, {
+          project: resolvedProject,
+          dry_run: dry_run ?? false,
+          limit_sessions
+        });
+      } catch (err) {
+        return {
+          content: [{
+            type: "text",
+            text: `context_mine failed: ${err instanceof Error ? err.message : String(err)}`
+          }]
+        };
+      }
+      const lines = [];
+      const modeLabel = dry_run ?? false ? "[DRY RUN] " : "";
+      lines.push(`${modeLabel}context_mine complete`);
+      lines.push("");
+      if (resolvedProject) {
+        lines.push(`Project filter: ${resolvedProject}`);
+      }
+      lines.push(`Sessions processed: ${result.sessions_processed}`);
+      lines.push(`Sessions skipped (already in DB): ${result.sessions_skipped}`);
+      lines.push(`Observations imported: ${result.observations_imported}`);
+      lines.push(`Observations skipped (below capture floor or duplicate): ${result.duplicates_skipped}`);
+      if (result.errors.length > 0) {
+        lines.push("");
+        lines.push(`Errors (${result.errors.length}):`);
+        for (const e of result.errors.slice(0, 10)) {
+          lines.push(`  - ${e}`);
+        }
+        if (result.errors.length > 10) {
+          lines.push(`  ... and ${result.errors.length - 10} more`);
+        }
+      }
+      if (dry_run ?? false) {
+        lines.push("");
+        lines.push("Run with dry_run: false to apply these changes.");
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }]
+      };
+    }
+  );
   const rawServer = server;
   const registeredTools = rawServer._registeredTools;
   const underlyingServer = rawServer.server;
@@ -66794,99 +68052,15 @@ var init_create_server = __esm({
   }
 });
 
-// src/utils/sanitize.ts
-function stripPrivateTags(content) {
-  let result = "";
-  let i = 0;
-  const openTag = "<private>";
-  const closeTag = "</private>";
-  while (i < content.length) {
-    const remainingLength = content.length - i;
-    if (remainingLength >= openTag.length && content.substring(i, i + openTag.length) === openTag) {
-      const closeIndex = content.indexOf(closeTag, i + openTag.length);
-      if (closeIndex !== -1) {
-        result += "[REDACTED]";
-        i = closeIndex + closeTag.length;
-      } else {
-        result += "[REDACTED]";
-        i = content.length;
-      }
-      continue;
-    }
-    result += content[i];
-    i++;
-  }
-  return result;
-}
-function sanitizeSensitiveData(content) {
-  let sanitized = content;
-  for (const { pattern, replacement } of SENSITIVE_PATTERNS) {
-    if (typeof replacement === "function") {
-      sanitized = sanitized.replace(pattern, replacement);
-    } else {
-      sanitized = sanitized.replace(pattern, replacement);
-    }
-  }
-  return sanitized;
-}
-function sanitizeContent(content) {
-  let sanitized = stripPrivateTags(content);
-  sanitized = sanitizeSensitiveData(sanitized);
-  return sanitized;
-}
-var SENSITIVE_PATTERNS;
-var init_sanitize = __esm({
-  "src/utils/sanitize.ts"() {
-    "use strict";
-    SENSITIVE_PATTERNS = [
-      // API keys
-      { pattern: /\b(sk|pk|api|token)[-_]?[a-zA-Z0-9]{20,}\b/gi, replacement: "[API_KEY_REDACTED]" },
-      // AWS credentials
-      { pattern: /\bAKIA[0-9A-Z]{16}\b/g, replacement: "[AWS_KEY_REDACTED]" },
-      {
-        pattern: /aws_secret_access_key\s*=\s*[^\s]+/gi,
-        replacement: "aws_secret_access_key=[REDACTED]"
-      },
-      // JWT tokens (basic pattern - 3 base64 segments separated by dots)
-      {
-        pattern: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g,
-        replacement: "[JWT_REDACTED]"
-      },
-      // URLs with embedded credentials
-      {
-        pattern: /(\w+):\/\/[^:]+:[^@]+@[^\s]+/gi,
-        replacement: (match) => {
-          try {
-            const url2 = new URL(match);
-            return `${url2.protocol}//${url2.hostname}${url2.pathname}`;
-          } catch {
-            return "[URL_WITH_CREDENTIALS_REDACTED]";
-          }
-        }
-      },
-      // Environment variables with common secret names
-      {
-        pattern: /(PASSWORD|SECRET|TOKEN|KEY|CREDENTIALS?)\s*[:=]\s*['"]?([^\s'"]+)['"]?/gi,
-        replacement: "$1=[REDACTED]"
-      },
-      // Private keys
-      {
-        pattern: /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
-        replacement: "[PRIVATE_KEY_REDACTED]"
-      }
-    ];
-  }
-});
-
 // src/server/http.ts
 var http_exports = {};
 __export(http_exports, {
   startHttpServer: () => startHttpServer
 });
 import { timingSafeEqual } from "crypto";
-import { homedir as homedir7 } from "os";
-import { join as join6, dirname as dirname3 } from "path";
-import { readFileSync as readFileSync5 } from "fs";
+import { homedir as homedir9 } from "os";
+import { join as join7, dirname as dirname3 } from "path";
+import { readFileSync as readFileSync7 } from "fs";
 import { fileURLToPath as fileURLToPath2 } from "url";
 async function backgroundCompact(storage2, signal) {
   try {
@@ -67065,7 +68239,7 @@ async function startHttpServer(options = {}) {
   const port = options.port ?? parseInt(process.env.CONTEXT_MANAGER_PORT || "4666", 10);
   const host = options.host ?? (process.env.CONTEXT_MANAGER_HOST || "0.0.0.0");
   const token = options.token ?? (process.env.CONTEXT_MANAGER_TOKEN || "");
-  const dbPath = options.dbPath ?? (process.env.CONTEXT_MANAGER_DB || join6(homedir7(), ".claude-context", "context.db"));
+  const dbPath = options.dbPath ?? (process.env.CONTEXT_MANAGER_DB || join7(homedir9(), ".claude-context", "context.db"));
   if (!token) {
     console.error("[context-manager-http] CONTEXT_MANAGER_TOKEN is required for HTTP server mode");
     console.error("  Generate one: openssl rand -hex 32");
@@ -67305,9 +68479,9 @@ async function startHttpServer(options = {}) {
       const normalizedProject = normalizePath(project, pathMap);
       const result = await exportToAutoMemory(storage2, normalizedProject, sessionId);
       let content = "";
-      const memFile = join6(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
+      const memFile = join7(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       try {
-        content = readFileSync5(memFile, "utf-8");
+        content = readFileSync7(memFile, "utf-8");
       } catch {
       }
       await reply.send({ status: "ok", exported: result.exported, content });
@@ -67341,10 +68515,10 @@ async function startHttpServer(options = {}) {
         return;
       }
       const normalizedProject = normalizePath(project, pathMap);
-      const memFile = join6(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
+      const memFile = join7(resolveMemoryDir(normalizedProject), "context-manager-activity.md");
       let content = "";
       try {
-        content = readFileSync5(memFile, "utf-8");
+        content = readFileSync7(memFile, "utf-8");
       } catch {
       }
       await reply.send({ content });
@@ -67447,7 +68621,7 @@ var init_http = __esm({
     SERVER_VERSION = (() => {
       if ("0.8.162") return "0.8.162";
       try {
-        const pkg = JSON.parse(readFileSync5(join6(__serverDir, "../../package.json"), "utf-8"));
+        const pkg = JSON.parse(readFileSync7(join7(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version) return pkg.version;
         throw new Error("version missing");
       } catch {
