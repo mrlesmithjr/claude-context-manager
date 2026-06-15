@@ -2348,6 +2348,94 @@ export function createContextManagerServer(
     }
   );
 
+  server.tool(
+    'context_mine',
+    'Backfill context history by mining existing Claude Code session transcripts. Walks ~/.claude/projects/ and imports tool interactions through the standard capture pipeline. Skips sessions already in the database. Local mode only.',
+    {
+      project: z
+        .string()
+        .optional()
+        .describe('Limit mining to sessions for this project path. Omit to process all projects.'),
+      dry_run: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe('Preview what would be imported without writing to the database (default: false).'),
+      limit_sessions: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe('Cap the number of new sessions to process. Useful for incremental runs on large transcript histories.'),
+    },
+    async ({ project, dry_run, limit_sessions }) => {
+      // Local mode only: remote mode cannot mine local transcript files into a remote DB
+      const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
+      if (remoteUrl) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: 'context_mine requires local mode. Proxy mode (CONTEXT_MANAGER_URL) is not supported.',
+          }],
+        };
+      }
+
+      const { mineTranscripts } = await import('../capture/mine.js');
+      const db = await getDb();
+
+      const resolvedProject = project ? (np(project) ?? project) : undefined;
+
+      let result;
+      try {
+        result = await mineTranscripts(db, {
+          project: resolvedProject,
+          dry_run: dry_run ?? false,
+          limit_sessions,
+        });
+      } catch (err) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `context_mine failed: ${err instanceof Error ? err.message : String(err)}`,
+          }],
+        };
+      }
+
+      const lines: string[] = [];
+      const modeLabel = (dry_run ?? false) ? '[DRY RUN] ' : '';
+      lines.push(`${modeLabel}context_mine complete`);
+      lines.push('');
+      if (resolvedProject) {
+        lines.push(`Project filter: ${resolvedProject}`);
+      }
+      lines.push(`Sessions processed: ${result.sessions_processed}`);
+      lines.push(`Sessions skipped (already in DB): ${result.sessions_skipped}`);
+      const obsLabel = (dry_run ?? false) ? 'Observations estimated (tool pairs found)' : 'Observations imported';
+      lines.push(`${obsLabel}: ${result.observations_imported}`);
+      lines.push(`Observations skipped (below capture floor or duplicate): ${result.duplicates_skipped}`);
+
+      if (result.errors.length > 0) {
+        lines.push('');
+        lines.push(`Errors (${result.errors.length}):`);
+        for (const e of result.errors.slice(0, 10)) {
+          lines.push(`  - ${e}`);
+        }
+        if (result.errors.length > 10) {
+          lines.push(`  ... and ${result.errors.length - 10} more`);
+        }
+      }
+
+      if (dry_run ?? false) {
+        lines.push('');
+        lines.push('Run with dry_run: false to apply these changes.');
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: lines.join('\n') }],
+      };
+    }
+  );
+
   // The MCP SDK hardcodes taskSupport:'forbidden' for all tools registered via server.tool().
   // Claude Desktop blocks invocation of tools advertised with 'forbidden'.
   // Setting 'optional' tells Desktop the tools are callable, but the SDK then validates that

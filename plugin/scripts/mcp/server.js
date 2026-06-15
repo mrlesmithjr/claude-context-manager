@@ -3234,8 +3234,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path2) {
-      let input = path2;
+    function removeDotSegments(path3) {
+      let input = path3;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3434,8 +3434,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path2, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path2 && path2 !== "/" ? path2 : void 0;
+        const [path3, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path3 && path3 !== "/" ? path3 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6801,6 +6801,96 @@ var require_dist = __commonJS({
   }
 });
 
+// src/utils/transcript.ts
+import { readFileSync, existsSync as existsSync2 } from "fs";
+function convertPathToDashed(projectPath) {
+  return projectPath.replace(/\//g, "-");
+}
+function decodeDashedPath(encoded) {
+  if (!encoded) return null;
+  const tokens = encoded.split("-");
+  if (tokens.length < 2 || tokens[0] !== "") return null;
+  if (tokens.some((t) => t === ".." || t === ".")) return null;
+  function recurse(tokenIndex, currentPath) {
+    if (tokenIndex >= tokens.length) {
+      return currentPath;
+    }
+    const remaining = tokens.length - tokenIndex;
+    for (let len = remaining; len >= 1; len--) {
+      const segment = tokens.slice(tokenIndex, tokenIndex + len).join("-");
+      if (!segment) continue;
+      const candidate = currentPath + "/" + segment;
+      if (existsSync2(candidate)) {
+        const result2 = recurse(tokenIndex + len, candidate);
+        if (result2 !== null) return result2;
+      }
+    }
+    return null;
+  }
+  const result = recurse(1, "");
+  return result;
+}
+var init_transcript = __esm({
+  "src/utils/transcript.ts"() {
+    "use strict";
+  }
+});
+
+// src/utils/version.ts
+function isVersionBump(filePath) {
+  return /package\.json|pyproject\.toml|version\.ts/.test(filePath);
+}
+var init_version = __esm({
+  "src/utils/version.ts"() {
+    "use strict";
+  }
+});
+
+// src/utils/find-project-root.ts
+import { existsSync as existsSync6 } from "fs";
+import { homedir as homedir5 } from "os";
+import { dirname as dirname2, join as join5 } from "path";
+function getMarkers() {
+  const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
+  if (!extra) return DEFAULT_ROOT_MARKERS;
+  const extras = extra.split(",").map((s) => s.trim()).filter(Boolean);
+  return [...DEFAULT_ROOT_MARKERS, ...extras];
+}
+function findProjectRoot(cwd) {
+  const markers = getMarkers();
+  const home = homedir5();
+  let current = cwd;
+  while (current !== home && current !== dirname2(current)) {
+    for (const marker of markers) {
+      if (existsSync6(join5(current, marker))) {
+        return current;
+      }
+    }
+    current = dirname2(current);
+  }
+  for (const marker of markers) {
+    if (existsSync6(join5(home, marker))) {
+      return home;
+    }
+  }
+  return cwd;
+}
+var DEFAULT_ROOT_MARKERS;
+var init_find_project_root = __esm({
+  "src/utils/find-project-root.ts"() {
+    "use strict";
+    DEFAULT_ROOT_MARKERS = [
+      ".git",
+      ".obsidian",
+      "package.json",
+      "Cargo.toml",
+      "pyproject.toml",
+      "go.mod",
+      ".claude"
+    ];
+  }
+});
+
 // src/capture/remote-client.ts
 var remote_client_exports = {};
 __export(remote_client_exports, {
@@ -6818,8 +6908,8 @@ __export(remote_client_exports, {
   remoteSavePrompt: () => remoteSavePrompt
 });
 import { randomUUID as randomUUID2 } from "crypto";
-async function post(client, path2, body) {
-  const response = await fetch(`${client.url}${path2}`, {
+async function post(client, path3, body) {
+  const response = await fetch(`${client.url}${path3}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -6829,7 +6919,7 @@ async function post(client, path2, body) {
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Remote ${path2} returned ${response.status}: ${text}`);
+    throw new Error(`Remote ${path3} returned ${response.status}: ${text}`);
   }
   return response.json().catch(() => ({}));
 }
@@ -6968,6 +7058,1174 @@ async function remoteMcpText(client, toolName, args) {
 var init_remote_client = __esm({
   "src/capture/remote-client.ts"() {
     "use strict";
+  }
+});
+
+// src/utils/sanitize.ts
+function stripPrivateTags(content) {
+  let result = "";
+  let i = 0;
+  const openTag = "<private>";
+  const closeTag = "</private>";
+  while (i < content.length) {
+    const remainingLength = content.length - i;
+    if (remainingLength >= openTag.length && content.substring(i, i + openTag.length) === openTag) {
+      const closeIndex = content.indexOf(closeTag, i + openTag.length);
+      if (closeIndex !== -1) {
+        result += "[REDACTED]";
+        i = closeIndex + closeTag.length;
+      } else {
+        result += "[REDACTED]";
+        i = content.length;
+      }
+      continue;
+    }
+    result += content[i];
+    i++;
+  }
+  return result;
+}
+function sanitizeSensitiveData(content) {
+  let sanitized = content;
+  for (const { pattern, replacement } of SENSITIVE_PATTERNS) {
+    if (typeof replacement === "function") {
+      sanitized = sanitized.replace(pattern, replacement);
+    } else {
+      sanitized = sanitized.replace(pattern, replacement);
+    }
+  }
+  return sanitized;
+}
+function sanitizeContent(content) {
+  let sanitized = stripPrivateTags(content);
+  sanitized = sanitizeSensitiveData(sanitized);
+  return sanitized;
+}
+function estimateTokens(text) {
+  return Math.ceil(text.length / 4);
+}
+var SENSITIVE_PATTERNS;
+var init_sanitize = __esm({
+  "src/utils/sanitize.ts"() {
+    "use strict";
+    SENSITIVE_PATTERNS = [
+      // API keys
+      { pattern: /\b(sk|pk|api|token)[-_]?[a-zA-Z0-9]{20,}\b/gi, replacement: "[API_KEY_REDACTED]" },
+      // AWS credentials
+      { pattern: /\bAKIA[0-9A-Z]{16}\b/g, replacement: "[AWS_KEY_REDACTED]" },
+      {
+        pattern: /aws_secret_access_key\s*=\s*[^\s]+/gi,
+        replacement: "aws_secret_access_key=[REDACTED]"
+      },
+      // JWT tokens (basic pattern - 3 base64 segments separated by dots)
+      {
+        pattern: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g,
+        replacement: "[JWT_REDACTED]"
+      },
+      // URLs with embedded credentials
+      {
+        pattern: /(\w+):\/\/[^:]+:[^@]+@[^\s]+/gi,
+        replacement: (match) => {
+          try {
+            const url2 = new URL(match);
+            return `${url2.protocol}//${url2.hostname}${url2.pathname}`;
+          } catch {
+            return "[URL_WITH_CREDENTIALS_REDACTED]";
+          }
+        }
+      },
+      // Environment variables with common secret names
+      {
+        pattern: /(PASSWORD|SECRET|TOKEN|KEY|CREDENTIALS?)\s*[:=]\s*['"]?([^\s'"]+)['"]?/gi,
+        replacement: "$1=[REDACTED]"
+      },
+      // Private keys
+      {
+        pattern: /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
+        replacement: "[PRIVATE_KEY_REDACTED]"
+      }
+    ];
+  }
+});
+
+// src/capture/processor.ts
+function shouldUseReducedLimits(toolName, toolInput) {
+  if (toolName !== "Bash") return false;
+  const input = toolInput;
+  const command = typeof input?.command === "string" ? input.command : "";
+  if (command.includes("psql")) {
+    return true;
+  }
+  if (command.includes("sqlite3")) {
+    return true;
+  }
+  if (command.startsWith("ssh ") && (command.includes(" cat ") || command.includes(" logs "))) {
+    return true;
+  }
+  if (command.includes("pytest") || command.includes("python -m pytest")) {
+    return true;
+  }
+  if (command.includes("npm run") && (command.includes("test") || command.includes("build"))) {
+    return true;
+  }
+  if (/^(ls|du|df|wc|find)\s/.test(command) || command === "ls" || command === "du" || command === "df") {
+    return true;
+  }
+  if (/^python3?\s+-c\s+/.test(command)) {
+    return true;
+  }
+  return false;
+}
+function extractFilesTouched(toolName, toolInput, toolResponse) {
+  const files = [];
+  if (toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const pathFields = ["file_path", "path", "filepath", "file"];
+    for (const field of pathFields) {
+      if (typeof input[field] === "string") {
+        files.push(input[field]);
+      }
+    }
+  }
+  return [...new Set(files)];
+}
+function extractBashStats(output) {
+  const stats = {};
+  const exitCodeMatch = output.match(/exit\s+code:?\s*(\d+)/i);
+  if (exitCodeMatch && exitCodeMatch[1]) {
+    stats.exit_code = parseInt(exitCodeMatch[1], 10);
+  }
+  return Object.keys(stats).length > 0 ? stats : void 0;
+}
+function extractGrepStats(output, toolInput) {
+  const stats = {};
+  const lines = output.split("\n").filter((line) => line.trim().length > 0);
+  stats.match_count = lines.length;
+  return stats;
+}
+function extractGlobStats(output) {
+  const stats = {};
+  const lines = output.split("\n").filter((line) => line.trim().length > 0);
+  stats.file_count = lines.length;
+  return stats;
+}
+function extractOutput(output, toolName, toolInput) {
+  const originalLength = output.length;
+  const lineCount = output.split("\n").length;
+  const useReduced = shouldUseReducedLimits(toolName, toolInput);
+  const thresholds = useReduced ? REDUCED_OUTPUT_THRESHOLDS : OUTPUT_THRESHOLDS;
+  let toolSpecific;
+  switch (toolName) {
+    case "Bash":
+      toolSpecific = extractBashStats(output);
+      break;
+    case "Grep":
+      toolSpecific = extractGrepStats(output, toolInput);
+      break;
+    case "Glob":
+      toolSpecific = extractGlobStats(output);
+      break;
+  }
+  if (originalLength <= thresholds.FULL_STORAGE_LIMIT) {
+    return {
+      stored_output: output,
+      output_stats: {
+        original_length: originalLength,
+        line_count: lineCount,
+        truncated: false,
+        tool_specific: toolSpecific
+      }
+    };
+  }
+  const head = output.substring(0, thresholds.HEAD_SIZE);
+  const tail = output.substring(output.length - thresholds.TAIL_SIZE);
+  const omittedChars = originalLength - thresholds.HEAD_SIZE - thresholds.TAIL_SIZE;
+  const storedOutput = `${head}
+[... ${omittedChars} chars omitted ...]
+${tail}`;
+  return {
+    stored_output: storedOutput,
+    output_stats: {
+      original_length: originalLength,
+      line_count: lineCount,
+      truncated: true,
+      tool_specific: toolSpecific
+    }
+  };
+}
+function summarizeRead(input, response) {
+  const filePath = input.file_path;
+  const fileName = filePath.split("/").pop() || filePath;
+  const ext = fileName.split(".").pop()?.toLowerCase();
+  let typeHint = "";
+  if (ext) {
+    const typeMap = {
+      ts: "TypeScript",
+      js: "JavaScript",
+      py: "Python",
+      md: "Markdown",
+      json: "JSON",
+      yml: "YAML",
+      yaml: "YAML",
+      sql: "SQL",
+      sh: "Shell script",
+      rs: "Rust",
+      go: "Go"
+    };
+    typeHint = typeMap[ext] || ext.toUpperCase();
+  }
+  return `Read ${fileName}${typeHint ? ` (${typeHint})` : ""}`;
+}
+function summarizeWrite(input, response) {
+  const filePath = input.file_path;
+  const fileName = filePath.split("/").pop() || filePath;
+  const isNew = response?.toLowerCase().includes("created");
+  return `${isNew ? "Created" : "Updated"} ${fileName}`;
+}
+function summarizeEdit(input, response) {
+  const filePath = input.file_path;
+  const fileName = filePath.split("/").pop() || filePath;
+  const oldString = input.old_string || "";
+  const newString = input.new_string || "";
+  if (!oldString && !newString) return `Edited ${fileName}`;
+  const oldLines = oldString.split("\n").map((l) => l.trim()).filter(Boolean);
+  const newLines = newString.split("\n").map((l) => l.trim()).filter(Boolean);
+  const oldSet = new Set(oldLines);
+  const newSet = new Set(newLines);
+  const addedLines = newLines.filter((l) => !oldSet.has(l));
+  const removedLines = oldLines.filter((l) => !newSet.has(l));
+  for (const line of addedLines) {
+    const funcMatch = line.match(
+      /(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|interface|type)\s+(\w+)/
+    );
+    if (funcMatch) return `Edited ${fileName}: Added ${funcMatch[0].substring(0, 60)}`;
+    const importMatch = line.match(/import\s+.+from\s+['"](.+?)['"]/);
+    if (importMatch) return `Edited ${fileName}: Added import from '${importMatch[1]}'`;
+    const typeMatch = line.match(/(?:interface|type)\s+(\w+)/);
+    if (typeMatch) return `Edited ${fileName}: Added ${typeMatch[0]}`;
+    if (line.includes("CREATE TABLE") || line.includes("ALTER TABLE")) {
+      return `Edited ${fileName}: Schema ${line.substring(0, 50)}`;
+    }
+  }
+  const netLines = newLines.length - oldLines.length;
+  if (netLines > 3) return `Edited ${fileName}: Added ~${netLines} lines`;
+  if (netLines < -3) return `Edited ${fileName}: Removed ~${Math.abs(netLines)} lines`;
+  if (addedLines.length > 0) {
+    const hint = addedLines[0].substring(0, 60);
+    if (hint.length >= 8 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
+      return `Edited ${fileName}: ${hint}`;
+    }
+  }
+  if (removedLines.length > 0) {
+    const hint = removedLines[0].substring(0, 60);
+    if (hint.length >= 8 && !/^[\s{}\[\]"',;:()]+$/.test(hint)) {
+      return `Edited ${fileName}: Changed ${hint}`;
+    }
+  }
+  return `Edited ${fileName}`;
+}
+function summarizeBash(input, response) {
+  const command = input.command || "";
+  const commandPreview = command.length > 60 ? command.substring(0, 60) + "..." : command;
+  if (command.startsWith("git ")) {
+    return `Git: ${commandPreview.substring(4)}`;
+  }
+  if (command.startsWith("npm ") || command.startsWith("yarn ")) {
+    return `Package manager: ${commandPreview}`;
+  }
+  if (command.startsWith("make ")) {
+    return `Make: ${commandPreview.substring(5)}`;
+  }
+  return `Bash: ${commandPreview}`;
+}
+function summarizeGrep(input, response) {
+  const pattern = input.pattern || "";
+  const path3 = input.path || ".";
+  const outputMode = input.output_mode || "files_with_matches";
+  const patternPreview = pattern.length > 30 ? pattern.substring(0, 30) + "..." : pattern;
+  if (outputMode === "count") {
+    return `Grep count: "${patternPreview}" in ${path3}`;
+  }
+  return `Grep: "${patternPreview}" in ${path3}`;
+}
+function summarizeGlob(input, response) {
+  const pattern = input.pattern || "";
+  const path3 = input.path || ".";
+  return `Glob: "${pattern}" in ${path3}`;
+}
+function summarizeTool(toolName, toolInput, toolResponse) {
+  let summary = `${toolName} tool invocation`;
+  if (!toolInput || typeof toolInput !== "object") {
+    return summary;
+  }
+  const input = toolInput;
+  switch (toolName) {
+    case "Read":
+      summary = summarizeRead(input, toolResponse);
+      break;
+    case "Write":
+      summary = summarizeWrite(input, toolResponse);
+      break;
+    case "Edit":
+      summary = summarizeEdit(input, toolResponse);
+      break;
+    case "Bash":
+      summary = summarizeBash(input, toolResponse);
+      break;
+    case "Grep":
+      summary = summarizeGrep(input, toolResponse);
+      break;
+    case "Glob":
+      summary = summarizeGlob(input, toolResponse);
+      break;
+    default:
+      summary = `${toolName} invocation`;
+  }
+  return summary;
+}
+function isNearNoOpEdit(input) {
+  const oldStr = typeof input.old_string === "string" ? input.old_string : "";
+  const newStr = typeof input.new_string === "string" ? input.new_string : "";
+  if (!oldStr && !newStr) return false;
+  if (oldStr.replace(/\s/g, "") === newStr.replace(/\s/g, "")) return true;
+  const oldLines = oldStr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const newLines = newStr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const oldSet = new Set(oldLines);
+  const addedLines = newLines.filter((l) => !oldSet.has(l));
+  if (addedLines.length === 0) return true;
+  return addedLines.every((l) => /^(\/\/|#|\/\*|\*|\*\/)/.test(l));
+}
+function parseExitCode(toolResponse) {
+  const match = toolResponse.match(/exit\s+code:?\s*(\d+)/i);
+  if (match?.[1]) {
+    const code = parseInt(match[1], 10);
+    return isNaN(code) ? null : code;
+  }
+  return null;
+}
+function detectLessonType(toolName, toolResponse) {
+  if (toolName === "Bash") {
+    const exitCode = parseExitCode(toolResponse);
+    if (exitCode !== null && exitCode !== 0) {
+      if (exitCode === 126 || exitCode === 127) return "permission_denied";
+      if (toolResponse.includes("npm ERR!") || toolResponse.includes("error TS") || toolResponse.includes("build failed") || toolResponse.includes("FAILED")) return "build_failure";
+      if (toolResponse.includes("FAIL ") || toolResponse.includes("\u25CF ") || toolResponse.includes("AssertionError") || toolResponse.includes("test failed")) return "test_failure";
+      return "error";
+    }
+  }
+  if (ACTION_TOOLS.has(toolName)) {
+    if (toolResponse.includes("Error:") || toolResponse.includes("error TS") || toolResponse.includes("npm ERR!") || toolResponse.includes("FAILED")) {
+      if (toolResponse.includes("error TS") || toolResponse.includes("build failed")) return "build_failure";
+      if (toolResponse.includes("FAIL ") || toolResponse.includes("AssertionError")) return "test_failure";
+      return "error";
+    }
+  }
+  return null;
+}
+function inferTags(toolName, files, command) {
+  const tags = /* @__PURE__ */ new Set();
+  for (const file2 of files) {
+    for (const rule of TAG_FILE_RULES) {
+      if (rule.patterns.some((p) => p.test(file2))) {
+        tags.add(rule.tag);
+      }
+    }
+  }
+  if (toolName === "Bash" && command) {
+    for (const rule of TAG_BASH_RULES) {
+      if (rule.pattern.test(command)) {
+        tags.add(rule.tag);
+      }
+    }
+  }
+  return [...tags];
+}
+function calculateImportance(toolName, toolInput, toolResponse, filesTouched) {
+  let score;
+  const input = toolInput && typeof toolInput === "object" ? toolInput : {};
+  const command = typeof input.command === "string" ? input.command : "";
+  switch (toolName) {
+    case "Edit": {
+      const editInput = toolInput;
+      const editFilePath = typeof editInput?.file_path === "string" ? editInput.file_path : "";
+      if (editFilePath && isVersionBump(editFilePath)) {
+        score = 0.4;
+      } else if (editInput && isNearNoOpEdit(editInput)) {
+        score = 0.15;
+      } else {
+        score = 0.8;
+      }
+      break;
+    }
+    case "Write":
+      score = 0.8;
+      break;
+    case "Bash": {
+      if (/^git\s+(commit|merge|rebase|cherry-pick)\b/.test(command)) {
+        score = 0.9;
+      } else if (/\b(npm\s+(run\s+)?test|pytest|cargo\s+test|go\s+test)\b/.test(command)) {
+        score = 0.7;
+      } else if (/\b(npm\s+(run\s+)?build|cargo\s+build|make\s+|go\s+build)\b/.test(command)) {
+        score = 0.55;
+      } else if (/\bnpm\s+version\b/.test(command)) {
+        score = 0.4;
+      } else if (/\b(npm\s+install|yarn\s+add|pip\s+install|cargo\s+add|go\s+get)\b/.test(command)) {
+        score = 0.75;
+      } else if (/^git\s+(status|log|diff|show)\b/.test(command)) {
+        score = 0.35;
+      } else if (/^(cat|head|tail)\s+/.test(command)) {
+        score = 0.2;
+      } else if (/^(ls|du|df|wc|find)\s/.test(command) || /^(ls|du|df)$/.test(command)) {
+        score = 0.2;
+      } else if (command.includes("sqlite3") || command.includes("psql")) {
+        score = 0.35;
+      } else if (/^python3?\s+-c\s+/.test(command)) {
+        score = 0.3;
+      } else {
+        score = 0.5;
+      }
+      break;
+    }
+    case "Read":
+      score = 0.3;
+      break;
+    case "Grep":
+      score = 0.25;
+      break;
+    case "Glob":
+      score = 0.2;
+      break;
+    case "NotebookEdit":
+      score = 0.75;
+      break;
+    default:
+      score = 0.5;
+  }
+  if (toolResponse) {
+    const responseLower = toolResponse.toLowerCase();
+    if (responseLower.includes("error") || responseLower.includes("failed") || responseLower.includes("exception") || responseLower.includes("fatal")) {
+      score += 0.25;
+    }
+  }
+  const allFiles = [
+    ...filesTouched || [],
+    typeof input.file_path === "string" ? input.file_path : "",
+    typeof input.path === "string" ? input.path : ""
+  ].filter(Boolean);
+  for (const file2 of allFiles) {
+    if (CONFIG_FILE_PATTERNS.some((p) => p.test(file2))) {
+      score += 0.15;
+      break;
+    }
+  }
+  for (const file2 of allFiles) {
+    if (TEST_FILE_PATTERNS.some((p) => p.test(file2))) {
+      score += 0.1;
+      break;
+    }
+  }
+  for (const file2 of allFiles) {
+    if (LOCK_FILE_PATTERNS.some((p) => p.test(file2))) {
+      score -= 0.3;
+      break;
+    }
+  }
+  score = Math.max(0, Math.min(1, score));
+  let importance;
+  if (score >= 0.65) {
+    importance = "high";
+  } else if (score >= 0.35) {
+    importance = "medium";
+  } else {
+    importance = "low";
+  }
+  return { importance, importance_score: Math.round(score * 100) / 100 };
+}
+function processToolCapture(capture) {
+  const sanitizedResponse = capture.tool_response ? sanitizeContent(capture.tool_response) : "";
+  const extracted = extractOutput(
+    sanitizedResponse,
+    capture.tool_name,
+    capture.tool_input
+  );
+  let summary = summarizeTool(
+    capture.tool_name,
+    capture.tool_input,
+    sanitizedResponse
+  );
+  const filesTouched = extractFilesTouched(
+    capture.tool_name,
+    capture.tool_input,
+    sanitizedResponse
+  );
+  const contentToEstimate = `${summary}
+${extracted.stored_output}`;
+  const tokenEstimate = estimateTokens(contentToEstimate);
+  let { importance, importance_score } = calculateImportance(
+    capture.tool_name,
+    capture.tool_input,
+    sanitizedResponse,
+    filesTouched
+  );
+  const rawFloor = parseFloat(process.env["CONTEXT_MANAGER_CAPTURE_FLOOR"] ?? "");
+  const captureFloor = isNaN(rawFloor) ? DEFAULT_CAPTURE_FLOOR : Math.min(Math.max(rawFloor, 0), 0.65);
+  if (importance_score < captureFloor) {
+    return { status: "skipped" };
+  }
+  if (capture.tool_name.startsWith("mcp__") && importance_score < MCP_SUMMARY_SCORE_THRESHOLD && summary.length > MCP_SUMMARY_TRUNCATE_CHARS) {
+    summary = summary.substring(0, MCP_SUMMARY_TRUNCATE_CHARS) + "...";
+  }
+  const lessonType = detectLessonType(capture.tool_name, sanitizedResponse);
+  if (lessonType !== null && importance_score < 0.85) {
+    importance_score = 0.85;
+    importance = "high";
+  }
+  const command = capture.tool_input && typeof capture.tool_input === "object" ? capture.tool_input.command : void 0;
+  const inferredTags = inferTags(capture.tool_name, filesTouched, command);
+  const tagsSet = new Set(inferredTags);
+  if (lessonType !== null) {
+    tagsSet.add("error");
+  }
+  const tags = [...tagsSet];
+  const sanitizedToolInput = capture.tool_input ? { ...capture.tool_input } : void 0;
+  if (sanitizedToolInput) {
+    if (capture.tool_name === "Edit" || capture.tool_name === "Write") {
+      delete sanitizedToolInput["old_string"];
+      delete sanitizedToolInput["new_string"];
+      delete sanitizedToolInput["content"];
+    }
+  }
+  const metadata = {
+    tool_input: sanitizedToolInput,
+    stored_output: extracted.stored_output,
+    output_stats: extracted.output_stats
+  };
+  let skill = null;
+  if (capture.tool_input && typeof capture.tool_input === "object") {
+    const ti = capture.tool_input;
+    if (capture.tool_name === "Skill" && typeof ti["skill"] === "string") {
+      skill = ti["skill"];
+    } else if ((capture.tool_name === "Agent" || capture.tool_name === "Task") && typeof ti["subagent_type"] === "string") {
+      skill = ti["subagent_type"];
+    }
+  }
+  return {
+    session_id: capture.session_id,
+    project: capture.project,
+    tool_name: capture.tool_name,
+    summary,
+    files_touched: filesTouched,
+    metadata,
+    token_estimate: tokenEstimate,
+    importance,
+    importance_score,
+    tags: tags.length > 0 ? tags : void 0,
+    lesson_type: lessonType ?? void 0,
+    skill,
+    created_at: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+var OUTPUT_THRESHOLDS, REDUCED_OUTPUT_THRESHOLDS, ACTION_TOOLS, TAG_FILE_RULES, TAG_BASH_RULES, CONFIG_FILE_PATTERNS, TEST_FILE_PATTERNS, LOCK_FILE_PATTERNS, DEFAULT_CAPTURE_FLOOR, MCP_SUMMARY_TRUNCATE_CHARS, MCP_SUMMARY_SCORE_THRESHOLD;
+var init_processor = __esm({
+  "src/capture/processor.ts"() {
+    "use strict";
+    init_sanitize();
+    init_version();
+    OUTPUT_THRESHOLDS = {
+      FULL_STORAGE_LIMIT: 800,
+      // chars - store full if under this (was 1500)
+      HEAD_SIZE: 400,
+      // chars - first N for long outputs (was 800)
+      TAIL_SIZE: 200,
+      // chars - last N for long outputs (was 400)
+      MAX_STORAGE: 700
+      // chars - absolute max stored (was 1600)
+    };
+    REDUCED_OUTPUT_THRESHOLDS = {
+      FULL_STORAGE_LIMIT: 300,
+      // chars - aggressive truncation
+      HEAD_SIZE: 150,
+      // chars - keep query/command visible
+      TAIL_SIZE: 100
+      // chars - minimal tail
+    };
+    ACTION_TOOLS = /* @__PURE__ */ new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
+    TAG_FILE_RULES = [
+      {
+        tag: "auth",
+        patterns: [
+          /\/auth\//i,
+          /\/authentication\//i,
+          /\/authorization\//i,
+          /auth\.(ts|js|py|go|rs)$/i,
+          /login\.(ts|js|py|go|rs)$/i,
+          /session\.(ts|js|py|go|rs)$/i,
+          /jwt\.(ts|js|py|go|rs)$/i,
+          /oauth/i,
+          /token/i,
+          /credential/i,
+          /password/i,
+          /ssh_config$/i,
+          /\.pem$/i,
+          /\.key$/i
+        ]
+      },
+      {
+        tag: "database",
+        patterns: [
+          /sqlite/i,
+          /postgres/i,
+          /mysql/i,
+          /mongodb/i,
+          /\/db\//i,
+          /\/database\//i,
+          /schema\.(ts|js|py|sql)$/i,
+          /migration/i,
+          /\.sql$/i,
+          /query\.(ts|js|py)$/i
+        ]
+      },
+      {
+        tag: "testing",
+        patterns: [
+          /\.test\./i,
+          /\.spec\./i,
+          /__tests__\//i,
+          /\/test\//i,
+          /\/tests\//i,
+          /\/e2e\//i
+        ]
+      },
+      {
+        tag: "git",
+        patterns: [
+          /\.gitignore$/i,
+          /\.gitattributes$/i,
+          /\.gitmodules$/i
+        ]
+      },
+      {
+        tag: "infra",
+        patterns: [
+          /Dockerfile$/i,
+          /docker-compose/i,
+          /\.github\//i,
+          /\/k8s\//i,
+          /\/kubernetes\//i,
+          /\/ansible\//i,
+          /\/terraform\//i,
+          /\.tf$/i,
+          /\.ya?ml$/,
+          /\/molecule\//i,
+          /ansible\.cfg$/i
+        ]
+      },
+      {
+        tag: "config",
+        patterns: [
+          /package\.json$/,
+          /tsconfig/i,
+          /pyproject\.toml$/,
+          /Makefile$/,
+          /\.env(\.\w+)?$/,
+          /webpack\.config\./,
+          /vite\.config\./,
+          /eslint/,
+          /prettier/,
+          /Cargo\.toml$/,
+          /go\.mod$/,
+          /requirements.*\.txt$/,
+          /setup\.py$/
+        ]
+      },
+      {
+        tag: "frontend",
+        patterns: [
+          /\/web\//i,
+          /\/client\//i,
+          /\/ui\//i,
+          /\/components\//i,
+          /\.html$/,
+          /\.css$/,
+          /\.scss$/,
+          /\.tsx$/,
+          /\.vue$/,
+          /\.svelte$/
+        ]
+      },
+      {
+        tag: "api",
+        patterns: [
+          /\/api\//i,
+          /\/routes\//i,
+          /\/handlers\//i,
+          /\/endpoints\//i,
+          /router\.(ts|js|py|go)$/i,
+          /server\.(ts|js|py|go)$/i,
+          /\.http$/,
+          /openapi/,
+          /swagger/
+        ]
+      }
+    ];
+    TAG_BASH_RULES = [
+      { tag: "git", pattern: /^git\s+/ },
+      { tag: "git", pattern: /^gh\s+(pr|issue|repo|release|run|workflow|auth|gist)\b/ },
+      { tag: "build", pattern: /\b(npm\s+(run\s+)?build|tsc\b|cargo\s+build|go\s+build|make\b|uv\s+build)\b/ },
+      { tag: "testing", pattern: /\b(npm\s+(run\s+)?test|pytest\b|cargo\s+test|go\s+test|jest\b|vitest\b)\b/ },
+      { tag: "deps", pattern: /\b(npm\s+install|npm\s+i\b|yarn\s+add|pip\s+install|pip3\s+install|cargo\s+add|go\s+get|uv\s+add|uv\s+install|poetry\s+add|poetry\s+install)\b/ },
+      { tag: "build", pattern: /\buv\s+run\b/ },
+      { tag: "infra", pattern: /\b(docker\s+(build|run|compose|push|pull|tag)|kubectl\b|helm\b|terraform\b)\b/ },
+      { tag: "infra", pattern: /\b(ansible-playbook\b|ansible-galaxy\b|ansible\b)\b/ }
+    ];
+    CONFIG_FILE_PATTERNS = [
+      /package\.json$/,
+      /tsconfig.*\.json$/,
+      /docker-compose\.ya?ml$/,
+      /Dockerfile$/,
+      /\.env(\.\w+)?$/,
+      /webpack\.config\./,
+      /vite\.config\./,
+      /eslint/,
+      /prettier/,
+      /Makefile$/,
+      /Cargo\.toml$/,
+      /go\.mod$/,
+      /pyproject\.toml$/,
+      /requirements.*\.txt$/
+    ];
+    TEST_FILE_PATTERNS = [
+      /\.test\./,
+      /\.spec\./,
+      /__tests__\//,
+      /test\//
+    ];
+    LOCK_FILE_PATTERNS = [
+      /package-lock\.json$/,
+      /yarn\.lock$/,
+      /pnpm-lock\.yaml$/,
+      /Cargo\.lock$/,
+      /poetry\.lock$/
+    ];
+    DEFAULT_CAPTURE_FLOOR = 0.15;
+    MCP_SUMMARY_TRUNCATE_CHARS = 160;
+    MCP_SUMMARY_SCORE_THRESHOLD = 0.3;
+  }
+});
+
+// src/utils/validation.ts
+import { homedir as homedir6 } from "os";
+import path2 from "path";
+function shouldCaptureTool(toolName, toolInput) {
+  const SKIP_TOOLS = [
+    "TodoWrite",
+    "AskUserQuestion",
+    "SlashCommand",
+    // Meta/orchestration tools - zero cross-session value
+    "Task",
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskGet",
+    "TaskOutput",
+    "TaskList",
+    "TaskStop",
+    "AgentOutputTool",
+    "BashOutput",
+    "KillShell",
+    "Skill",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "EnterWorktree"
+  ];
+  if (SKIP_TOOLS.includes(toolName)) {
+    return false;
+  }
+  if (toolName === "Bash" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const command = typeof input.command === "string" ? input.command : "";
+    const SKIP_BASH_PATTERNS = [
+      /^cd\s+[^&|;]+$/,
+      // Simple cd (no chaining)
+      /^cd\s+.+&&/,
+      // Any cd && chain (usually just navigation)
+      /^pwd$/,
+      // Current directory
+      /^ls\s+-la?\s*$/,
+      // Basic ls without path
+      /^ls\s+-la?\s+[^\|]+$/,
+      // Basic ls with path (no piping)
+      /^echo\s+['"]?DISPATCHER/i,
+      // Dispatcher protocol messages
+      /^echo\s+['"]?<user-prompt/i,
+      // User prompt hook messages
+      /^echo\s+['"]?(Success|===|═)/i,
+      // Status echo messages and banners
+      /^echo\s+['"]?\n?═/,
+      // Banner lines starting with box chars
+      /^cat\s*<<\s*['"]?EOF/i,
+      // Here-docs (usually banner output)
+      /^clear$/,
+      // Clear screen
+      /^history/,
+      // History commands
+      /^which\s+/,
+      // Which commands
+      /^type\s+/,
+      // Type commands
+      /^find\s+/,
+      // Find commands (verbose output)
+      // Exploratory/read-only commands with low cross-session value
+      /^cat\s+/,
+      // cat file reads
+      /^head\s+/,
+      // head file reads
+      /^tail\s+/,
+      // tail file reads
+      /^wc\s+/,
+      // Word/line count
+      /^file\s+/,
+      // File type detection
+      /^stat\s+/,
+      // File stats
+      /^diff\s+/,
+      // File diffs (exploratory)
+      /^git\s+stash\s+list/,
+      // Git stash listing
+      /^git\s+branch\s*($|\s+-[^dD])/,
+      // Git branch listing (not delete)
+      /^docker\s+(ps|images)\b/,
+      // Docker listing commands
+      /^kubectl\s+get\b/
+      // Kubernetes listing commands
+    ];
+    for (const pattern of SKIP_BASH_PATTERNS) {
+      if (pattern.test(command)) {
+        return false;
+      }
+    }
+  }
+  if (toolName === "Read" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const filePath = typeof input.file_path === "string" ? input.file_path : "";
+    const SKIP_READ_PATTERNS = [
+      /\/node_modules\//,
+      // Vendored dependencies
+      /\/\.git\//,
+      // Git internals
+      /\/(dist|build|out|\.next)\//,
+      // Build output directories
+      /\/package-lock\.json$/,
+      // npm lock file
+      /\/yarn\.lock$/,
+      // Yarn lock file
+      /\/pnpm-lock\.yaml$/
+      // pnpm lock file
+    ];
+    for (const pattern of SKIP_READ_PATTERNS) {
+      if (pattern.test(filePath)) {
+        return false;
+      }
+    }
+  }
+  if (toolName === "Glob" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const pattern = typeof input.pattern === "string" ? input.pattern : "";
+    const SKIP_GLOB_PATTERNS = [
+      /^\*$/,
+      // Just "*" - matches everything
+      /^\*\.\*$/
+      // "*.*" - matches all files with extensions
+    ];
+    for (const p of SKIP_GLOB_PATTERNS) {
+      if (p.test(pattern)) {
+        return false;
+      }
+    }
+  }
+  if (toolName === "Edit" && toolInput && typeof toolInput === "object") {
+    const input = toolInput;
+    const filePath = typeof input.file_path === "string" ? input.file_path : "";
+    const SKIP_EDIT_PATTERNS = [
+      /\/summary\.md$/,
+      // Agent summary files
+      /\/worklog\.md$/,
+      // Agent worklog files
+      /\/\.agent-.*\.md$/
+      // Agent temp files
+    ];
+    for (const pattern of SKIP_EDIT_PATTERNS) {
+      if (pattern.test(filePath)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+var ALLOWED_PROJECT_ROOTS;
+var init_validation = __esm({
+  "src/utils/validation.ts"() {
+    "use strict";
+    init_find_project_root();
+    ALLOWED_PROJECT_ROOTS = [
+      path2.join(homedir6(), "Projects"),
+      path2.join(homedir6(), "projects"),
+      path2.join(homedir6(), "Dev"),
+      path2.join(homedir6(), "dev"),
+      path2.join(homedir6(), "Code"),
+      path2.join(homedir6(), "code"),
+      path2.join(homedir6(), "Workspace"),
+      path2.join(homedir6(), "workspace"),
+      path2.join(homedir6(), "Documents"),
+      // Common location
+      homedir6()
+      // Allow home directory as fallback
+    ];
+  }
+});
+
+// src/capture/mine.ts
+var mine_exports = {};
+__export(mine_exports, {
+  mineTranscripts: () => mineTranscripts
+});
+import { readdirSync as readdirSync3, readFileSync as readFileSync5, existsSync as existsSync7, statSync as statSync2 } from "fs";
+import { join as join6 } from "path";
+import { homedir as homedir7 } from "os";
+function extractResultContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
+  }
+  return "";
+}
+function parseEntries(filePath) {
+  let raw;
+  try {
+    raw = readFileSync5(filePath, "utf-8");
+  } catch {
+    return [];
+  }
+  const entries = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      entries.push(JSON.parse(trimmed));
+    } catch {
+    }
+  }
+  return entries;
+}
+function extractToolUseBlocks(content) {
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (b) => typeof b === "object" && b !== null && b.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string"
+  );
+}
+function extractToolResultBlocks(content) {
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (b) => typeof b === "object" && b !== null && b.type === "tool_result" && typeof b.tool_use_id === "string"
+  );
+}
+function pairToolEvents(entries) {
+  const pending = /* @__PURE__ */ new Map();
+  const pairs = [];
+  for (const entry of entries) {
+    if (entry.type === "assistant") {
+      const content = entry.message?.content;
+      const toolUses = extractToolUseBlocks(content);
+      if (toolUses.length === 0) continue;
+      const cwd = typeof entry.cwd === "string" ? entry.cwd : "";
+      const branch = typeof entry.gitBranch === "string" ? entry.gitBranch : null;
+      const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : (/* @__PURE__ */ new Date()).toISOString();
+      for (const block of toolUses) {
+        pending.set(block.id, { block, cwd, branch, timestamp });
+      }
+    } else if (entry.type === "user") {
+      const content = entry.message?.content;
+      const results = extractToolResultBlocks(content);
+      for (const result of results) {
+        const use = pending.get(result.tool_use_id);
+        if (!use) continue;
+        pending.delete(result.tool_use_id);
+        const toolName = use.block.name;
+        const toolInput = use.block.input;
+        if (!shouldCaptureTool(toolName, toolInput)) continue;
+        const toolResponse = extractResultContent(result.content);
+        pairs.push({
+          toolName,
+          toolInput,
+          toolResponse,
+          timestamp: use.timestamp,
+          cwd: use.cwd,
+          branch: use.branch
+        });
+      }
+    }
+  }
+  return pairs;
+}
+function discoverSessions(projectFilter) {
+  const projectsRoot = join6(homedir7(), ".claude", "projects");
+  if (!existsSync7(projectsRoot)) return [];
+  const entries = [];
+  let dirs;
+  try {
+    dirs = readdirSync3(projectsRoot);
+  } catch {
+    return [];
+  }
+  for (const dir of dirs) {
+    const dirPath = join6(projectsRoot, dir);
+    const decodedProject = decodeDashedPath(dir);
+    if (decodedProject === null) continue;
+    if (projectFilter) {
+      const normalizedFilter = projectFilter.endsWith("/") ? projectFilter : projectFilter + "/";
+      const normalizedDecoded = decodedProject.endsWith("/") ? decodedProject : decodedProject + "/";
+      if (decodedProject !== projectFilter && !normalizedDecoded.startsWith(normalizedFilter)) {
+        continue;
+      }
+    }
+    let files;
+    try {
+      const stat = statSync2(dirPath);
+      if (!stat.isDirectory()) continue;
+      files = readdirSync3(dirPath);
+    } catch {
+      continue;
+    }
+    for (const file2 of files) {
+      if (!file2.endsWith(".jsonl")) continue;
+      const sessionId = file2.slice(0, -".jsonl".length);
+      if (!/^[0-9a-f-]{36}$/.test(sessionId)) continue;
+      entries.push({
+        sessionId,
+        filePath: join6(dirPath, file2),
+        decodedProject
+      });
+    }
+  }
+  return entries;
+}
+async function mineTranscripts(storage2, opts) {
+  const { project, dry_run = false, limit_sessions } = opts;
+  const result = {
+    sessions_processed: 0,
+    sessions_skipped: 0,
+    observations_imported: 0,
+    duplicates_skipped: 0,
+    errors: []
+  };
+  const projectFilter = project ? findProjectRoot(project) : void 0;
+  const sessions = discoverSessions(projectFilter);
+  let sessionsAttempted = 0;
+  for (const session of sessions) {
+    if (limit_sessions !== void 0 && sessionsAttempted >= limit_sessions) {
+      break;
+    }
+    sessionsAttempted++;
+    const { sessionId, filePath, decodedProject } = session;
+    let alreadyExists = false;
+    try {
+      alreadyExists = await storage2.sessionExists(sessionId);
+    } catch (err) {
+      result.errors.push(`sessionExists check failed for ${sessionId}: ${String(err)}`);
+      continue;
+    }
+    if (alreadyExists) {
+      result.sessions_skipped++;
+      continue;
+    }
+    const entries = parseEntries(filePath);
+    const pairs = pairToolEvents(entries);
+    if (pairs.length === 0) {
+      continue;
+    }
+    result.sessions_processed++;
+    if (dry_run) {
+      result.observations_imported += pairs.length;
+      continue;
+    }
+    const projectKey = findProjectRoot(decodedProject);
+    const branch = deriveBranch(entries);
+    try {
+      await storage2.createSession(sessionId, projectKey, branch);
+    } catch (err) {
+      result.errors.push(`createSession failed for ${sessionId}: ${String(err)}`);
+      continue;
+    }
+    let sessionObs = 0;
+    for (const pair of pairs) {
+      try {
+        const captureResult = processToolCapture({
+          session_id: sessionId,
+          project: projectKey,
+          tool_name: pair.toolName,
+          tool_input: pair.toolInput,
+          tool_response: pair.toolResponse
+        });
+        if ("status" in captureResult) {
+          result.duplicates_skipped++;
+          continue;
+        }
+        const observation = {
+          ...captureResult,
+          branch: pair.branch,
+          created_at: pair.timestamp
+        };
+        const id = await storage2.save(observation);
+        if (id === void 0) {
+          result.duplicates_skipped++;
+        } else {
+          result.observations_imported++;
+          sessionObs++;
+        }
+      } catch (err) {
+        result.errors.push(`save failed in session ${sessionId}: ${String(err)}`);
+      }
+    }
+    try {
+      const rawDb = storage2.db;
+      if (!rawDb) throw new Error("SQLiteStorage.db not accessible \u2014 source patch cannot be applied");
+      rawDb.prepare(`UPDATE sessions SET source = 'mine' WHERE id = ?`).run(sessionId);
+    } catch (err) {
+      result.errors.push(`source patch failed for ${sessionId}: ${String(err)}`);
+    }
+    const summary = `Mined session: ${sessionObs} observation${sessionObs !== 1 ? "s" : ""} imported`;
+    try {
+      await storage2.endSession(sessionId, summary);
+    } catch (err) {
+      result.errors.push(`endSession failed for ${sessionId}: ${String(err)}`);
+    }
+  }
+  return result;
+}
+function deriveBranch(entries) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    if (typeof entry.gitBranch === "string" && entry.gitBranch) {
+      counts.set(entry.gitBranch, (counts.get(entry.gitBranch) ?? 0) + 1);
+    }
+  }
+  if (counts.size === 0) return null;
+  let best = null;
+  let bestCount = 0;
+  for (const [branch, count] of counts) {
+    if (count > bestCount) {
+      best = branch;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+var init_mine = __esm({
+  "src/capture/mine.ts"() {
+    "use strict";
+    init_processor();
+    init_validation();
+    init_transcript();
+    init_find_project_root();
   }
 });
 
@@ -7741,10 +8999,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path2) {
-  if (!path2)
+function getElementAtPath(obj, path3) {
+  if (!path3)
     return obj;
-  return path2.reduce((acc, key) => acc?.[key], obj);
+  return path3.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -8127,11 +9385,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path2, issues) {
+function prefixIssues(path3, issues) {
   return issues.map((iss) => {
     var _a2;
     (_a2 = iss).path ?? (_a2.path = []);
-    iss.path.unshift(path2);
+    iss.path.unshift(path3);
     return iss;
   });
 }
@@ -8314,7 +9572,7 @@ function formatError(error48, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error48, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error49, path2 = []) => {
+  const processError = (error49, path3 = []) => {
     var _a2, _b;
     for (const issue2 of error49.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
@@ -8324,7 +9582,7 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
       } else if (issue2.code === "invalid_element") {
         processError({ issues: issue2.issues }, issue2.path);
       } else {
-        const fullpath = [...path2, ...issue2.path];
+        const fullpath = [...path3, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8356,8 +9614,8 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path2 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path2) {
+  const path3 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path3) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -20334,13 +21592,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path2 = ref.slice(1).split("/").filter(Boolean);
-  if (path2.length === 0) {
+  const path3 = ref.slice(1).split("/").filter(Boolean);
+  if (path3.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path2[0] === defsKey) {
-    const key = path2[1];
+  if (path3[0] === defsKey) {
+    const key = path3[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -23272,6 +24530,12 @@ ${storedOutput}`;
     `).get(sessionId);
     return row ?? null;
   }
+  async sessionExists(id) {
+    const row = this.db.prepare(
+      `SELECT 1 FROM sessions WHERE id = ? LIMIT 1`
+    ).get(id);
+    return row !== void 0;
+  }
   async getSession(id) {
     const row = this.db.prepare(`
       SELECT id, project, started_at, ended_at, summary, summary_extended,
@@ -26085,8 +27349,8 @@ function getErrorMap2() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path2, errorMaps, issueData } = params;
-  const fullPath = [...path2, ...issueData.path || []];
+  const { data, path: path3, errorMaps, issueData } = params;
+  const fullPath = [...path3, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -26201,11 +27465,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path2, key) {
+  constructor(parent, value, path3, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path2;
+    this._path = path3;
     this._key = key;
   }
   get path() {
@@ -33652,19 +34916,15 @@ var EMPTY_COMPLETION_RESULT = {
 
 // src/mcp/create-server.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync6, readFileSync as readFileSync4 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync6 } from "fs";
 import { join as pathJoin } from "path";
-import { homedir as homedir6 } from "os";
+import { homedir as homedir8 } from "os";
 
 // src/export/memory.ts
-import { mkdirSync as mkdirSync3, readFileSync, writeFileSync as writeFileSync2, existsSync as existsSync2 } from "fs";
+init_transcript();
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync2, writeFileSync as writeFileSync2, existsSync as existsSync3 } from "fs";
 import { join as join2 } from "path";
 import { homedir as homedir2 } from "os";
-
-// src/utils/transcript.ts
-function convertPathToDashed(projectPath) {
-  return projectPath.replace(/\//g, "-");
-}
 
 // src/utils/session-format.ts
 function computeSessionDuration(session) {
@@ -33713,12 +34973,8 @@ function formatShortDate(isoDate) {
   return `${months[date5.getUTCMonth()]} ${date5.getUTCDate()}`;
 }
 
-// src/utils/version.ts
-function isVersionBump(filePath) {
-  return /package\.json|pyproject\.toml|version\.ts/.test(filePath);
-}
-
 // src/export/memory.ts
+init_version();
 var TOPIC_FILE = "context-manager-activity.md";
 var DEFAULT_MAX_LINES = 150;
 var MAX_ITEMS_PER_SESSION = 6;
@@ -33983,8 +35239,8 @@ function writeActivityToMemory(projectPath, newContent, maxLines = DEFAULT_MAX_L
     ""
   ].join("\n");
   let existingBody = "";
-  if (existsSync2(filePath)) {
-    const existing = readFileSync(filePath, "utf-8");
+  if (existsSync3(filePath)) {
+    const existing = readFileSync2(filePath, "utf-8");
     const bodyMatch = existing.match(/^(## .+)/m);
     if (bodyMatch?.index !== void 0) {
       existingBody = existing.substring(bodyMatch.index);
@@ -34041,7 +35297,8 @@ ${headingBlock}`;
 }
 
 // src/memory/audit.ts
-import { readdirSync, statSync, readFileSync as readFileSync2, existsSync as existsSync3 } from "fs";
+init_transcript();
+import { readdirSync, statSync, readFileSync as readFileSync3, existsSync as existsSync4 } from "fs";
 import { join as join3 } from "path";
 import { homedir as homedir3 } from "os";
 var EXCLUDED_FILES = /* @__PURE__ */ new Set(["MEMORY.md", "context-manager-activity.md"]);
@@ -34087,7 +35344,7 @@ function scanMemoryDirectory(projectDir, dashedPath, isCurrentProject) {
     isCurrent: isCurrentProject,
     files: []
   };
-  if (!existsSync3(memoryDir)) {
+  if (!existsSync4(memoryDir)) {
     return stats;
   }
   let entries;
@@ -34108,7 +35365,7 @@ function scanMemoryDirectory(projectDir, dashedPath, isCurrentProject) {
     }
     let content = "";
     try {
-      content = readFileSync2(filePath, "utf-8");
+      content = readFileSync3(filePath, "utf-8");
     } catch {
     }
     const { name, description, type } = parseFrontmatter(content);
@@ -34161,7 +35418,7 @@ function auditMemoryDirectories(projectPath) {
     const isChildMatch = remainder.startsWith("-");
     if (!isExactMatch && !isChildMatch) continue;
     const memoryDir = join3(fullProjectDir, "memory");
-    if (!existsSync3(memoryDir)) continue;
+    if (!existsSync4(memoryDir)) continue;
     const dirStats = scanMemoryDirectory(fullProjectDir, entry, isExactMatch);
     if (isExactMatch) {
       current.push(dirStats);
@@ -34243,12 +35500,13 @@ import {
   copyFileSync,
   mkdirSync as mkdirSync4,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync3,
+  readFileSync as readFileSync4,
   writeFileSync as writeFileSync3,
-  existsSync as existsSync4
+  existsSync as existsSync5
 } from "fs";
 import { join as join4 } from "path";
 import { homedir as homedir4 } from "os";
+init_transcript();
 var EXCLUDED_FILES2 = /* @__PURE__ */ new Set(["MEMORY.md", "context-manager-activity.md"]);
 var STALE_THRESHOLD_DAYS = 90;
 function isStale(modifiedAt) {
@@ -34307,7 +35565,7 @@ function rebuildMemoryIndex(memoryDir, projectPath) {
     const filePath = join4(memoryDir, filename);
     let content = "";
     try {
-      content = readFileSync3(filePath, "utf-8");
+      content = readFileSync4(filePath, "utf-8");
     } catch {
       continue;
     }
@@ -34340,7 +35598,7 @@ function consolidateMemories(projectPath, dryRun = true, includeStale = false) {
   const claudeProjectsDir = join4(homedir4(), ".claude", "projects");
   const parentMemoryDir = join4(claudeProjectsDir, parentDashedPath, "memory");
   const existingInParent = /* @__PURE__ */ new Set();
-  if (existsSync4(parentMemoryDir)) {
+  if (existsSync5(parentMemoryDir)) {
     try {
       for (const f of readdirSync2(parentMemoryDir)) {
         existingInParent.add(f);
@@ -34755,46 +36013,8 @@ function getCurrentBranch(cwd) {
   }
 }
 
-// src/utils/find-project-root.ts
-import { existsSync as existsSync5 } from "fs";
-import { homedir as homedir5 } from "os";
-import { dirname as dirname2, join as join5 } from "path";
-var DEFAULT_ROOT_MARKERS = [
-  ".git",
-  ".obsidian",
-  "package.json",
-  "Cargo.toml",
-  "pyproject.toml",
-  "go.mod",
-  ".claude"
-];
-function getMarkers() {
-  const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
-  if (!extra) return DEFAULT_ROOT_MARKERS;
-  const extras = extra.split(",").map((s) => s.trim()).filter(Boolean);
-  return [...DEFAULT_ROOT_MARKERS, ...extras];
-}
-function findProjectRoot(cwd) {
-  const markers = getMarkers();
-  const home = homedir5();
-  let current = cwd;
-  while (current !== home && current !== dirname2(current)) {
-    for (const marker of markers) {
-      if (existsSync5(join5(current, marker))) {
-        return current;
-      }
-    }
-    current = dirname2(current);
-  }
-  for (const marker of markers) {
-    if (existsSync5(join5(home, marker))) {
-      return home;
-    }
-  }
-  return cwd;
-}
-
 // src/mcp/create-server.ts
+init_find_project_root();
 var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
 var ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
   // Developer / code tags
@@ -34853,7 +36073,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.162" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.164" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -35105,7 +36325,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.162" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.164" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -35581,7 +36801,7 @@ ${lines.join("\n")}`
       }
       const resolvedProject = np(project) ?? project ?? process.cwd();
       let pathWarning = "";
-      if (resolvedProject && !existsSync6(resolvedProject)) {
+      if (resolvedProject && !existsSync8(resolvedProject)) {
         pathWarning = `
 Note: project path '${resolvedProject}' does not exist on disk. Observations will only be visible when searching from this exact path.`;
       }
@@ -36347,8 +37567,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir6(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
-      if (!existsSync6(lessonsPath)) {
+      const lessonsPath = pathJoin(homedir8(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
+      if (!existsSync8(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -36356,7 +37576,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const content = readFileSync4(lessonsPath, "utf8");
+      const content = readFileSync6(lessonsPath, "utf8");
       return { content: [{ type: "text", text: content }] };
     }
   );
@@ -36378,8 +37598,8 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir6(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
-      if (!existsSync6(lessonsPath)) {
+      const lessonsPath = pathJoin(homedir8(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
+      if (!existsSync8(lessonsPath)) {
         return {
           content: [{
             type: "text",
@@ -36387,7 +37607,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const content = readFileSync4(lessonsPath, "utf8");
+      const content = readFileSync6(lessonsPath, "utf8");
       return { content: [{ type: "text", text: content }] };
     }
   );
@@ -36503,6 +37723,73 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
       };
     }
   );
+  server.tool(
+    "context_mine",
+    "Backfill context history by mining existing Claude Code session transcripts. Walks ~/.claude/projects/ and imports tool interactions through the standard capture pipeline. Skips sessions already in the database. Local mode only.",
+    {
+      project: external_exports.string().optional().describe("Limit mining to sessions for this project path. Omit to process all projects."),
+      dry_run: external_exports.boolean().optional().default(false).describe("Preview what would be imported without writing to the database (default: false)."),
+      limit_sessions: external_exports.number().int().positive().optional().describe("Cap the number of new sessions to process. Useful for incremental runs on large transcript histories.")
+    },
+    async ({ project, dry_run, limit_sessions }) => {
+      const remoteUrl2 = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
+      if (remoteUrl2) {
+        return {
+          content: [{
+            type: "text",
+            text: "context_mine requires local mode. Proxy mode (CONTEXT_MANAGER_URL) is not supported."
+          }]
+        };
+      }
+      const { mineTranscripts: mineTranscripts2 } = await Promise.resolve().then(() => (init_mine(), mine_exports));
+      const db = await getDb();
+      const resolvedProject = project ? np(project) ?? project : void 0;
+      let result;
+      try {
+        result = await mineTranscripts2(db, {
+          project: resolvedProject,
+          dry_run: dry_run ?? false,
+          limit_sessions
+        });
+      } catch (err) {
+        return {
+          content: [{
+            type: "text",
+            text: `context_mine failed: ${err instanceof Error ? err.message : String(err)}`
+          }]
+        };
+      }
+      const lines = [];
+      const modeLabel = dry_run ?? false ? "[DRY RUN] " : "";
+      lines.push(`${modeLabel}context_mine complete`);
+      lines.push("");
+      if (resolvedProject) {
+        lines.push(`Project filter: ${resolvedProject}`);
+      }
+      lines.push(`Sessions processed: ${result.sessions_processed}`);
+      lines.push(`Sessions skipped (already in DB): ${result.sessions_skipped}`);
+      const obsLabel = dry_run ?? false ? "Observations estimated (tool pairs found)" : "Observations imported";
+      lines.push(`${obsLabel}: ${result.observations_imported}`);
+      lines.push(`Observations skipped (below capture floor or duplicate): ${result.duplicates_skipped}`);
+      if (result.errors.length > 0) {
+        lines.push("");
+        lines.push(`Errors (${result.errors.length}):`);
+        for (const e of result.errors.slice(0, 10)) {
+          lines.push(`  - ${e}`);
+        }
+        if (result.errors.length > 10) {
+          lines.push(`  ... and ${result.errors.length - 10} more`);
+        }
+      }
+      if (dry_run ?? false) {
+        lines.push("");
+        lines.push("Run with dry_run: false to apply these changes.");
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }]
+      };
+    }
+  );
   const rawServer = server;
   const registeredTools = rawServer._registeredTools;
   const underlyingServer = rawServer.server;
@@ -36536,13 +37823,13 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
 }
 
 // src/utils/env.ts
-import { readFileSync as readFileSync5 } from "node:fs";
-import { join as join6 } from "node:path";
-import { homedir as homedir7 } from "node:os";
+import { readFileSync as readFileSync7 } from "node:fs";
+import { join as join7 } from "node:path";
+import { homedir as homedir9 } from "node:os";
 function loadDotEnv() {
-  const envPath = join6(homedir7(), ".claude-context", ".env");
+  const envPath = join7(homedir9(), ".claude-context", ".env");
   try {
-    const content = readFileSync5(envPath, "utf8");
+    const content = readFileSync7(envPath, "utf8");
     for (const line of content.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;

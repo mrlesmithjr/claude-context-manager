@@ -920,6 +920,12 @@ ${storedOutput}`;
     `).get(sessionId);
     return row ?? null;
   }
+  async sessionExists(id) {
+    const row = this.db.prepare(
+      `SELECT 1 FROM sessions WHERE id = ? LIMIT 1`
+    ).get(id);
+    return row !== void 0;
+  }
   async getSession(id) {
     const row = this.db.prepare(`
       SELECT id, project, started_at, ended_at, summary, summary_extended,

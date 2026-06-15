@@ -136,6 +136,7 @@ Place variables in `~/.claude-context/.env`. All hooks and the stdio MCP server 
 | `context_list` | List recent sessions with summaries and importance distribution. Applies a session-granularity token budget (`TOKEN_BUDGET * 0.8`); stops adding sessions when the limit is reached, always shows at least 1, and appends a truncation footer when sessions are omitted. |
 | `context_list_projects` | List all project paths that have observations, with counts and last activity. Useful for discovering project scopes before using `context_add`. |
 | `context_add` | Write a manual observation from any MCP client (Claude Desktop, etc.). Accepts `text` (required), `project`, `importance` ("high", "medium", "low", or float 0–1), and `tags` (comma-separated). |
+| `context_mine` | Backfill session history by mining Claude Code's JSONL transcript files from `~/.claude/projects/`. Pairs `tool_use` + `tool_result` events and runs them through the capture pipeline; skips sessions already in the DB. Accepts `project` (limit to one path), `dry_run` (default false), and `limit_sessions`. Local mode only. |
 | `context_stats` | Show statistics for the current project: observation counts, token usage, importance distribution, vector search status |
 | `context_lessons` | List error lessons and patterns captured from failed tool calls. Supports `query`, `lesson_type`, and `days` filters. |
 | `context_decisions` | List recorded decisions extracted from sessions. Supports free-text `query`. |

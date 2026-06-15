@@ -44092,6 +44092,12 @@ ${storedOutput}`;
     `).get(sessionId);
     return row ?? null;
   }
+  async sessionExists(id) {
+    const row = this.db.prepare(
+      `SELECT 1 FROM sessions WHERE id = ? LIMIT 1`
+    ).get(id);
+    return row !== void 0;
+  }
   async getSession(id) {
     const row = this.db.prepare(`
       SELECT id, project, started_at, ended_at, summary, summary_extended,
@@ -46951,7 +46957,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.162") return "0.8.162";
+  if ("0.8.164") return "0.8.164";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;
