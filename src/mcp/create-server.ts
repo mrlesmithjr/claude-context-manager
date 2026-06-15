@@ -2369,9 +2369,11 @@ export function createContextManagerServer(
         .describe('Cap the number of new sessions to process. Useful for incremental runs on large transcript histories.'),
     },
     async ({ project, dry_run, limit_sessions }) => {
-      // Local mode only: remote mode cannot mine local transcript files into a remote DB
-      const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();
-      if (remoteUrl) {
+      // Local mode only: cannot mine local transcript files into a remote DB.
+      // Use isProxy (the server-level flag) rather than re-reading CONTEXT_MANAGER_URL
+      // from the environment — the HTTP server process sees that env var set (so hooks
+      // can locate it) even though it has direct DB access and is not a proxy.
+      if (isProxy) {
         return {
           content: [{
             type: 'text' as const,
