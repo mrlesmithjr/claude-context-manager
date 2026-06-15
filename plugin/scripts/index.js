@@ -67924,8 +67924,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
       limit_sessions: external_exports.number().int().positive().optional().describe("Cap the number of new sessions to process. Useful for incremental runs on large transcript histories.")
     },
     async ({ project, dry_run, limit_sessions }) => {
-      const remoteUrl2 = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
-      if (remoteUrl2) {
+      if (isProxy) {
         return {
           content: [{
             type: "text",
