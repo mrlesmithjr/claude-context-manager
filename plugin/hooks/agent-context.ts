@@ -3,7 +3,7 @@
  * Agent Context Hook (PreToolUse)
  *
  * Triggered before Agent tool invocations. If the agent has an accumulated
- * lessons file at ~/.dotfiles/.claude/agents/<name>.lessons.md, its content
+ * lessons file at ~/.claude/agents/<name>.lessons.md, its content
  * is injected as additional context so Claude invokes the agent with its own
  * learned corrections already loaded.
  *
@@ -136,7 +136,7 @@ async function main() {
       return;
     }
 
-    const lessonsPath = join(homedir(), '.dotfiles', '.claude', 'agents', agentName + '.lessons.md');
+    const lessonsPath = join(homedir(), '.claude', 'agents', agentName + '.lessons.md');
 
     debugLog('AGENT_CONTEXT_REQUEST', { agentName, lessonsPath });
 

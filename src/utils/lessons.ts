@@ -9,8 +9,8 @@
  * It is called from session-end.ts (Stop hook) in local mode only.
  *
  * Path conventions:
- *   agent: ~/.dotfiles/.claude/agents/<name>.lessons.md
- *   skill: ~/.dotfiles/.claude/skills/<name>/.lessons.md
+ *   agent: ~/.claude/agents/<name>.lessons.md
+ *   skill: ~/.claude/skills/<name>/.lessons.md
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
@@ -69,14 +69,14 @@ export function buildLessonBullets(observations: Observation[]): string[] {
 /**
  * Resolve the absolute path to a .lessons.md file for the given name and kind.
  *
- * agent: ~/.dotfiles/.claude/agents/<name>.lessons.md
- * skill: ~/.dotfiles/.claude/skills/<name>/.lessons.md
+ * agent: ~/.claude/agents/<name>.lessons.md
+ * skill: ~/.claude/skills/<name>/.lessons.md
  */
 export function resolveLessonsPath(name: string, toolKind: 'agent' | 'skill'): string {
   if (toolKind === 'agent') {
-    return join(homedir(), '.dotfiles', '.claude', 'agents', `${name}.lessons.md`);
+    return join(homedir(), '.claude', 'agents', `${name}.lessons.md`);
   }
-  return join(homedir(), '.dotfiles', '.claude', 'skills', name, '.lessons.md');
+  return join(homedir(), '.claude', 'skills', name, '.lessons.md');
 }
 
 /**

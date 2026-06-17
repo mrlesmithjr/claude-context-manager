@@ -3876,9 +3876,9 @@ function buildLessonBullets(observations) {
 }
 function resolveLessonsPath(name, toolKind) {
   if (toolKind === "agent") {
-    return join5(homedir7(), ".dotfiles", ".claude", "agents", `${name}.lessons.md`);
+    return join5(homedir7(), ".claude", "agents", `${name}.lessons.md`);
   }
-  return join5(homedir7(), ".dotfiles", ".claude", "skills", name, ".lessons.md");
+  return join5(homedir7(), ".claude", "skills", name, ".lessons.md");
 }
 function appendLessons(filePath, name, toolKind, today, bullets) {
   const mcpTool = toolKind === "agent" ? `context_agent_lessons` : `context_skill_lessons skill:${name}`;

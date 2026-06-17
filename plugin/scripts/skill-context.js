@@ -139,7 +139,7 @@ async function main() {
       await writeResponse({});
       return;
     }
-    const lessonsPath = join3(homedir3(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
+    const lessonsPath = join3(homedir3(), ".claude", "skills", skill, ".lessons.md");
     debugLog("SKILL_CONTEXT_REQUEST", { skill, lessonsPath });
     if (!existsSync(lessonsPath)) {
       debugLog("SKILL_CONTEXT_NO_FILE", { skill, lessonsPath });

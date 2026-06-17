@@ -139,7 +139,7 @@ async function main() {
       await writeResponse({});
       return;
     }
-    const lessonsPath = join3(homedir3(), ".dotfiles", ".claude", "agents", agentName + ".lessons.md");
+    const lessonsPath = join3(homedir3(), ".claude", "agents", agentName + ".lessons.md");
     debugLog("AGENT_CONTEXT_REQUEST", { agentName, lessonsPath });
     if (!existsSync(lessonsPath)) {
       debugLog("AGENT_CONTEXT_NO_FILE", { agentName, lessonsPath });
