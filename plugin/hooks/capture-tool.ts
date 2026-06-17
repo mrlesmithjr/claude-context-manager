@@ -28,7 +28,7 @@ import {
 import { processToolCapture } from '../../src/capture/processor.js';
 import type { ProcessResult } from '../../src/capture/processor.js';
 import { remoteSaveObservation } from '../../src/capture/remote-client.js';
-import { loadDotEnv } from '../../src/utils/env.js';
+import { loadDotEnv, isBranchAware } from '../../src/utils/env.js';
 import { getCurrentBranch } from '../../src/utils/git.js';
 import { findProjectRoot } from '../../src/utils/find-project-root.js';
 
@@ -139,7 +139,8 @@ async function main() {
         toolResponse = stderr ? `${stdout}\n[stderr]\n${stderr}` : stdout;
       }
 
-      const branch = getCurrentBranch(cwd);
+      // fixes #149: only call getCurrentBranch when CONTEXT_MANAGER_BRANCH_AWARE is set
+      const branch = isBranchAware() ? getCurrentBranch(cwd) : null;
 
       const result: ProcessResult = processToolCapture({
         session_id: sessionId,
@@ -191,7 +192,8 @@ async function main() {
       return;
     }
 
-    const branch = getCurrentBranch(input.cwd);
+    // fixes #149: only call getCurrentBranch when CONTEXT_MANAGER_BRANCH_AWARE is set
+    const branch = isBranchAware() ? getCurrentBranch(input.cwd) : null;
     const observation = { ...result, branch };
 
     if (!__nativeModulesAvailable) {
