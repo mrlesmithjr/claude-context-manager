@@ -2155,7 +2155,7 @@ export function createContextManagerServer(
         };
       }
 
-      const lessonsPath = pathJoin(homedir(), '.dotfiles', '.claude', 'skills', skill, '.lessons.md');
+      const lessonsPath = pathJoin(homedir(), '.claude', 'skills', skill, '.lessons.md');
 
       if (!existsSync(lessonsPath)) {
         return {
@@ -2192,7 +2192,7 @@ export function createContextManagerServer(
         };
       }
 
-      const lessonsPath = pathJoin(homedir(), '.dotfiles', '.claude', 'agents', agent + '.lessons.md');
+      const lessonsPath = pathJoin(homedir(), '.claude', 'agents', agent + '.lessons.md');
 
       if (!existsSync(lessonsPath)) {
         return {

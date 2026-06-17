@@ -3,7 +3,7 @@
  * Skill Context Hook (PreToolUse)
  *
  * Triggered before Skill tool invocations. If the skill has an accumulated
- * lessons file at ~/.dotfiles/.claude/skills/<skill>/.lessons.md, its content
+ * lessons file at ~/.claude/skills/<skill>/.lessons.md, its content
  * is injected as additional context so Claude reads the skill with its own
  * learned corrections already loaded.
  *
@@ -135,7 +135,7 @@ async function main() {
       return;
     }
 
-    const lessonsPath = join(homedir(), '.dotfiles', '.claude', 'skills', skill, '.lessons.md');
+    const lessonsPath = join(homedir(), '.claude', 'skills', skill, '.lessons.md');
 
     debugLog('SKILL_CONTEXT_REQUEST', { skill, lessonsPath });
 

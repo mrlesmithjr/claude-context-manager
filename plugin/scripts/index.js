@@ -66265,7 +66265,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.168" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.169" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -66517,7 +66517,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.168" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.169" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -67759,7 +67759,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir8(), ".dotfiles", ".claude", "skills", skill, ".lessons.md");
+      const lessonsPath = pathJoin(homedir8(), ".claude", "skills", skill, ".lessons.md");
       if (!existsSync8(lessonsPath)) {
         return {
           content: [{
@@ -67790,7 +67790,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir8(), ".dotfiles", ".claude", "agents", agent + ".lessons.md");
+      const lessonsPath = pathJoin(homedir8(), ".claude", "agents", agent + ".lessons.md");
       if (!existsSync8(lessonsPath)) {
         return {
           content: [{
@@ -68631,7 +68631,7 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname3(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.168") return "0.8.168";
+      if ("0.8.169") return "0.8.169";
       try {
         const pkg = JSON.parse(readFileSync7(join7(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version) return pkg.version;
