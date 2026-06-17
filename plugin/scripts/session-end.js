@@ -1470,9 +1470,12 @@ ${storedOutput}`;
       created_at: row.created_at
     }));
   }
-  async countObservations(project, tool, importance, branch, pinned) {
+  async countObservations(project, tool, importance, branch, pinned, includeSuperseded) {
     const conditions = [];
     const params = [];
+    if (!includeSuperseded) {
+      conditions.push("superseded_by IS NULL");
+    }
     if (project) {
       conditions.push("project LIKE ?");
       params.push(project + "%");
@@ -3809,6 +3812,10 @@ async function remoteGetNextDecisionNumber(client, project) {
 import { readFileSync as readFileSync3 } from "node:fs";
 import { join as join4 } from "node:path";
 import { homedir as homedir6 } from "node:os";
+function isBranchAware() {
+  const val = (process.env["CONTEXT_MANAGER_BRANCH_AWARE"] ?? "").trim().toLowerCase();
+  return val === "1" || val === "true" || val === "yes";
+}
 function loadDotEnv() {
   const envPath = join4(homedir6(), ".claude-context", ".env");
   try {
@@ -4213,7 +4220,7 @@ async function main() {
       hasValue: typeof rawInput.transcript_path === "string" && rawInput.transcript_path.length > 0
     });
     const input = validateStopInput(rawInput);
-    const branch = getCurrentBranch(input.cwd);
+    const branch = isBranchAware() ? getCurrentBranch(input.cwd) : null;
     let transcriptLines;
     if (input.transcript_path) {
       try {

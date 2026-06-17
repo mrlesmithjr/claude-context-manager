@@ -1470,9 +1470,12 @@ ${storedOutput}`;
       created_at: row.created_at
     }));
   }
-  async countObservations(project, tool, importance, branch, pinned) {
+  async countObservations(project, tool, importance, branch, pinned, includeSuperseded) {
     const conditions = [];
     const params = [];
+    if (!includeSuperseded) {
+      conditions.push("superseded_by IS NULL");
+    }
     if (project) {
       conditions.push("project LIKE ?");
       params.push(project + "%");
@@ -3307,6 +3310,10 @@ async function remoteMcpText(client, toolName, args) {
 import { readFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir4 } from "node:os";
+function isBranchAware() {
+  const val = (process.env["CONTEXT_MANAGER_BRANCH_AWARE"] ?? "").trim().toLowerCase();
+  return val === "1" || val === "true" || val === "yes";
+}
 function loadDotEnv() {
   const envPath = join2(homedir4(), ".claude-context", ".env");
   try {
@@ -3433,7 +3440,7 @@ async function main() {
       rawInput = {};
     }
     const input = validateSessionStartInput(rawInput);
-    const branch = getCurrentBranch(input.cwd);
+    const branch = isBranchAware() ? getCurrentBranch(input.cwd) : null;
     const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
     const remoteToken = (process.env["CONTEXT_MANAGER_TOKEN"] ?? "").trim();
     if (remoteUrl) {

@@ -6848,8 +6848,8 @@ var init_version = __esm({
 
 // src/utils/find-project-root.ts
 import { existsSync as existsSync6 } from "fs";
-import { homedir as homedir5 } from "os";
-import { dirname as dirname2, join as join5 } from "path";
+import { homedir as homedir6 } from "os";
+import { dirname as dirname2, join as join6 } from "path";
 function getMarkers() {
   const extra = process.env["CONTEXT_MANAGER_ROOT_MARKERS"];
   if (!extra) return DEFAULT_ROOT_MARKERS;
@@ -6858,18 +6858,18 @@ function getMarkers() {
 }
 function findProjectRoot(cwd) {
   const markers = getMarkers();
-  const home = homedir5();
+  const home = homedir6();
   let current = cwd;
   while (current !== home && current !== dirname2(current)) {
     for (const marker of markers) {
-      if (existsSync6(join5(current, marker))) {
+      if (existsSync6(join6(current, marker))) {
         return current;
       }
     }
     current = dirname2(current);
   }
   for (const marker of markers) {
-    if (existsSync6(join5(home, marker))) {
+    if (existsSync6(join6(home, marker))) {
       return home;
     }
   }
@@ -7814,7 +7814,7 @@ var init_processor = __esm({
 });
 
 // src/utils/validation.ts
-import { homedir as homedir6 } from "os";
+import { homedir as homedir7 } from "os";
 import path2 from "path";
 function shouldCaptureTool(toolName, toolInput) {
   const SKIP_TOOLS = [
@@ -7967,17 +7967,17 @@ var init_validation = __esm({
     "use strict";
     init_find_project_root();
     ALLOWED_PROJECT_ROOTS = [
-      path2.join(homedir6(), "Projects"),
-      path2.join(homedir6(), "projects"),
-      path2.join(homedir6(), "Dev"),
-      path2.join(homedir6(), "dev"),
-      path2.join(homedir6(), "Code"),
-      path2.join(homedir6(), "code"),
-      path2.join(homedir6(), "Workspace"),
-      path2.join(homedir6(), "workspace"),
-      path2.join(homedir6(), "Documents"),
+      path2.join(homedir7(), "Projects"),
+      path2.join(homedir7(), "projects"),
+      path2.join(homedir7(), "Dev"),
+      path2.join(homedir7(), "dev"),
+      path2.join(homedir7(), "Code"),
+      path2.join(homedir7(), "code"),
+      path2.join(homedir7(), "Workspace"),
+      path2.join(homedir7(), "workspace"),
+      path2.join(homedir7(), "Documents"),
       // Common location
-      homedir6()
+      homedir7()
       // Allow home directory as fallback
     ];
   }
@@ -7988,9 +7988,9 @@ var mine_exports = {};
 __export(mine_exports, {
   mineTranscripts: () => mineTranscripts
 });
-import { readdirSync as readdirSync3, readFileSync as readFileSync5, existsSync as existsSync7, statSync as statSync2 } from "fs";
-import { join as join6 } from "path";
-import { homedir as homedir7 } from "os";
+import { readdirSync as readdirSync3, readFileSync as readFileSync6, existsSync as existsSync7, statSync as statSync2 } from "fs";
+import { join as join7 } from "path";
+import { homedir as homedir8 } from "os";
 function extractResultContent(content) {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -8001,7 +8001,7 @@ function extractResultContent(content) {
 function parseEntries(filePath) {
   let raw;
   try {
-    raw = readFileSync5(filePath, "utf-8");
+    raw = readFileSync6(filePath, "utf-8");
   } catch {
     return [];
   }
@@ -8067,7 +8067,7 @@ function pairToolEvents(entries) {
   return pairs;
 }
 function discoverSessions(projectFilter) {
-  const projectsRoot = join6(homedir7(), ".claude", "projects");
+  const projectsRoot = join7(homedir8(), ".claude", "projects");
   if (!existsSync7(projectsRoot)) return [];
   const entries = [];
   let dirs;
@@ -8077,7 +8077,7 @@ function discoverSessions(projectFilter) {
     return [];
   }
   for (const dir of dirs) {
-    const dirPath = join6(projectsRoot, dir);
+    const dirPath = join7(projectsRoot, dir);
     const decodedProject = decodeDashedPath(dir);
     if (decodedProject === null) continue;
     if (projectFilter) {
@@ -8101,7 +8101,7 @@ function discoverSessions(projectFilter) {
       if (!/^[0-9a-f-]{36}$/.test(sessionId)) continue;
       entries.push({
         sessionId,
-        filePath: join6(dirPath, file2),
+        filePath: join7(dirPath, file2),
         decodedProject
       });
     }
@@ -25080,9 +25080,12 @@ ${storedOutput}`;
       created_at: row.created_at
     }));
   }
-  async countObservations(project, tool, importance, branch, pinned) {
+  async countObservations(project, tool, importance, branch, pinned, includeSuperseded) {
     const conditions = [];
     const params = [];
+    if (!includeSuperseded) {
+      conditions.push("superseded_by IS NULL");
+    }
     if (project) {
       conditions.push("project LIKE ?");
       params.push(project + "%");
@@ -34916,9 +34919,9 @@ var EMPTY_COMPLETION_RESULT = {
 
 // src/mcp/create-server.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync8, readFileSync as readFileSync6 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync7 } from "fs";
 import { join as pathJoin } from "path";
-import { homedir as homedir8 } from "os";
+import { homedir as homedir9 } from "os";
 
 // src/export/memory.ts
 init_transcript();
@@ -36013,6 +36016,39 @@ function getCurrentBranch(cwd) {
   }
 }
 
+// src/utils/env.ts
+import { readFileSync as readFileSync5 } from "node:fs";
+import { join as join5 } from "node:path";
+import { homedir as homedir5 } from "node:os";
+function isBranchAware() {
+  const val = (process.env["CONTEXT_MANAGER_BRANCH_AWARE"] ?? "").trim().toLowerCase();
+  return val === "1" || val === "true" || val === "yes";
+}
+function loadDotEnv() {
+  const envPath = join5(homedir5(), ".claude-context", ".env");
+  try {
+    const content = readFileSync5(envPath, "utf8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx < 1) continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      let value = trimmed.slice(eqIdx + 1).trim();
+      if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+        value = value.slice(1, -1);
+      }
+      if (key && !(key in process.env)) {
+        process.env[key] = value;
+      }
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.error("[context-manager] Warning: could not read ~/.claude-context/.env:", err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
 // src/mcp/create-server.ts
 init_find_project_root();
 var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
@@ -36385,7 +36421,7 @@ function createContextManagerServer(storage2, options = {}) {
         activeQuery = result.corrected;
         fuzzyChanges = result.changes;
       }
-      const currentBranch = branch === void 0 ? getCurrentBranch(normalizedProject ?? process.cwd()) : null;
+      const currentBranch = branch === void 0 && isBranchAware() ? getCurrentBranch(normalizedProject ?? process.cwd()) : null;
       const temporalMode = classifyTemporalIntent(activeQuery);
       if (activeQuery.startsWith("lesson:")) {
         const VALID_LESSON_TYPES = /* @__PURE__ */ new Set(["error", "build_failure", "test_failure", "permission_denied"]);
@@ -37567,7 +37603,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir8(), ".claude", "skills", skill, ".lessons.md");
+      const lessonsPath = pathJoin(homedir9(), ".claude", "skills", skill, ".lessons.md");
       if (!existsSync8(lessonsPath)) {
         return {
           content: [{
@@ -37576,7 +37612,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const content = readFileSync6(lessonsPath, "utf8");
+      const content = readFileSync7(lessonsPath, "utf8");
       return { content: [{ type: "text", text: content }] };
     }
   );
@@ -37598,7 +37634,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const lessonsPath = pathJoin(homedir8(), ".claude", "agents", agent + ".lessons.md");
+      const lessonsPath = pathJoin(homedir9(), ".claude", "agents", agent + ".lessons.md");
       if (!existsSync8(lessonsPath)) {
         return {
           content: [{
@@ -37607,7 +37643,7 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
           }]
         };
       }
-      const content = readFileSync6(lessonsPath, "utf8");
+      const content = readFileSync7(lessonsPath, "utf8");
       return { content: [{ type: "text", text: content }] };
     }
   );
@@ -37824,35 +37860,6 @@ ${formatObservations(observations)}` : `No embedded observations found${normaliz
     });
   }
   return server;
-}
-
-// src/utils/env.ts
-import { readFileSync as readFileSync7 } from "node:fs";
-import { join as join7 } from "node:path";
-import { homedir as homedir9 } from "node:os";
-function loadDotEnv() {
-  const envPath = join7(homedir9(), ".claude-context", ".env");
-  try {
-    const content = readFileSync7(envPath, "utf8");
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eqIdx = trimmed.indexOf("=");
-      if (eqIdx < 1) continue;
-      const key = trimmed.slice(0, eqIdx).trim();
-      let value = trimmed.slice(eqIdx + 1).trim();
-      if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
-        value = value.slice(1, -1);
-      }
-      if (key && !(key in process.env)) {
-        process.env[key] = value;
-      }
-    }
-  } catch (err) {
-    if (err.code !== "ENOENT") {
-      console.error("[context-manager] Warning: could not read ~/.claude-context/.env:", err instanceof Error ? err.message : String(err));
-    }
-  }
 }
 
 // src/mcp/server.ts

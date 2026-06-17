@@ -27,15 +27,6 @@ import { homedir } from 'node:os';
  */
 
 /**
- * Load environment variables from ~/.claude-context/.env into process.env.
- *
- * Called at startup by the MCP server and all hooks so that
- * CONTEXT_MANAGER_URL and CONTEXT_MANAGER_TOKEN are available regardless
- * of how Claude Code was launched (terminal, Dock, Spotlight, reboot).
- *
- * Existing process.env values always win -- explicit env vars are never overridden.
- */
-/**
  * Returns true when git branch awareness is enabled via CONTEXT_MANAGER_BRANCH_AWARE.
  * Default is OFF. Truthy values: "1", "true", "yes" (case-insensitive).
  * Call this after loadDotEnv() so the env var is populated from ~/.claude-context/.env.
@@ -46,6 +37,15 @@ export function isBranchAware(): boolean {
   return val === '1' || val === 'true' || val === 'yes';
 }
 
+/**
+ * Load environment variables from ~/.claude-context/.env into process.env.
+ *
+ * Called at startup by the MCP server and all hooks so that
+ * CONTEXT_MANAGER_URL and CONTEXT_MANAGER_TOKEN are available regardless
+ * of how Claude Code was launched (terminal, Dock, Spotlight, reboot).
+ *
+ * Existing process.env values always win -- explicit env vars are never overridden.
+ */
 export function loadDotEnv(): void {
   const envPath = join(homedir(), '.claude-context', '.env');
   try {

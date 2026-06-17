@@ -61948,6 +61948,12 @@ function getCurrentBranch(cwd) {
   }
 }
 
+// src/utils/env.ts
+function isBranchAware() {
+  const val = (process.env["CONTEXT_MANAGER_BRANCH_AWARE"] ?? "").trim().toLowerCase();
+  return val === "1" || val === "true" || val === "yes";
+}
+
 // src/mcp/create-server.ts
 init_find_project_root();
 var SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
@@ -62320,7 +62326,7 @@ function createContextManagerServer(storage, options = {}) {
         activeQuery = result.corrected;
         fuzzyChanges = result.changes;
       }
-      const currentBranch = branch === void 0 ? getCurrentBranch(normalizedProject ?? process.cwd()) : null;
+      const currentBranch = branch === void 0 && isBranchAware() ? getCurrentBranch(normalizedProject ?? process.cwd()) : null;
       const temporalMode = classifyTemporalIntent(activeQuery);
       if (activeQuery.startsWith("lesson:")) {
         const VALID_LESSON_TYPES = /* @__PURE__ */ new Set(["error", "build_failure", "test_failure", "permission_denied"]);
@@ -65221,9 +65227,12 @@ ${storedOutput}`;
       created_at: row.created_at
     }));
   }
-  async countObservations(project, tool, importance, branch, pinned) {
+  async countObservations(project, tool, importance, branch, pinned, includeSuperseded) {
     const conditions = [];
     const params = [];
+    if (!includeSuperseded) {
+      conditions.push("superseded_by IS NULL");
+    }
     if (project) {
       conditions.push("project LIKE ?");
       params.push(project + "%");

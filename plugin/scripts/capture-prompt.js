@@ -1470,9 +1470,12 @@ ${storedOutput}`;
       created_at: row.created_at
     }));
   }
-  async countObservations(project, tool, importance, branch, pinned) {
+  async countObservations(project, tool, importance, branch, pinned, includeSuperseded) {
     const conditions = [];
     const params = [];
+    if (!includeSuperseded) {
+      conditions.push("superseded_by IS NULL");
+    }
     if (project) {
       conditions.push("project LIKE ?");
       params.push(project + "%");
