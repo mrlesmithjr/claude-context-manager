@@ -359,12 +359,15 @@ export async function registerApiRoutes(
             branch,
             pinned: pinned ? 1 : undefined,
           });
+          // fixes #228: default includeSuperseded=false matches search() which also excludes superseded rows.
           total = await storage.countObservations(project, tool, importance, branch, pinned ? 1 : undefined);
         } else {
           // Plain recent observations -- no search query, no importance/branch filter.
           // toolName pushed into SQL so pages are dense (fixes #127).
           observations = await storage.getRecent(project || '', limit, offset, tool);
-          total = await storage.countObservations(project, tool);
+          // fixes #228: getRecent() has no superseded filter, so pass includeSuperseded=true
+          // so the pagination total matches the rows actually returned.
+          total = await storage.countObservations(project, tool, undefined, undefined, undefined, true);
         }
 
         reply.send({

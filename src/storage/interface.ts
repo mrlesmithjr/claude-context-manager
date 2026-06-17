@@ -527,8 +527,9 @@ export interface ContextStorage {
    * @param importance - Importance level filter: 'high' | 'medium' | 'low' (optional)
    * @param branch - Git branch filter: exact match (optional)
    * @param pinned - When 1, only count pinned observations (optional). refs #230
+   * @param includeSuperseded - When true, include superseded observations in count (default false). fixes #228
    */
-  countObservations(project?: string, tool?: string, importance?: ImportanceLevel, branch?: string, pinned?: number): Promise<number>;
+  countObservations(project?: string, tool?: string, importance?: ImportanceLevel, branch?: string, pinned?: number, includeSuperseded?: boolean): Promise<number>;
 
   /**
    * Count sessions with optional filters
