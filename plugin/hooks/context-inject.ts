@@ -34,7 +34,7 @@ import {
   remoteHealthCheck,
   remoteMcpText,
 } from '../../src/capture/remote-client.js';
-import { loadDotEnv } from '../../src/utils/env.js';
+import { loadDotEnv, isBranchAware } from '../../src/utils/env.js';
 import { getCurrentBranch } from '../../src/utils/git.js';
 
 // Injected by esbuild --define during build
@@ -197,7 +197,8 @@ async function main() {
 
     // Detect current git branch. Never throws; returns null on any failure.
     // Detected here (before the remote/local split) so it is available in both paths.
-    const branch = getCurrentBranch(input.cwd);
+    // fixes #149: only call getCurrentBranch when CONTEXT_MANAGER_BRANCH_AWARE is set.
+    const branch = isBranchAware() ? getCurrentBranch(input.cwd) : null;
 
     // --- Remote mode: create session + fetch context from central server ---
     const remoteUrl = (process.env['CONTEXT_MANAGER_URL'] ?? '').trim();

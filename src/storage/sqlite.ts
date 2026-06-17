@@ -2109,12 +2109,20 @@ export class SQLiteStorage implements ContextStorage {
     }));
   }
 
-  async countObservations(project?: string, tool?: string, importance?: ImportanceLevel, branch?: string, pinned?: number): Promise<number> {
+  async countObservations(project?: string, tool?: string, importance?: ImportanceLevel, branch?: string, pinned?: number, includeSuperseded?: boolean): Promise<number> {
     // refs #131: added optional importance parameter
     // refs #227: added optional branch parameter
     // refs #230: added optional pinned parameter
+    // fixes #228: exclude superseded observations by default so pagination totals match
+    //             search() and getRecent() row counts. Pass includeSuperseded=true only
+    //             when the corresponding list path also returns superseded rows (e.g. the
+    //             plain getRecent() path in the web API, which has no superseded filter).
     const conditions: string[] = [];
     const params: unknown[] = [];
+
+    if (!includeSuperseded) {
+      conditions.push('superseded_by IS NULL');
+    }
 
     if (project) {
       conditions.push('project LIKE ?');

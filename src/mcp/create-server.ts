@@ -37,6 +37,7 @@ import { correctTokens } from '../utils/correct-tokens.js';
 import { normalizePath, type PathPrefixEntry } from '../utils/path-map.js';
 import { buildReflection, formatReflection } from '../utils/reflect.js';
 import { getCurrentBranch } from '../utils/git.js';
+import { isBranchAware } from '../utils/env.js';
 import { findProjectRoot } from '../utils/find-project-root.js';
 
 // Minimum cosine similarity score for semantic/hybrid search results.
@@ -629,7 +630,9 @@ export function createContextManagerServer(
 
       // Detect the current branch at query time for soft-rank or label display.
       // Only used when branch param is omitted (soft-rank mode).
-      const currentBranch = branch === undefined
+      // fixes #149: getCurrentBranch is skipped when CONTEXT_MANAGER_BRANCH_AWARE is off;
+      // null means no soft-rank boost is applied.
+      const currentBranch = (branch === undefined && isBranchAware())
         ? getCurrentBranch(normalizedProject ?? process.cwd())
         : null;
 

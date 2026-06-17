@@ -1534,9 +1534,12 @@ ${storedOutput}`;
           created_at: row.created_at
         }));
       }
-      async countObservations(project, tool, importance, branch, pinned) {
+      async countObservations(project, tool, importance, branch, pinned, includeSuperseded) {
         const conditions = [];
         const params = [];
+        if (!includeSuperseded) {
+          conditions.push("superseded_by IS NULL");
+        }
         if (project) {
           conditions.push("project LIKE ?");
           params.push(project + "%");
@@ -64843,6 +64846,17 @@ var init_git = __esm({
   }
 });
 
+// src/utils/env.ts
+function isBranchAware() {
+  const val = (process.env["CONTEXT_MANAGER_BRANCH_AWARE"] ?? "").trim().toLowerCase();
+  return val === "1" || val === "true" || val === "yes";
+}
+var init_env = __esm({
+  "src/utils/env.ts"() {
+    "use strict";
+  }
+});
+
 // src/utils/find-project-root.ts
 import { existsSync as existsSync6 } from "fs";
 import { homedir as homedir5 } from "os";
@@ -66265,7 +66279,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.169" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.170" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -66517,7 +66531,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.169" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.170" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -66577,7 +66591,7 @@ function createContextManagerServer(storage2, options = {}) {
         activeQuery = result.corrected;
         fuzzyChanges = result.changes;
       }
-      const currentBranch = branch === void 0 ? getCurrentBranch(normalizedProject ?? process.cwd()) : null;
+      const currentBranch = branch === void 0 && isBranchAware() ? getCurrentBranch(normalizedProject ?? process.cwd()) : null;
       const temporalMode = classifyTemporalIntent(activeQuery);
       if (activeQuery.startsWith("lesson:")) {
         const VALID_LESSON_TYPES = /* @__PURE__ */ new Set(["error", "build_failure", "test_failure", "permission_denied"]);
@@ -68036,6 +68050,7 @@ var init_create_server = __esm({
     init_path_map();
     init_reflect();
     init_git();
+    init_env();
     init_find_project_root();
     SEARCH_MIN_SCORE = parseFloat(process.env.CONTEXT_SEARCH_MIN_SCORE ?? "0.25");
     ALLOWED_OBSERVATION_TAGS = /* @__PURE__ */ new Set([
@@ -68631,7 +68646,7 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname3(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.169") return "0.8.169";
+      if ("0.8.170") return "0.8.170";
       try {
         const pkg = JSON.parse(readFileSync7(join7(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version) return pkg.version;

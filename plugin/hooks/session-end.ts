@@ -37,7 +37,7 @@ import {
   remoteSaveDecision,
   remoteGetNextDecisionNumber,
 } from '../../src/capture/remote-client.js';
-import { loadDotEnv } from '../../src/utils/env.js';
+import { loadDotEnv, isBranchAware } from '../../src/utils/env.js';
 import {
   extractTextFromTranscriptLine,
   pickBestNarrative,
@@ -447,7 +447,8 @@ async function main() {
     const input = validateStopInput(rawInput);
 
     // Detect current git branch. Never throws; returns null on any failure.
-    const branch = getCurrentBranch(input.cwd);
+    // fixes #149: only call getCurrentBranch when CONTEXT_MANAGER_BRANCH_AWARE is set.
+    const branch = isBranchAware() ? getCurrentBranch(input.cwd) : null;
 
     // Read and parse the transcript once — both summary extraction and insight
     // extraction need it, and reading a large file twice wastes Stop hook timeout.

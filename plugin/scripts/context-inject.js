@@ -1470,9 +1470,12 @@ ${storedOutput}`;
       created_at: row.created_at
     }));
   }
-  async countObservations(project, tool, importance, branch, pinned) {
+  async countObservations(project, tool, importance, branch, pinned, includeSuperseded) {
     const conditions = [];
     const params = [];
+    if (!includeSuperseded) {
+      conditions.push("superseded_by IS NULL");
+    }
     if (project) {
       conditions.push("project LIKE ?");
       params.push(project + "%");
@@ -3307,6 +3310,10 @@ async function remoteMcpText(client, toolName, args) {
 import { readFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 import { homedir as homedir4 } from "node:os";
+function isBranchAware() {
+  const val = (process.env["CONTEXT_MANAGER_BRANCH_AWARE"] ?? "").trim().toLowerCase();
+  return val === "1" || val === "true" || val === "yes";
+}
 function loadDotEnv() {
   const envPath = join2(homedir4(), ".claude-context", ".env");
   try {
@@ -3386,11 +3393,11 @@ function checkVersionMismatch() {
       readFileSync2(installedPluginPath, "utf-8")
     );
     const installedVersion = installedPackageJson.version;
-    if (installedVersion !== "0.8.169") {
+    if (installedVersion !== "0.8.170") {
       return `
 [WARNING] **context-manager version mismatch detected**
    Installed: v${installedVersion}
-   Source:    v${"0.8.169"}
+   Source:    v${"0.8.170"}
    Run: \`npm run build:plugin && /plugin install context-manager\`
 `;
     }
@@ -3404,9 +3411,9 @@ var PLUGIN_VERSION_FILE = join3(homedir5(), ".claude-context", ".plugin-version"
 function checkPostUpdate() {
   try {
     const stored = existsSync2(PLUGIN_VERSION_FILE) ? readFileSync2(PLUGIN_VERSION_FILE, "utf-8").trim() : "";
-    if (stored === "0.8.169") return "";
+    if (stored === "0.8.170") return "";
     const verb = stored === "" ? "Installed" : "Updated";
-    return `[context-manager] ${verb} v${"0.8.169"}. Hooks active.`;
+    return `[context-manager] ${verb} v${"0.8.170"}. Hooks active.`;
   } catch {
     return "";
   }
@@ -3414,7 +3421,7 @@ function checkPostUpdate() {
 function markVersionActivated() {
   try {
     mkdirSync2(join3(homedir5(), ".claude-context"), { recursive: true });
-    writeFileSync(PLUGIN_VERSION_FILE, "0.8.169", "utf-8");
+    writeFileSync(PLUGIN_VERSION_FILE, "0.8.170", "utf-8");
   } catch {
   }
 }
@@ -3433,7 +3440,7 @@ async function main() {
       rawInput = {};
     }
     const input = validateSessionStartInput(rawInput);
-    const branch = getCurrentBranch(input.cwd);
+    const branch = isBranchAware() ? getCurrentBranch(input.cwd) : null;
     const remoteUrl = (process.env["CONTEXT_MANAGER_URL"] ?? "").trim();
     const remoteToken = (process.env["CONTEXT_MANAGER_TOKEN"] ?? "").trim();
     if (remoteUrl) {
@@ -3495,7 +3502,7 @@ async function main() {
       const statsText = await remoteMcpText(client, "context_stats", { project: input.cwd });
       const countMatch = statsText.match(/Total Observations:\s*(\d+)/);
       if (countMatch?.[1]) remoteCount = parseInt(countMatch[1], 10);
-      lines2.push(`context-manager v${"0.8.169"} active (remote mode). ${remoteCount} observations on server.`);
+      lines2.push(`context-manager v${"0.8.170"} active (remote mode). ${remoteCount} observations on server.`);
       lines2.push(`Remote server: ${remoteUrl}`);
       lines2.push("MCP tools available: context_search, context_list, context_stats, context_lessons.");
       try {
@@ -3594,7 +3601,7 @@ async function main() {
       lines.push(versionWarning);
     }
     const branchHint = branch ? ` [branch: ${branch}]` : "";
-    lines.push(`context-manager v${"0.8.169"} active. ${count} observations tracked.${branchHint}`);
+    lines.push(`context-manager v${"0.8.170"} active. ${count} observations tracked.${branchHint}`);
     lines.push("Activity log exported to auto-memory. MCP tools available: context_search, context_list, context_stats, context_lessons.");
     try {
       const recentSessions = await storage.getRecentSessionsWithObservations(input.cwd, 10);

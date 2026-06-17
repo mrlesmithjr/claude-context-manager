@@ -44642,9 +44642,12 @@ ${storedOutput}`;
       created_at: row.created_at
     }));
   }
-  async countObservations(project, tool, importance, branch, pinned) {
+  async countObservations(project, tool, importance, branch, pinned, includeSuperseded) {
     const conditions = [];
     const params = [];
+    if (!includeSuperseded) {
+      conditions.push("superseded_by IS NULL");
+    }
     if (project) {
       conditions.push("project LIKE ?");
       params.push(project + "%");
@@ -46480,7 +46483,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
           total = await storage.countObservations(project, tool, importance, branch, pinned ? 1 : void 0);
         } else {
           observations = await storage.getRecent(project || "", limit, offset, tool);
-          total = await storage.countObservations(project, tool);
+          total = await storage.countObservations(project, tool, void 0, void 0, void 0, true);
         }
         reply.send({
           observations,
@@ -46957,7 +46960,7 @@ async function registerApiRoutes(fastify, storage, isNetworkMode2 = false) {
 var import_meta = {};
 var __scriptDir = typeof __dirname !== "undefined" ? __dirname : (0, import_path3.dirname)((0, import_url.fileURLToPath)(import_meta.url));
 var VERSION = (() => {
-  if ("0.8.169") return "0.8.169";
+  if ("0.8.170") return "0.8.170";
   try {
     const pkg = JSON.parse((0, import_fs3.readFileSync)((0, import_path2.join)(__scriptDir, "../../package.json"), "utf-8"));
     if (typeof pkg.version === "string" && pkg.version) return pkg.version;

@@ -18,7 +18,24 @@ import { homedir } from 'node:os';
  *                                       observations in getWithinBudget() Pass 0; clamped [0.0, 0.5] (default: 0.25).
  *                                       Set to 0.0 to disable the priority reserve entirely.
  * CONTEXT_SEARCH_MIN_SCORE            - Min cosine similarity for semantic/hybrid results (default: 0.25)
+ * CONTEXT_MANAGER_BRANCH_AWARE        - Enable git branch capture and soft-rank boost (default: off).
+ *                                       Truthy values: 1, true, yes (case-insensitive). Any other value = off.
+ *                                       When off, all getCurrentBranch() calls are bypassed and
+ *                                       branch is stored as null. The branch columns and soft-rank
+ *                                       logic remain in place; only the capture/boost path is skipped.
+ *                                       fixes #149
  */
+
+/**
+ * Returns true when git branch awareness is enabled via CONTEXT_MANAGER_BRANCH_AWARE.
+ * Default is OFF. Truthy values: "1", "true", "yes" (case-insensitive).
+ * Call this after loadDotEnv() so the env var is populated from ~/.claude-context/.env.
+ * fixes #149
+ */
+export function isBranchAware(): boolean {
+  const val = (process.env['CONTEXT_MANAGER_BRANCH_AWARE'] ?? '').trim().toLowerCase();
+  return val === '1' || val === 'true' || val === 'yes';
+}
 
 /**
  * Load environment variables from ~/.claude-context/.env into process.env.
