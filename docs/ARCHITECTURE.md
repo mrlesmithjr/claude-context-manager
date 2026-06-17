@@ -860,7 +860,9 @@ Search uses a 3-layer pattern to balance token efficiency with access to full de
 
 ### Branch-Aware Capture
 
-`getCurrentBranch()` in `src/utils/git.ts` calls `git rev-parse --abbrev-ref HEAD` via `spawnSync` at capture time. The branch name is stored on both the `observations` and `sessions` tables.
+Branch capture is opt-in, controlled by the `CONTEXT_MANAGER_BRANCH_AWARE` env var (default off). Truthy values: `1`, `true`, `yes` (case-insensitive). When off, `getCurrentBranch()` is bypassed on every hook and `branch` is stored as null; the branch columns and soft-rank logic remain in the schema but the capture and boost paths are skipped.
+
+When enabled, `getCurrentBranch()` in `src/utils/git.ts` calls `git rev-parse --abbrev-ref HEAD` via `spawnSync` at capture time. The branch name is stored on both the `observations` and `sessions` tables.
 
 In search, results from the current branch receive a soft-rank boost. The `branch` parameter on `context_search` allows explicit filtering to a specific branch.
 
@@ -868,7 +870,7 @@ In search, results from the current branch receive a soft-rank boost. The `branc
 
 `FACT_CATEGORIES` in `src/utils/facts.ts` defines categories of facts that have exactly one current value (e.g., "current Node.js version", "chosen framework"). `detectFactType()` classifies new observations; `findConflictingFact()` identifies any earlier same-category observation.
 
-When a conflict is found, the earlier observation's `superseded_by` is set to the new observation's ID. Superseded observations are excluded from search by default; pass `include_superseded: true` to opt in. Relational integrity is preserved — observations are updated, not deleted.
+When a conflict is found, the earlier observation's `superseded_by` is set to the new observation's ID. Superseded observations are excluded from search by default; pass `include_superseded: true` to opt in. `countObservations()` also excludes superseded rows by default (`includeSuperseded?: boolean` param to opt in), keeping pagination totals consistent with search results. Relational integrity is preserved -- observations are updated, not deleted.
 
 ### Memory Decay
 
