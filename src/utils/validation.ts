@@ -314,7 +314,9 @@ export function shouldCaptureTool(toolName: string, toolInput?: unknown): boolea
     'AgentOutputTool',
     'BashOutput',
     'KillShell',
-    'Skill',
+    // 'Skill' is intentionally NOT skipped (fixes #259): a Skill tool call is a
+    // deliberate, named user-directed invocation (tool_input.skill) that
+    // context_skill_stats is built to track, unlike the orchestration tools above.
     'EnterPlanMode',
     'ExitPlanMode',
     'EnterWorktree',

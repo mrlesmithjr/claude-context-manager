@@ -17,6 +17,7 @@ import {
   validateProjectPath,
   validateSessionStartInput,
   validateStopInput,
+  shouldCaptureTool,
 } from '../src/utils/validation.js';
 
 const HOME = homedir();
@@ -220,5 +221,27 @@ describe('validateStopInput', () => {
     expect(() =>
       validateStopInput({ session_id: 'abc', cwd: '/etc' })
     ).toThrow();
+  });
+});
+
+describe('shouldCaptureTool', () => {
+  it('captures Skill invocations (fixes #259)', () => {
+    // A Skill tool call is a deliberate, named user-directed invocation that
+    // context_skill_stats tracks; it must not be skipped at capture time.
+    expect(shouldCaptureTool('Skill', { skill: 'briefing' })).toBe(true);
+  });
+
+  it('still skips Task and the other orchestration tools (regression guard)', () => {
+    expect(shouldCaptureTool('Task', { subagent_type: 'code-reviewer' })).toBe(false);
+    expect(shouldCaptureTool('TodoWrite')).toBe(false);
+    expect(shouldCaptureTool('ExitPlanMode')).toBe(false);
+  });
+
+  it('captures Agent invocations (unchanged behavior)', () => {
+    expect(shouldCaptureTool('Agent', { subagent_type: 'code-reviewer' })).toBe(true);
+  });
+
+  it('captures ordinary tools like Write', () => {
+    expect(shouldCaptureTool('Write', { file_path: '/tmp/x', content: 'y' })).toBe(true);
   });
 });
