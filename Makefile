@@ -15,6 +15,13 @@ COMPOSE_FILE     := docker-compose.e2e.yml
 COMPOSE          := docker compose -f $(COMPOSE_FILE)
 E2E_IMAGE        := context-manager-e2e:latest
 
+# 1Password's SSH agent requires interactive per-signature approval, which
+# breaks unattended git pushes during `make ship` (the prompts time out and
+# the agent refuses to sign). Prefix release/update network operations with
+# this to disable the SSH agent so git falls back to the on-disk passphraseless
+# key (~/.ssh/personal_ed25519) and runs non-interactively. refs #258
+GIT_NOAGENT      := GIT_SSH_COMMAND='ssh -o IdentityAgent=none'
+
 SERVER_IMAGE     := context-manager-server:latest
 SERVER_ENV       := $(HOME)/.claude-context/.env
 SERVER_COMPOSE   := docker compose -f docker-compose.server.yml
@@ -339,7 +346,7 @@ server-apply-env:
 # After this completes, follow the manual steps printed at the end.
 update:
 	@echo "[update] Pulling latest changes..."
-	@PULL_OUT=$$(git pull 2>&1); PULL_EXIT=$$?; \
+	@PULL_OUT=$$($(GIT_NOAGENT) git pull 2>&1); PULL_EXIT=$$?; \
 	echo "$$PULL_OUT"; \
 	if [ "$$PULL_EXIT" -ne 0 ] && ! echo "$$PULL_OUT" | grep -q "Already up to date"; then \
 		echo "ERROR: git pull failed (exit $$PULL_EXIT). Resolve the issue and re-run make update."; \
@@ -362,7 +369,7 @@ update:
 		git commit -m "chore: rebuild plugin scripts for v$$VERSION, refs #95" && \
 		BRANCH=$$(git branch --show-current) && \
 		echo "[update] Pushing branch $$BRANCH..." && \
-		if ! git push origin "$$BRANCH"; then \
+		if ! $(GIT_NOAGENT) git push origin "$$BRANCH"; then \
 			echo "ERROR: git push failed. Check remote access and re-run 'git push origin $$BRANCH' manually."; \
 			exit 1; \
 		fi && \
@@ -471,10 +478,10 @@ release:
 		echo "ERROR: PR merge failed. Check for conflicts: gh pr view $$PR_NUM"; \
 		exit 1; \
 	fi; \
-	git fetch origin main; \
+	$(GIT_NOAGENT) git fetch origin main; \
 	git tag "v$$VERSION" origin/main 2>/dev/null \
 		|| echo "[release] Tag v$$VERSION already exists, skipping."; \
-	git push origin "v$$VERSION" 2>/dev/null \
+	$(GIT_NOAGENT) git push origin "v$$VERSION" 2>/dev/null \
 		|| echo "[release] Tag already on remote, skipping."; \
 	echo "[release] Creating GitHub Release v$$VERSION..."; \
 	gh release create "v$$VERSION" \
@@ -485,7 +492,7 @@ release:
 		|| echo "[release] GitHub Release already exists, skipping."; \
 	echo "[release] Syncing main back into develop to prevent future merge conflicts..."; \
 	git merge origin/main --no-edit -X ours 2>&1 \
-		&& git push origin develop \
+		&& $(GIT_NOAGENT) git push origin develop \
 		|| echo "[WARN] Could not auto-sync main into develop. Run: git merge origin/main && git push"; \
 	echo ""; \
 	echo "================================================================"; \

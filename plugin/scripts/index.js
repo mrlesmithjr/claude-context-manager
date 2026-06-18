@@ -65843,7 +65843,9 @@ function shouldCaptureTool(toolName, toolInput) {
     "AgentOutputTool",
     "BashOutput",
     "KillShell",
-    "Skill",
+    // 'Skill' is intentionally NOT skipped (fixes #259): a Skill tool call is a
+    // deliberate, named user-directed invocation (tool_input.skill) that
+    // context_skill_stats is built to track, unlike the orchestration tools above.
     "EnterPlanMode",
     "ExitPlanMode",
     "EnterWorktree"
@@ -66279,7 +66281,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.170" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.171" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -66531,7 +66533,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.170" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.171" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -68646,7 +68648,7 @@ var init_http = __esm({
     init_enrichment();
     __serverDir = typeof __dirname !== "undefined" ? __dirname : dirname3(fileURLToPath2(import.meta.url));
     SERVER_VERSION = (() => {
-      if ("0.8.170") return "0.8.170";
+      if ("0.8.171") return "0.8.171";
       try {
         const pkg = JSON.parse(readFileSync7(join7(__serverDir, "../../package.json"), "utf-8"));
         if (typeof pkg.version === "string" && pkg.version) return pkg.version;

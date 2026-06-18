@@ -8,6 +8,10 @@
 
 # Ignore local settings (machine-specific permissions)
 .claude/settings.local.json
+.claude/settings.local.json.bak*
+
+# Ephemeral worktrees created by subagents
+.claude/worktrees/
 
 # Include .claude-plugin directories (marketplace plugin metadata)
 !.claude-plugin/
