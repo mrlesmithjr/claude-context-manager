@@ -3938,6 +3938,10 @@ function writeSessionLessons(observations, today = (/* @__PURE__ */ new Date()).
         continue;
       }
       const toolKind = group.some((o) => o.tool_name === "Agent") ? "agent" : "skill";
+      if (toolKind === "agent") {
+        result.skipped.push(name);
+        continue;
+      }
       const hasSignificantInvocation = group.some(
         (o) => (o.tool_name === "Agent" || o.tool_name === "Skill") && (o.importance_score ?? 0) >= INVOCATION_THRESHOLD
       );
