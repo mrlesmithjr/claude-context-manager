@@ -11,7 +11,7 @@
 # Key env overrides used throughout:
 #   HOME          - Points to TEMP_HOME; homedir() uses this, so SQLiteStorage opens
 #                   $TEMP_HOME/.claude-context/context.db (the constructor default)
-#                   and lesson files write to $TEMP_HOME/.dotfiles/...
+#                   and lesson files write to $TEMP_HOME/.claude/...
 #   CONTEXT_MANAGER_URL - Explicitly unset to guarantee local mode
 #
 # Precondition: /app/dist/ contains compiled TypeScript (tsc output).
@@ -48,8 +48,8 @@ trap cleanup_temp_home EXIT
 
 # Create directory layout
 mkdir -p "${TEMP_HOME}/projects/test-lessons"
-mkdir -p "${TEMP_HOME}/.dotfiles/.claude/agents"
-mkdir -p "${TEMP_HOME}/.dotfiles/.claude/skills"
+mkdir -p "${TEMP_HOME}/.claude/agents"
+mkdir -p "${TEMP_HOME}/.claude/skills"
 
 # --- Seed the DB with a session and three skill-attributed observations ---
 # We use the tsc-compiled dist/ output directly (not the esbuild bundle) because
@@ -69,7 +69,7 @@ await storage.createSession(
   null // branch
 );
 
-// Observation 1: Agent invocation with high importance (triggers agent lesson)
+// Observation 1: Agent invocation with high importance (must be SKIPPED: agents use native memory)
 await storage.save({
   session_id: '${HOOK_SESSION}',
   project: '${HOOK_PROJECT}',
@@ -154,27 +154,18 @@ else
 fi
 
 # Paths the hook should have written to (resolved via TEMP_HOME)
-AGENT_LESSONS="${TEMP_HOME}/.dotfiles/.claude/agents/e2e-test-agent.lessons.md"
-SKILL_LESSONS="${TEMP_HOME}/.dotfiles/.claude/skills/e2e-test-skill/.lessons.md"
+AGENT_LESSONS="${TEMP_HOME}/.claude/agents/e2e-test-agent.lessons.md"
+SKILL_LESSONS="${TEMP_HOME}/.claude/skills/e2e-test-skill/.lessons.md"
 
-# --- 09b: Agent lesson file exists ---
-info "09b: agent lesson file exists at expected path"
+# --- 09b: Agent lesson file is NOT created (agents use native Claude Code memory) ---
+info "09b: agent lesson file is NOT created (agent auto-write retired)"
 if [ -f "$AGENT_LESSONS" ]; then
-  pass "09b: agent lesson file exists at ${AGENT_LESSONS}"
+  fail "09b: agent lesson file should NOT exist but was found at ${AGENT_LESSONS}"
+  echo "  Unexpected agent lesson content:"
+  cat "$AGENT_LESSONS" 2>/dev/null | head -20 | sed 's/^/    /'
 else
-  fail "09b: agent lesson file not found at ${AGENT_LESSONS}"
+  pass "09b: agent lesson file correctly not created (agents use native memory)"
 fi
-
-# --- 09c: Agent lesson file has today's date heading ---
-info "09c: agent lesson file has today's date heading"
-AGENT_CONTENT=$(cat "$AGENT_LESSONS" 2>/dev/null || echo '')
-assert_contains "$AGENT_CONTENT" "## ${TODAY}" \
-  "09c: agent lesson file has date heading ## ${TODAY}"
-
-# --- 09d: Agent lesson file contains the observation summary text ---
-info "09d: agent lesson file contains observation summary"
-assert_contains "$AGENT_CONTENT" "e2e-agent found the root cause in src/storage/sqlite.ts at line 1901" \
-  "09d: agent lesson file contains the observation summary text"
 
 # --- 09e: Skill lesson file exists ---
 info "09e: skill lesson file exists at expected path"
@@ -195,10 +186,8 @@ info "09g: skill lesson file contains [build_failure] prefixed entry"
 assert_contains "$SKILL_CONTENT" "[build_failure]" \
   "09g: skill lesson file contains [build_failure] prefix for lesson_type observation"
 
-# --- 09h: Both lesson files have the MCP header line ---
-info "09h: both lesson files contain the MCP tool header"
-assert_contains "$AGENT_CONTENT" "context_agent_lessons" \
-  "09h: agent lesson file contains context_agent_lessons header"
+# --- 09h: Skill lesson file has the MCP header line ---
+info "09h: skill lesson file contains the MCP tool header"
 assert_contains "$SKILL_CONTENT" "context_skill_lessons" \
   "09h: skill lesson file contains context_skill_lessons header"
 
@@ -214,15 +203,15 @@ STOP_STATUS2=$(echo "$STOP_RESPONSE2" | jq -r '.status // ""')
 if [ "$STOP_STATUS2" != "complete" ]; then
   fail "09i: second session-end invocation returned unexpected status: ${STOP_RESPONSE2}"
 else
-  # Count how many times today's heading appears in the agent file after re-run
-  AGENT_CONTENT2=$(cat "$AGENT_LESSONS" 2>/dev/null || echo '')
-  HEADING_COUNT=$(echo "$AGENT_CONTENT2" | grep -cF "## ${TODAY}" || echo 0)
+  # Count how many times today's heading appears in the skill file after re-run
+  SKILL_CONTENT2=$(cat "$SKILL_LESSONS" 2>/dev/null || echo '')
+  HEADING_COUNT=$(echo "$SKILL_CONTENT2" | grep -cF "## ${TODAY}" || echo 0)
   if [ "$HEADING_COUNT" -eq 1 ]; then
     pass "09i: date heading appears exactly once after second invocation (no duplicate)"
   else
-    fail "09i: expected exactly 1 date heading, found ${HEADING_COUNT} in agent lesson file"
-    echo "  Agent lesson file content after second run:"
-    echo "$AGENT_CONTENT2" | head -30 | sed 's/^/    /'
+    fail "09i: expected exactly 1 date heading, found ${HEADING_COUNT} in skill lesson file"
+    echo "  Skill lesson file content after second run:"
+    echo "$SKILL_CONTENT2" | head -30 | sed 's/^/    /'
   fi
 fi
 

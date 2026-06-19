@@ -2,15 +2,20 @@
  * Automatic lesson writing utilities.
  *
  * Reads Observation[] produced by SQLiteStorage.getSessionLessonCandidates()
- * and writes dated bullet entries to .lessons.md sidecar files for agents
- * and skills that were invoked during the session.
+ * and writes dated bullet entries to .lessons.md sidecar files for skills
+ * that were invoked during the session.
  *
- * This module has no SQLite dependency — all I/O is filesystem only.
+ * Agent lesson writing is intentionally disabled: agents migrated to native
+ * Claude Code agent memory (MEMORY.md + topic files written by the agent
+ * itself). Auto-writing agent .lessons.md sidecars would recreate files that
+ * are no longer read or maintained by the agent lifecycle.
+ *
+ * This module has no SQLite dependency -- all I/O is filesystem only.
  * It is called from session-end.ts (Stop hook) in local mode only.
  *
  * Path conventions:
- *   agent: ~/.claude/agents/<name>.lessons.md
  *   skill: ~/.claude/skills/<name>/.lessons.md
+ *   agent: ~/.claude/agents/<name>.lessons.md  (resolveLessonsPath only; write is skipped)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
@@ -133,15 +138,16 @@ function appendLessons(
 }
 
 /**
- * Write dated lesson entries for all agents and skills referenced in the
- * provided observations array.
+ * Write dated lesson entries for skills referenced in the provided observations
+ * array. Agent groups are silently skipped (agents use native Claude Code memory
+ * instead of .lessons.md sidecars).
  *
  * Called from session-end.ts after the auto-memory export, in local mode only.
- * Observations without a `skill` field are silently skipped — they carry no
+ * Observations without a `skill` field are silently skipped -- they carry no
  * agent/skill attribution.
  *
  * Write thresholds (either must be met for a name to trigger a write):
- *   1. At least one Agent or Skill invocation observation with importance >= INVOCATION_THRESHOLD
+ *   1. At least one Skill invocation observation with importance >= INVOCATION_THRESHOLD
  *   2. At least one observation with a lesson_type (error/build_failure/etc.)
  *
  * Names that fail the kebab-case validation or produce zero bullet text are
@@ -175,6 +181,13 @@ export function writeSessionLessons(
       const toolKind: 'agent' | 'skill' = group.some(o => o.tool_name === 'Agent')
         ? 'agent'
         : 'skill';
+
+      // Agent .lessons.md auto-write is retired: agents use native Claude Code
+      // memory (MEMORY.md). Skip silently so existing files are not recreated.
+      if (toolKind === 'agent') {
+        result.skipped.push(name);
+        continue;
+      }
 
       // Apply write threshold: at least one significant invocation or lesson.
       const hasSignificantInvocation = group.some(

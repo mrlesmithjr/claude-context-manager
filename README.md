@@ -99,7 +99,6 @@ To enable semantic (vector) search, run `context_embed` once. It auto-installs d
 | Web dashboard | Browse sessions, search observations, view analytics at `http://localhost:3847`. Tabs: Sessions, Search (branch and pinned filters), Decisions, Lessons, Skills, Analytics, Admin, Import |
 | PreCompact hook | Saves session state before `/compact` so context survives compaction |
 | Skill lessons | Per-skill `.lessons.md` sidecar files accumulate session experience; PreToolUse hook injects them automatically before a skill loads, no configuration required |
-| Agent lessons | Per-agent `.lessons.md` sidecar files accumulate session experience; PreToolUse hook injects them automatically before an agent is spawned, mirroring the skill lessons pattern |
 | File-context injection | Before each Read, injects a compact history of prior work on that file (first read per file per session only) |
 | Privacy tags | `<private>` tag excludes content from storage; `old_string`/`new_string`/`content` fields stripped from Edit/Write |
 | Local storage | All data stays on your machine; no external APIs required |
@@ -370,7 +369,6 @@ Observations are scoped by project path. Parent directories see all child contex
 | `UserPromptSubmit` | Capture user prompts, run periodic checkpoint export | 5s |
 | `PreToolUse` | Inject compact file history before Read operations | 5s |
 | `PreToolUse` | Inject `.lessons.md` sidecar before Skill invocation | 5s |
-| `PreToolUse` | Inject `.lessons.md` sidecar before Agent invocation | 5s |
 | `PostToolUse` | Capture tool interactions | 5s |
 | `Stop` | Save summary, extract insights, export to auto-memory | 10s |
 | `PreCompact` | Save session before `/compact` | 10s |

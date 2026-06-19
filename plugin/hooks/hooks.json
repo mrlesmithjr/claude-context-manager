@@ -44,16 +44,6 @@
             "timeout": 5
           }
         ]
-      },
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/agent-context.js",
-            "timeout": 5
-          }
-        ]
       }
     ],
     "PostToolUse": [

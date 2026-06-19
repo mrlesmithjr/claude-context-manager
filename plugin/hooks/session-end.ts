@@ -659,7 +659,7 @@ async function main() {
       console.error('[context-manager] Auto-memory export failed:', exportError);
     }
 
-    // Auto-write lessons for agents and skills invoked this session
+    // Auto-write lessons for skills invoked this session (agents are skipped)
     try {
       const lessonCandidates = (storage as SQLiteStorage).getSessionLessonCandidates(input.session_id);
       if (lessonCandidates.length > 0) {
