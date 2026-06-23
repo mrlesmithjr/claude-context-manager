@@ -200,8 +200,36 @@ else
   fail "07g: capture-prompt.js returned unexpected status: $PROMPT_REMOTE_STATUS"
 fi
 
-# --- 07h: MCP stdio server starts cleanly in proxy mode without natives ---
-info "07h: MCP stdio server starts in proxy mode without natives"
+# --- 07h: MCP stdio server exits cleanly with guidance when no natives + no URL ---
+info "07h: MCP stdio server exits with guidance when no natives and no server URL"
+
+MCP_NO_NATIVE_STDERR=$(CONTEXT_MANAGER_URL="" \
+  node "${MARKETPLACE_HOOK_DIR}/mcp/server.js" </dev/null 2>&1) \
+  && MCP_NO_NATIVE_EXIT=0 || MCP_NO_NATIVE_EXIT=$?
+
+if echo "$MCP_NO_NATIVE_STDERR" | grep -q "No server configured"; then
+  pass "07h: MCP stdio server printed guidance message (no crash)"
+else
+  fail "07h: MCP stdio server did not print expected guidance: $(echo "$MCP_NO_NATIVE_STDERR" | head -3)"
+fi
+
+if echo "$MCP_NO_NATIVE_STDERR" | grep -qi "TypeError\|not a constructor\|Fatal error"; then
+  fail "07h: MCP stdio server crashed instead of exiting cleanly: $(echo "$MCP_NO_NATIVE_STDERR" | head -3)"
+else
+  pass "07h: MCP stdio server exited without crash output"
+fi
+
+if [ "$MCP_NO_NATIVE_EXIT" -eq 0 ]; then
+  pass "07h: MCP stdio server exited 0 (clean config state, not a crash)"
+else
+  fail "07h: MCP stdio server exited ${MCP_NO_NATIVE_EXIT}, expected 0"
+fi
+
+assert_contains "$MCP_NO_NATIVE_STDERR" "server-quickstart" \
+  "07h: guidance message mentions server-quickstart"
+
+# --- 07i: MCP stdio server starts cleanly in proxy mode without natives ---
+info "07i: MCP stdio server starts in proxy mode without natives"
 
 # Send a minimal JSON-RPC initialize, cap at 3 seconds.
 # The server writes to stderr (not stdout) so we capture stderr separately.
@@ -211,13 +239,13 @@ MCP_STDERR=$(echo '{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"prot
   timeout 3 node "${MARKETPLACE_HOOK_DIR}/mcp/server.js" 2>&1 1>/dev/null || true)
 
 if echo "$MCP_STDERR" | grep -q "MCP server connected"; then
-  pass "07h: MCP stdio server started and connected via stdio without native modules"
+  pass "07i: MCP stdio server started and connected via stdio without native modules"
 elif echo "$MCP_STDERR" | grep -qi "fatal\|TypeError\|not a constructor"; then
-  fail "07h: MCP stdio server crashed: $(echo "$MCP_STDERR" | head -3)"
+  fail "07i: MCP stdio server crashed: $(echo "$MCP_STDERR" | head -3)"
 else
   # Server started (no crash) but may have exited before printing the connected line
-  # due to the 3s timeout closing stdin. That's acceptable — no crash is the bar.
-  pass "07h: MCP stdio server started without crashing (timeout closed stdin)"
+  # due to the 3s timeout closing stdin. That's acceptable -- no crash is the bar.
+  pass "07i: MCP stdio server started without crashing (timeout closed stdin)"
 fi
 
 # ============================================================
@@ -231,9 +259,9 @@ SEARCH_RESULT=$(mcp_text 'context_search' \
   "{\"query\":\"marketplace-capture-test\",\"project\":\"${HOOK_PROJECT}\"}")
 
 assert_contains "$SEARCH_RESULT" "marketplace-capture-test" \
-  "07i: prompt captured in remote mode is searchable via context_search"
+  "07j: prompt captured in remote mode is searchable via context_search"
 assert_not_contains "$SEARCH_RESULT" "No observations found" \
-  "07i: context_search returned real results, not a no-match message"
+  "07j: context_search returned real results, not a no-match message"
 
 # ============================================================
 # Cleanup (trap restores native modules)

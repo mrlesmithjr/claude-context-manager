@@ -12,6 +12,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ---
 
+## [0.8.174] - 2026-06-23
+
+### Fixed
+- Stdio MCP server now exits cleanly with actionable setup guidance (pointing at `make server-quickstart` or `make server-init` + `make server-start`) when running as a marketplace install with no `CONTEXT_MANAGER_URL` configured, instead of crashing with a cryptic `TypeError: better_sqlite3_default is not a constructor` stack trace. `claude mcp list` will still show "Failed to connect" until a server is configured; stderr now explains why.
+
+---
+
 ## [0.8.108] - 2026-05-27
 
 ### Added
@@ -26,5 +33,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 See `git log --oneline v0.8.107` for the full commit history prior to this changelog.
 
-[Unreleased]: https://github.com/mrlesmithjr/claude-context-manager/compare/v0.8.108...HEAD
+[Unreleased]: https://github.com/mrlesmithjr/claude-context-manager/compare/v0.8.174...HEAD
+[0.8.174]: https://github.com/mrlesmithjr/claude-context-manager/compare/v0.8.173...v0.8.174
 [0.8.108]: https://github.com/mrlesmithjr/claude-context-manager/compare/v0.8.107...v0.8.108

@@ -36111,7 +36111,7 @@ function formatPrompts(prompts) {
 function formatStats(stats, project, vectorStats, sessionEmbeddingStats, version2) {
   const lines = [];
   lines.push("Context Manager Statistics");
-  const resolvedVersion = version2 ?? (true ? "0.8.173" : "unknown");
+  const resolvedVersion = version2 ?? (true ? "0.8.174" : "unknown");
   lines.push(`Version: ${resolvedVersion}`);
   lines.push("");
   lines.push(project ? `Project: ${project}` : "All Projects");
@@ -36363,7 +36363,7 @@ async function proxyToolCall(toolName, args, remoteUrl, remoteToken) {
 }
 function createContextManagerServer(storage2, options = {}) {
   const { remoteUrl = "", remoteToken = "", pathMap = [], version: optVersion } = options;
-  const resolvedVersion = optVersion ?? (true ? "0.8.173" : "unknown");
+  const resolvedVersion = optVersion ?? (true ? "0.8.174" : "unknown");
   const isProxy = !!remoteUrl;
   const server = new McpServer(
     {
@@ -37963,6 +37963,12 @@ async function main() {
     if (!REMOTE_TOKEN) {
       console.error("[context-manager-mcp] WARNING: CONTEXT_MANAGER_URL is set but CONTEXT_MANAGER_TOKEN is empty. Remote calls will fail auth.");
     }
+  }
+  if (!REMOTE_URL && !__nativeModulesAvailable) {
+    console.error(
+      "[context-manager] No server configured and native SQLite modules are not available.\n\nTo set up the server:\n\nmacOS (recommended):\n  git clone git@github.com:mrlesmithjr/claude-context-manager.git ~/claude-context-manager\n  cd ~/claude-context-manager && npm install\n  make server-quickstart          # creates token, installs launchd service, starts server\n  /plugin update context-manager  # run inside Claude Code, then restart Claude Code\n\nLinux / Docker:\n  git clone git@github.com:mrlesmithjr/claude-context-manager.git ~/claude-context-manager\n  cd ~/claude-context-manager && npm install\n  make server-init   # creates ~/.claude-context/.env with a token\n  make server-start  # starts Docker containers\n  /plugin update context-manager  # run inside Claude Code, then restart Claude Code"
+    );
+    process.exit(0);
   }
   const db = REMOTE_URL ? null : await getStorage();
   const pathMap = loadPathPrefixMap();
