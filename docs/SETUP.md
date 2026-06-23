@@ -427,6 +427,10 @@ If not listed, reinstall: `/plugin install context-manager`, then restart.
 
 This happens when the plugin was installed from the marketplace without a server configured. Native SQLite binaries are not bundled with marketplace installs. Set up Mode 1 (native server) or Mode 2 (Docker) and configure `~/.claude-context/.env` with `CONTEXT_MANAGER_URL` and `CONTEXT_MANAGER_TOKEN` before restarting Claude Code.
 
+**`claude mcp list` shows "Failed to connect" for context-manager**
+
+When no `CONTEXT_MANAGER_URL` is configured and the plugin was installed from the marketplace (native modules absent), the stdio MCP server exits immediately instead of crashing. Run `claude mcp list` and check the server's stderr output -- it prints the setup steps needed. Follow the macOS path (`make server-quickstart`) or the Docker path (`make server-init` + `make server-start`), then restart Claude Code.
+
 **`context_stats` shows nothing**
 
 The plugin scopes observations to the current working directory. Make sure you are running in a project directory, not `/` or `~`.

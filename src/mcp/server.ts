@@ -19,6 +19,12 @@ import { createContextManagerServer } from './create-server.js';
 import { loadPathPrefixMap } from '../utils/path-map.js';
 import { loadDotEnv } from '../utils/env.js';
 
+// Injected by esbuild banner. True when plugin/node_modules/ native binaries are present.
+// The web server and HTTP MCP server intentionally do NOT use this guard (they hard-crash on
+// missing natives, which is correct: they are launched explicitly by the user via make targets).
+// Only the stdio server needs graceful handling because Claude Code auto-launches it.
+declare const __nativeModulesAvailable: boolean;
+
 loadDotEnv();
 
 // Proxy configuration: when set, all tool calls are forwarded to the remote server
@@ -172,7 +178,31 @@ async function main() {
     }
   }
 
-  // In proxy/remote mode, SQLiteStorage is never needed — all tool calls are
+  // In local mode without native modules (marketplace install, no plugin/node_modules/),
+  // nothing can be served. Exit 0 is intentional: this is a configuration state, not a crash.
+  if (!REMOTE_URL && !__nativeModulesAvailable) {
+    console.error(
+      '[context-manager] No server configured and native SQLite modules are not available.\n' +
+      '\n' +
+      'To set up the server:\n' +
+      '\n' +
+      'macOS (recommended):\n' +
+      '  git clone git@github.com:mrlesmithjr/claude-context-manager.git ~/claude-context-manager\n' +
+      '  cd ~/claude-context-manager && npm install\n' +
+      '  make server-quickstart          # creates token, installs launchd service, starts server\n' +
+      '  /plugin update context-manager  # run inside Claude Code, then restart Claude Code\n' +
+      '\n' +
+      'Linux / Docker:\n' +
+      '  git clone git@github.com:mrlesmithjr/claude-context-manager.git ~/claude-context-manager\n' +
+      '  cd ~/claude-context-manager && npm install\n' +
+      '  make server-init   # creates ~/.claude-context/.env with a token\n' +
+      '  make server-start  # starts Docker containers\n' +
+      '  /plugin update context-manager  # run inside Claude Code, then restart Claude Code'
+    );
+    process.exit(0);
+  }
+
+  // In proxy/remote mode, SQLiteStorage is never needed. All tool calls are
   // forwarded to the remote server. Skip getStorage() entirely so the MCP server
   // can start even when native modules are absent (marketplace install).
   const db = REMOTE_URL ? null : await getStorage();
